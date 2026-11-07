@@ -156,25 +156,119 @@ export class ProceduralLogisticsWorld {
     const offY = this.rng.range(10, 90);
     const foldPhase = this.rng.range(0, Math.PI * 2);
 
-    // Optional Volcanic/Tectonic Island Chain Centers for `island-hopper`
-    const islandArc = [];
+    // Emergent Tectonic Archipelago Spine, Multi-Lobe Massifs & Satellite Skerries for `island-hopper`
+    const islandMassifs = [];
+    const islandBites = [];
     if (arch === 'island-hopper') {
-      const arcAnchors = [
-        { x: 0.18, y: 0.26, rx: 0.112, ry: 0.142, height: 0.92 }, // 1. NW Main High Island
-        { x: 0.48, y: 0.22, rx: 0.088, ry: 0.112, height: 0.82 }, // 2. North-Central Causeway Island
-        { x: 0.81, y: 0.25, rx: 0.094, ry: 0.122, height: 0.84 }, // 3. NE Outer Volcanic Island
-        { x: 0.20, y: 0.76, rx: 0.094, ry: 0.122, height: 0.84 }, // 4. SW Outer Atoll Island
-        { x: 0.51, y: 0.74, rx: 0.090, ry: 0.115, height: 0.82 }, // 5. South-Central Sister Island
-        { x: 0.80, y: 0.72, rx: 0.115, ry: 0.146, height: 0.94 }  // 6. SE Main High Island
+      // 1. Seed-unique primary curved volcanic/cordillera arc + secondary divergent rift branch (zero fixed 3×2 grid!)
+      const baseTheta = this.rng.range(-Math.PI, Math.PI);
+      const arcCurvature = (this.rng.next() < 0.5 ? 1 : -1) * this.rng.range(0.28, 0.52);
+      const forkSide = this.rng.next() < 0.5 ? 1 : -1;
+      const forkTheta = baseTheta + forkSide * this.rng.range(1.05, 1.48);
+
+      const sampleArcPoint = (t) => {
+        // t in [-0.42 .. +0.42] along the curved primary arc
+        const s = t * 0.82;
+        const n = (arcCurvature * (t * t - 0.09)) + Math.sin(t * Math.PI * 2.0 + foldPhase) * 0.05;
+        return {
+          x: Math.max(-0.39, Math.min(0.39, s * Math.cos(baseTheta) - n * Math.sin(baseTheta))),
+          y: Math.max(-0.37, Math.min(0.37, s * Math.sin(baseTheta) + n * Math.cos(baseTheta))),
+          tangent: baseTheta + 2 * arcCurvature * t
+        };
+      };
+
+      // Place 6 distinct island centers along a seed-unique curved tectonic arc + secondary rift branch
+      const majorCenters = [];
+      const arcTs = [
+        -0.38 + this.rng.range(-0.03, 0.03),
+        -0.13 + this.rng.range(-0.04, 0.04),
+        0.13 + this.rng.range(-0.04, 0.04),
+        0.38 + this.rng.range(-0.03, 0.03)
       ];
-      for (const a of arcAnchors) {
-        islandArc.push({
-          x: (a.x - 0.5) + this.rng.range(-0.024, 0.024),
-          y: (a.y - 0.5) + this.rng.range(-0.024, 0.024),
-          rx: a.rx * this.rng.range(0.94, 1.06),
-          ry: a.ry * this.rng.range(0.94, 1.06),
-          ang: this.rng.range(-0.55, 0.55),
-          height: a.height
+      for (let idx = 0; idx < arcTs.length; idx++) {
+        const pt = sampleArcPoint(arcTs[idx]);
+        const isMain = idx === 1 || idx === 2;
+        majorCenters.push({
+          x: Math.max(-0.35, Math.min(0.35, pt.x + this.rng.range(-0.03, 0.03))),
+          y: Math.max(-0.33, Math.min(0.33, pt.y + this.rng.range(-0.03, 0.03))),
+          ang: pt.tangent + this.rng.range(-0.55, 0.55),
+          scale: isMain ? this.rng.range(0.96, 1.12) : this.rng.range(0.74, 0.88),
+          height: isMain ? this.rng.range(0.92, 1.00) : this.rng.range(0.80, 0.90)
+        });
+      }
+
+      // Add 2 outer islands in the opposite oceanic quadrants (enforcing >= 0.25 separation so islands stay distinct)
+      for (const sideMul of [1, -1]) {
+        for (let attempt = 0; attempt < 30; attempt++) {
+          const rDist = this.rng.range(0.24, 0.36);
+          const ang = baseTheta + sideMul * Math.PI * 0.5 + this.rng.range(-0.55, 0.55) + (attempt > 15 ? this.rng.range(-1.0, 1.0) : 0);
+          const fx = Math.max(-0.35, Math.min(0.35, Math.cos(ang) * rDist));
+          const fy = Math.max(-0.33, Math.min(0.33, Math.sin(ang) * rDist));
+          const minSep = attempt < 18 ? 0.24 : 0.19;
+          if (majorCenters.every(mc => Math.hypot(mc.x - fx, mc.y - fy) >= minSep)) {
+            majorCenters.push({
+              x: fx,
+              y: fy,
+              ang: ang + this.rng.range(-0.7, 0.7),
+              scale: this.rng.range(0.80, 0.98),
+              height: this.rng.range(0.82, 0.94)
+            });
+            break;
+          }
+        }
+      }
+
+      // Build each island out of 2–3 intersecting elongated tectonic ridge lobes + a harbor embayment bite
+      for (let mIdx = 0; mIdx < majorCenters.length; mIdx++) {
+        const mc = majorCenters[mIdx];
+        const lobeCount = mc.scale > 0.92 ? 3 : 2;
+        for (let l = 0; l < lobeCount; l++) {
+          const lobeAng = mc.ang + (l === 0 ? 0 : (l === 1 ? this.rng.range(0.65, 1.40) : this.rng.range(-1.40, -0.65)));
+          const lobeOff = l === 0 ? 0 : mc.scale * this.rng.range(0.026, 0.046);
+          const lx = mc.x + Math.cos(lobeAng) * lobeOff;
+          const ly = mc.y + Math.sin(lobeAng) * lobeOff;
+          const rx = (l === 0 ? 0.092 : 0.062) * mc.scale * this.rng.range(0.90, 1.16);
+          const ry = (l === 0 ? 0.050 : 0.038) * mc.scale * this.rng.range(0.86, 1.14);
+          islandMassifs.push({
+            group: mIdx,
+            x: lx,
+            y: ly,
+            rx,
+            ry,
+            ang: lobeAng,
+            height: mc.height * (l === 0 ? 1.0 : this.rng.range(0.82, 0.95)),
+            isIslet: false
+          });
+        }
+
+        // Carve a natural harbor cove / caldera embayment into one flank of the island
+        const biteAng = mc.ang + Math.PI * 0.5 * (this.rng.next() < 0.5 ? 1 : -1) + this.rng.range(-0.4, 0.4);
+        const biteDist = mc.scale * this.rng.range(0.036, 0.056);
+        islandBites.push({
+          x: mc.x + Math.cos(biteAng) * biteDist,
+          y: mc.y + Math.sin(biteAng) * biteDist,
+          r: mc.scale * this.rng.range(0.030, 0.046),
+          depth: this.rng.range(0.22, 0.34)
+        });
+      }
+
+      // 2. Scatter 14 small Satellite Islets, Skerries & Stepping-Stone Keys off capes and along straits
+      for (let s = 0; s < 14; s++) {
+        const host = this.rng.pick(majorCenters);
+        const tailAng = host.ang + (this.rng.next() < 0.5 ? 0 : Math.PI) + this.rng.range(-0.75, 0.75);
+        const tailDist = host.scale * this.rng.range(0.088, 0.145);
+        const ix = Math.max(-0.41, Math.min(0.41, host.x + Math.cos(tailAng) * tailDist));
+        const iy = Math.max(-0.39, Math.min(0.39, host.y + Math.sin(tailAng) * tailDist));
+        if (majorCenters.some(mc => Math.hypot(mc.x - ix, mc.y - iy) < 0.072)) continue;
+        islandMassifs.push({
+          group: 100 + s,
+          x: ix,
+          y: iy,
+          rx: this.rng.range(0.020, 0.036),
+          ry: this.rng.range(0.013, 0.024),
+          ang: tailAng + this.rng.range(-0.5, 0.5),
+          height: this.rng.range(0.62, 0.78),
+          isIslet: true
         });
       }
     }
@@ -215,19 +309,56 @@ export class ProceduralLogisticsWorld {
         let elev = macroPlate * 0.52 + foldValleys * 0.75 + ridgedSpines + fineDetail;
 
         if (arch === 'island-hopper') {
-          // Multi-Island Volcanic Archipelago: 6 distinct islands with volcanic peaks, coves & open sea channels
-          let maxIslandDome = 0;
-          for (const isl of islandArc) {
-            const dxI = (nx + warpU * 0.38) - isl.x;
-            const dyI = (ny + warpV * 0.38) - isl.y;
-            const cI = Math.cos(isl.ang), sI = Math.sin(isl.ang);
-            const uI = (dxI * cI + dyI * sI) / isl.rx;
-            const vI = (-dxI * sI + dyI * cI) / isl.ry;
+          // Meso-scale coastal fjord/headland warp so island shorelines carve peninsulas, coves & rocky capes
+          const coveU = (this.noise.fbm(nx * 5.6 + offX * 0.7, ny * 5.6 + offY * 0.7, 2) - 0.5) * 0.085;
+          const coveV = (this.noise.fbm(nx * 5.6 + offY * 0.7, ny * 5.6 + offX * 0.7, 2) - 0.5) * 0.085;
+          const ixW = nx + warpU * 0.52 + coveU;
+          const iyW = ny + warpV * 0.52 + coveV;
+
+          let bestVal = 0;
+          let bestGroup = -1;
+          let sameGroupSecond = 0;
+          let diffGroupSecond = 0;
+          for (const m of islandMassifs) {
+            const dxI = ixW - m.x;
+            const dyI = iyW - m.y;
+            const cI = Math.cos(m.ang), sI = Math.sin(m.ang);
+            const uI = (dxI * cI + dyI * sI) / m.rx;
+            const vI = (-dxI * sI + dyI * cI) / m.ry;
             const d2 = uI * uI + vI * vI;
-            const dome = Math.exp(-d2 * 2.15) * isl.height;
-            if (dome > maxIslandDome) maxIslandDome = dome;
+            if (d2 > 9.5) continue;
+            const val = Math.exp(-d2 * (m.isIslet ? 2.4 : 1.95)) * m.height;
+            if (val > bestVal) {
+              if (bestGroup === m.group) {
+                sameGroupSecond = Math.max(sameGroupSecond, bestVal);
+              } else if (bestGroup !== -1) {
+                diffGroupSecond = Math.max(diffGroupSecond, bestVal);
+              }
+              bestVal = val;
+              bestGroup = m.group;
+            } else if (m.group === bestGroup) {
+              if (val > sameGroupSecond) sameGroupSecond = val;
+            } else {
+              if (val > diffGroupSecond) diffGroupSecond = val;
+            }
           }
-          elev = maxIslandDome * 0.86 + (macroPlate - 0.5) * 0.16 + ridgedSpines * maxIslandDome * 0.65 + (fineDetail - 0.5) * 0.14;
+
+          // Smoothly unite sub-lobes of the SAME island while eroding navigable sea straits between DIFFERENT islands!
+          let massifShelf = bestVal + sameGroupSecond * 0.22 - diffGroupSecond * 0.90;
+          for (const bite of islandBites) {
+            const db2 = (Math.pow(ixW - bite.x, 2) + Math.pow(iyW - bite.y, 2)) / (bite.r * bite.r);
+            if (db2 < 4.0) {
+              massifShelf -= Math.exp(-db2 * 1.65) * bite.depth;
+            }
+          }
+          massifShelf = Math.max(0, massifShelf);
+
+          // High-amplitude fractal coastal noise gated by `shelfEnvelope` (0 in deep ocean ->
+          // zero border clipping, 100% fractal modulation along island shorelines -> ragged coves, peninsulas & headlands!)
+          const shelfEnvelope = Math.min(1.0, Math.pow(massifShelf * 2.5, 1.10));
+          const coastalFractal = (macroPlate - 0.48) * 0.44 + (fineDetail - 0.48) * 0.26 + foldValleys * 0.30;
+          const interiorSpine = ridgedSpines * Math.min(1.1, massifShelf * 1.40) * 1.15;
+          elev = Math.max(0, massifShelf * 0.74 + coastalFractal * shelfEnvelope + interiorSpine);
         } else if (arch === 'estuary') {
           elev += -coastDepth * 0.22 - bayIndent * 1.15 - lakeWell1 * 0.95 - lakeWell2 * 0.85;
         } else if (arch === 'archipelago') {
@@ -259,12 +390,13 @@ export class ProceduralLogisticsWorld {
     }
 
     const baseFrac = arch === 'island-hopper'
-      ? 0.64
+      ? 0.71
       : (arch === 'archipelago' ? 0.22 : (arch === 'estuary' ? 0.19 : (arch === 'inland' ? 0.14 : 0.17)));
-    const maxFrac = arch === 'island-hopper' ? 0.72 : 0.32;
+    const maxFrac = arch === 'island-hopper' ? 0.78 : 0.32;
     const targetWaterFrac = Math.max(0.10, Math.min(maxFrac, baseFrac * (0.68 + waterRatio * 0.65)));
     const qIdx = Math.floor(sampleElevs.length * targetWaterFrac);
-    const seaLevel = 0.02 + ((sampleElevs[qIdx] - minE) / spanE) * 0.96;
+    const rawSeaLevel = 0.02 + ((sampleElevs[qIdx] - minE) / spanE) * 0.96;
+    const seaLevel = arch === 'island-hopper' ? Math.max(0.068, rawSeaLevel) : rawSeaLevel;
     this.seaLevel = seaLevel;
 
     for (let i = 0; i < W * H; i++) {
@@ -565,18 +697,32 @@ export class ProceduralLogisticsWorld {
       }
       if (bestSp) {
         placedSprings.push(bestSp);
-        // Target the nearest water basin sink
+        // Target the nearest water basin sink (or nearest island coastline in `island-hopper`!)
         let targetSink = primarySink;
         let minSD = Infinity;
-        for (const b of basins) {
-          const d = Math.hypot(bestSp.x - b.deepX, bestSp.y - b.deepY);
-          if (d < minSD) {
-            minSD = d;
-            targetSink = b;
+        if (arch === 'island-hopper') {
+          for (let wy = Math.max(4, bestSp.y - 45); wy <= Math.min(H - 5, bestSp.y + 45); wy += 3) {
+            for (let wx = Math.max(4, bestSp.x - 45); wx <= Math.min(W - 5, bestSp.x + 45); wx += 3) {
+              if (this.waterMask[this.idx(wx, wy)] === 2) {
+                const d = Math.hypot(bestSp.x - wx, bestSp.y - wy);
+                if (d < minSD) {
+                  minSD = d;
+                  targetSink = { deepX: wx, deepY: wy };
+                }
+              }
+            }
+          }
+        } else {
+          for (const b of basins) {
+            const d = Math.hypot(bestSp.x - b.deepX, bestSp.y - b.deepY);
+            if (d < minSD) {
+              minSD = d;
+              targetSink = b;
+            }
           }
         }
         const rPath = routeValleyThalwegAStar(bestSp.x, bestSp.y, targetSink.deepX, targetSink.deepY, true, sPass * 2.1);
-        carveTaperingRiverPath(rPath, sPass < 2);
+        carveTaperingRiverPath(rPath, sPass < 2 && arch !== 'island-hopper');
       }
     }
 
@@ -979,26 +1125,44 @@ export class ProceduralLogisticsWorld {
       candidateTowns = [...firstPerIsland, ...rest];
     }
 
-    for (let aIdx = 0; aIdx < targetAirports; aIdx++) {
-      const hostTown = candidateTowns[aIdx];
+    for (let tIdx = 0; tIdx < candidateTowns.length && this.airports.length < targetAirports; tIdx++) {
+      const hostTown = candidateTowns[tIdx];
       if (!hostTown) break;
+      // In `island-hopper`, avoid placing 2 airports on the same island while other islands still need one
+      if (
+        isIslandHopper &&
+        tIdx < candidateTowns.length - 2 &&
+        this.airports.some(ap => this.towns[ap.hostTownId].landmassId === hostTown.landmassId)
+      ) {
+        continue;
+      }
 
+      const aIdx = this.airports.length;
       const spec = this.getAirportTierSpec(aIdx);
       const { halfLen, halfWid, approachLen, isHub, airportClass, classLabel, runwayCount, demandPins } = spec;
 
-      // Allow regional airfields to deflect ±22° or ±45° to align with local valley/coastal terrain
-      const angleCandidates = isHub
-        ? [baseRad]
-        : [baseRad, baseRad + Math.PI / 7, baseRad - Math.PI / 7, baseRad + Math.PI / 4];
+      // Allow regional & island airfields to align with local valley or coastal peninsula shelves
+      const angleCandidates = isIslandHopper
+        ? [
+            baseRad,
+            baseRad + Math.PI / 6,
+            baseRad - Math.PI / 6,
+            baseRad + Math.PI / 3,
+            baseRad - Math.PI / 3,
+            baseRad + Math.PI * 0.5
+          ]
+        : isHub
+          ? [baseRad]
+          : [baseRad, baseRad + Math.PI / 7, baseRad - Math.PI / 7, baseRad + Math.PI / 4];
 
       let bestSite = null;
       let bestScore = -1;
 
       const scanR = Math.round(hostTown.urbanRadius + (isHub ? 36 : 28));
-      const y0 = Math.max(14, hostTown.y - scanR);
-      const y1 = Math.min(this.H - 14, hostTown.y + scanR);
-      const x0 = Math.max(14, hostTown.x - scanR);
-      const x1 = Math.min(this.W - 14, hostTown.x + scanR);
+      const y0 = Math.max(10, hostTown.y - scanR);
+      const y1 = Math.min(this.H - 10, hostTown.y + scanR);
+      const x0 = Math.max(10, hostTown.x - scanR);
+      const x1 = Math.min(this.W - 10, hostTown.x + scanR);
 
       for (const rad of angleCandidates) {
         const cosA = Math.cos(rad);
@@ -1011,18 +1175,18 @@ export class ProceduralLogisticsWorld {
 
             const distHost = Math.hypot(cx - hostTown.x, cy - hostTown.y);
             const idealDist = hostTown.urbanRadius + (isHub ? 7.5 : 5.5);
-            if (distHost < hostTown.urbanRadius * 0.82 || distHost > idealDist + 24) continue;
+            if (distHost < hostTown.urbanRadius * (isIslandHopper ? 0.72 : 0.82) || distHost > idealDist + 24) continue;
             const proximityScore = Math.exp(-Math.pow((distHost - idealDist) / 11.0, 2));
 
             const toTownX = hostTown.x - cx;
             const toTownY = hostTown.y - cy;
             const dotNormal = toTownX * (-sinA) + toTownY * cosA;
             const broadsideAlignment = Math.abs(dotNormal) / (distHost || 1);
-            if (broadsideAlignment < 0.34) continue;
+            if (broadsideAlignment < (isIslandHopper ? 0.18 : 0.34)) continue;
             const candidateApronSide = dotNormal >= 0 ? 1 : -1;
             const candLandNx = -sinA * candidateApronSide;
             const candLandNy = cosA * candidateApronSide;
-            const candStubDist = isHub ? 5.8 : 4.6;
+            const candStubDist = isHub ? 5.8 : (isIslandHopper ? 4.0 : 4.6);
 
             let landsideTownsCount = 0;
             let sumMetroX = 0, sumMetroY = 0;
@@ -1037,18 +1201,18 @@ export class ProceduralLogisticsWorld {
                 landsideTownsCount++;
               }
             }
-            if (landsideTownsCount < (isHub && this.towns.length >= 4 ? 2 : 1)) continue;
+            if (!isIslandHopper && landsideTownsCount < (isHub && this.towns.length >= 4 ? 2 : 1)) continue;
             const metroCx = sumMetroX / (this.towns.length || 1);
             const metroCy = sumMetroY / (this.towns.length || 1);
             const toMetroDist = Math.hypot(metroCx - cx, metroCy - cy) || 1;
             const inwardMetroDot = ((metroCx - cx) * candLandNx + (metroCy - cy) * candLandNy) / toMetroDist;
-            if (isHub && inwardMetroDot < -0.25) continue;
+            if (!isIslandHopper && isHub && inwardMetroDot < -0.25) continue;
 
             // 2. NIMBY & Urban Core Exclusion against ALL towns
             let nimbyViolation = false;
             for (const t of this.towns) {
               const dTown = Math.hypot(cx - t.x, cy - t.y);
-              if (dTown < t.urbanRadius * 0.80 + (isHub ? 2.2 : 1.2)) {
+              if (dTown < t.urbanRadius * (isIslandHopper ? 0.72 : 0.80) + (isHub ? 1.8 : 1.0)) {
                 nimbyViolation = true;
                 break;
               }
@@ -1058,7 +1222,7 @@ export class ProceduralLogisticsWorld {
             // 3. Minimum airspace separation from already placed airports
             let tooCloseToAirport = false;
             for (const ap of this.airports) {
-              if (Math.hypot(cx - ap.x, cy - ap.y) < 42) {
+              if (Math.hypot(cx - ap.x, cy - ap.y) < (isIslandHopper ? 34 : 42)) {
                 tooCloseToAirport = true;
                 break;
               }
@@ -1069,8 +1233,9 @@ export class ProceduralLogisticsWorld {
             let landOk = true;
             let slopeSum = 0;
             let obbCount = 0;
-            for (let u = -halfLen - 2.0; u <= halfLen + 2.0; u += 1.5) {
-              for (let v = -halfWid - 2.0; v <= candStubDist + 2.0; v += 1.5) {
+            const obbPad = isIslandHopper ? 0.8 : 2.0;
+            for (let u = -halfLen - obbPad; u <= halfLen + obbPad; u += 1.5) {
+              for (let v = -halfWid - obbPad; v <= candStubDist + obbPad; v += 1.5) {
                 const gx = Math.round(cx + u * cosA + v * candLandNx);
                 const gy = Math.round(cy + u * sinA + v * candLandNy);
                 if (!this.inBounds(gx, gy, 5) || this.waterMask[this.idx(gx, gy)] > 0) {
@@ -1084,11 +1249,11 @@ export class ProceduralLogisticsWorld {
             }
             if (!landOk) continue;
             const avgSlope = obbCount > 0 ? slopeSum / obbCount : 0;
-            if (avgSlope > 0.36) continue;
+            if (avgSlope > (isIslandHopper ? 0.44 : 0.36)) continue;
 
             const candGateX = Math.round(cx + candLandNx * candStubDist);
             const candGateY = Math.round(cy + candLandNy * candStubDist);
-            if (!this.inBounds(candGateX, candGateY, 6) || this.distToWater[this.idx(candGateX, candGateY)] < 2.6) {
+            if (!this.inBounds(candGateX, candGateY, 6) || this.distToWater[this.idx(candGateX, candGateY)] < (isIslandHopper ? 1.4 : 2.6)) {
               continue;
             }
 
@@ -1712,7 +1877,10 @@ export class ProceduralLogisticsWorld {
             if (!this.inBounds(gx, gy, 2)) continue;
             const id = this.idx(gx, gy);
             if (this.waterMask[id] > 0) continue;
-            const elevPenalty = Math.max(0, this.elevationField[id] - brElev) * 30.0 + this.slopeField[id] * 11.0;
+            const isIH = this.config.archetype === 'island-hopper';
+            const elevPenalty =
+              Math.max(0, this.elevationField[id] - brElev) * (isIH ? 14.0 : 30.0) +
+              this.slopeField[id] * (isIH ? 5.0 : 11.0);
             const nJitter = this.noise.fbm(gx * 0.11, gy * 0.11, 2) * 3.8;
             const d = Math.hypot(dx, dy) + elevPenalty + nJitter;
             if (d <= bR + 1.2) {
@@ -1877,11 +2045,12 @@ export class ProceduralLogisticsWorld {
       return false;
     };
 
+    const isIH = this.config.archetype === 'island-hopper';
     const isPassable = (x, y) => {
       if (!this.inBounds(x, y, 3)) return false;
       const id = this.idx(x, y);
       if (this.waterMask[id] !== 0 || this.buildingMask[id] !== 0 || this.distToWater[id] < 1.15) return false;
-      if (this.slopeField[id] > 0.46 || this.elevationField[id] - baseElev > 0.14) return false;
+      if (this.slopeField[id] > (isIH ? 0.58 : 0.46) || this.elevationField[id] - baseElev > (isIH ? 0.22 : 0.14)) return false;
       if (hasParallelNeighbor(x, y)) return false;
       return true;
     };
@@ -1929,10 +2098,12 @@ export class ProceduralLogisticsWorld {
       ? town.boroughs
       : [{ x: town.x, y: town.y, r: R }];
 
+    const isIH = this.config.archetype === 'island-hopper';
+    const ihScale = isIH ? 0.68 : 1.0;
     const baseCom = town.tier === 1 ? 11 : (town.tier === 2 ? 5 : (town.tier === 3 ? 2 : 1));
     const baseInd = town.tier === 1 ? 6 : (town.tier === 2 ? 3 : (town.tier === 3 ? 2 : 1));
-    const targetCom = Math.max(1, Math.round(baseCom * Math.pow(densityMult, 0.70)));
-    const targetInd = Math.max(1, Math.round(baseInd * Math.pow(densityMult, 0.66)));
+    const targetCom = Math.max(1, Math.round(baseCom * ihScale * Math.pow(densityMult, 0.70)));
+    const targetInd = Math.max(1, Math.round(baseInd * ihScale * Math.pow(densityMult, 0.66)));
 
     // Asymmetric directional sector angle for industrial zoning (so industrial districts form distinct clusters/yards)
     const indSectorAngle = this.rng.range(0, Math.PI * 2);
@@ -2774,13 +2945,17 @@ export class ProceduralLogisticsWorld {
         const wWeight = this.waterMask[id] === 2 ? 1.25 : 1.0;
         waterArc += segLen * wWeight;
         totalWaterArc += segLen * wWeight;
-        // Hard invariant 6: Never build long causeways across wide open lakes/bays!
-        // Expressways may cross rivers and narrow straits (<= 22 weighted tiles), never open lakes/sounds.
-        if (waterArc > 22.0 || totalWaterArc > 30.0) {
+        // Hard invariant 6: Never build long causeways across wide open lakes/bays/sea channels!
+        const isIH = this.config.archetype === 'island-hopper';
+        if (waterArc > (isIH ? 13.5 : 22.0) || totalWaterArc > (isIH ? 16.5 : 30.0)) {
           return Infinity;
         }
         penalty += segLen * (this.waterMask[id] === 2 ? 4.8 : 2.8);
       } else {
+        // In `island-hopper`, never use a tiny uninhabited skerry (`landmassId < 0`) as a motorway bridge pier!
+        if (this.config.archetype === 'island-hopper' && this.landmassId[id] < 0) {
+          return Infinity;
+        }
         waterArc = 0;
         if (this.distToWater[id] < 1.8) penalty += segLen * 0.6;
         // Topographic valley preference (weighted by segLen so sample density never biases the score!)
@@ -4097,6 +4272,7 @@ export class ProceduralLogisticsWorld {
   }
 
   populateLandscapeTrees() {
+    const isIslandHopper = this.config.archetype === 'island-hopper';
     // Generate coherent upland woodland groves & riparian tree clusters (no confetti sprinkles!)
     for (let y = 5; y < this.H - 5; y += 3) {
       for (let x = 5; x < this.W - 5; x += 3) {
@@ -4104,13 +4280,14 @@ export class ProceduralLogisticsWorld {
         if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) continue;
         if (this.zoneColorIdx[id] >= 0) continue; // Keep urban districts clean
         const dWater = this.distToWater[id];
-        if (dWater < 4.2) continue;
+        const isSmallIslet = isIslandHopper && this.landmassId[id] < 0;
+        if (dWater < (isSmallIslet ? 1.5 : 4.2)) continue;
 
         const hillHeight = Math.max(0, this.elevationField[id] - this.seaLevel);
         const forestPatch = this.noise.fbm(x * 0.055 + 3.1, y * 0.055 + 8.4, 2);
-        // Concentrate woodlands in upland hill bands (`hillHeight > 0.13`) and coherent forest groves
-        if (hillHeight > 0.13 && forestPatch + hillHeight * 0.75 > 0.66) {
-          const groveCount = this.rng.int(2, 4);
+        // Concentrate woodlands in upland hill bands (`hillHeight > 0.13`), or on uninhabited satellite islets
+        if ((hillHeight > 0.13 && forestPatch + hillHeight * 0.75 > 0.66) || (isSmallIslet && forestPatch > 0.42)) {
+          const groveCount = isSmallIslet ? this.rng.int(1, 3) : this.rng.int(2, 4);
           for (let g = 0; g < groveCount; g++) {
             const tx = x + this.rng.range(-1.3, 1.3);
             const ty = y + this.rng.range(-1.3, 1.3);
