@@ -237,25 +237,25 @@
         <div>
           <div class="flex justify-between text-xs font-semibold mb-1">
             <span>Town & Settlement Count</span>
-            <span id="valTowns" class="mono text-[11px] text-stone-600">8 Towns</span>
+            <span id="valTowns" class="mono text-[11px] text-stone-600">16 Towns</span>
           </div>
-          <input id="sliderTowns" type="range" min="4" max="12" value="8" class="w-full" />
+          <input id="sliderTowns" type="range" min="8" max="24" value="16" class="w-full" />
         </div>
 
         <div>
           <div class="flex justify-between text-xs font-semibold mb-1">
             <span>Building & Urban Density</span>
-            <span id="valDensity" class="mono text-[11px] text-stone-600">100%</span>
+            <span id="valDensity" class="mono text-[11px] text-stone-600">250%</span>
           </div>
-          <input id="sliderDensity" type="range" min="25" max="250" value="100" step="5" class="w-full" />
+          <input id="sliderDensity" type="range" min="50" max="350" value="250" step="10" class="w-full" />
         </div>
 
         <div>
           <div class="flex justify-between text-xs font-semibold mb-1">
-            <span>Target Airports (1 Hub + Regional)</span>
-            <span id="valAirports" class="mono text-[11px] text-stone-600">3 (1 Hub, 2 Reg)</span>
+            <span>Target Airports (Hubs + Regional)</span>
+            <span id="valAirports" class="mono text-[11px] text-stone-600">5 (1 Hub, 4 Reg)</span>
           </div>
-          <input id="sliderAirports" type="range" min="1" max="5" value="3" class="w-full" />
+          <input id="sliderAirports" type="range" min="2" max="8" value="5" class="w-full" />
         </div>
 
         <div>
@@ -270,7 +270,7 @@
       <!-- Generation Pipeline Telemetry Summary -->
       <div class="bg-white/70 rounded-xl p-3 border border-stone-200/80 space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-[11px] font-bold uppercase tracking-wider text-stone-500">Generation Telemetry (192×120 Grid)</span>
+          <span class="text-[11px] font-bold uppercase tracking-wider text-stone-500">State Telemetry (360×224 Grid)</span>
           <span id="genTimeBadge" class="mono text-[10px] font-bold text-stone-500">42 ms</span>
         </div>
         <div class="grid grid-cols-3 gap-1.5 text-center">
@@ -523,9 +523,9 @@
     class ProceduralLogisticsWorld {
       constructor(config) {
         this.config = config;
-        this.W = 192; // Expanded grid width in tiles to accommodate hubs & cloverleafs
-        this.H = 120; // Expanded grid height in tiles
-        this.tileSize = 18; // Base world pixel size per tile
+        this.W = 360; // OpenTTD State/Region scale width in tiles
+        this.H = 224; // OpenTTD State/Region scale height in tiles
+        this.tileSize = 15; // Base world pixel size per tile
 
         // Flat TypedArrays for fast spatial fields
         const size = this.W * this.H;
@@ -540,11 +540,13 @@
 
         // High-level generated entities
         this.rivers = [];
+        this.hydroFeatures = []; // Multiple regional hydro landmarks (confluences, bays, lake basins)
+        this.clusters = [];      // Metropolitan conurbation clusters across the state
         this.towns = [];
         this.airports = [];
         this.roads = [];        // Graph edges for vector rendering & pathfinding
         this.motorways = [];    // Numbered expressways
-        this.interchanges = []; // Cloverleafs, Street-Stub Terminations & Intermediate Diamond Ramps
+        this.interchanges = []; // Cloverleafs, Trumpets, Street-Stubs & Intermediate Diamond Ramps
         this.houses = [];
         this.destinations = [];
         this.trees = [];
@@ -626,84 +628,128 @@
         const { W, H } = this;
         const waterRatio = this.config.waterCoverage / 100; // 0.20 .. 0.80
         const arch = this.config.archetype;
+        this.hydroFeatures = [];
 
-        // 2A. Base Coastal / Lake Water Bodies via Domain-Warped FBM
+        // 2A. Regional Macro-Water Bodies (Coastal Bays, Sounds, or Great Lakes) via Domain-Warped FBM
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
             const nx = x / W;
             const ny = y / H;
-            const warpX = this.noise.fbm(nx * 2.0 + 4.1, ny * 2.0 + 1.7, 2) * 0.14;
-            const warpY = this.noise.fbm(nx * 2.0 + 8.3, ny * 2.0 + 6.2, 2) * 0.14;
-            // Lower octave count (2 octaves) prevents high-frequency pixel stippling on coastlines
-            const n = this.noise.fbm((nx + warpX) * 2.4, (ny + warpY) * 2.4, 2);
+            const warpX = this.noise.fbm(nx * 2.2 + 4.1, ny * 2.2 + 1.7, 2) * 0.14;
+            const warpY = this.noise.fbm(nx * 2.2 + 8.3, ny * 2.2 + 6.2, 2) * 0.14;
+            const n = this.noise.fbm((nx + warpX) * 2.6, (ny + warpY) * 2.6, 2);
 
-            let seaScore = 0;
             if (arch === 'estuary') {
-              // Major ocean bay on one side
-              const edgeBias = Math.pow(Math.max(0, (nx - 0.62) / 0.38), 1.4) * 0.75 +
-                               Math.pow(Math.max(0, (ny - 0.68) / 0.32), 1.5) * 0.55;
-              seaScore = n * 0.55 + edgeBias;
-              if (seaScore > 0.78 - waterRatio * 0.32) this.waterMask[this.idx(x, y)] = 2;
+              // Major coastal bay & sound on one side + secondary harbor bay on opposite corner
+              const eastBay = Math.pow(Math.max(0, (nx - 0.66) / 0.34), 1.35) * 0.72 +
+                              Math.pow(Math.max(0, (ny - 0.62) / 0.38), 1.45) * 0.55;
+              const nwSound = Math.pow(Math.max(0, (0.28 - nx) / 0.28), 1.5) *
+                              Math.pow(Math.max(0, (0.34 - ny) / 0.34), 1.5) * 0.78;
+              const seaScore = n * 0.54 + Math.max(eastBay, nwSound);
+              if (seaScore > 0.78 - waterRatio * 0.30) this.waterMask[this.idx(x, y)] = 2;
             } else if (arch === 'archipelago') {
               const distCenter = Math.hypot(nx - 0.5, ny - 0.5);
-              seaScore = n * 0.75 + distCenter * 0.35;
-              if (seaScore > 0.74 - waterRatio * 0.3) this.waterMask[this.idx(x, y)] = 2;
+              const channelWave = Math.sin((nx * 2.2 + ny * 1.4) * Math.PI) * 0.12;
+              const seaScore = n * 0.72 + distCenter * 0.32 + channelWave;
+              if (seaScore > 0.73 - waterRatio * 0.28) this.waterMask[this.idx(x, y)] = 2;
             } else if (arch === 'inland') {
-              // Scattered smooth lakes
-              if (n > 0.78 - waterRatio * 0.22) this.waterMask[this.idx(x, y)] = 2;
+              // Regional Great Lakes basins scattered across the state
+              if (n > 0.76 - waterRatio * 0.23) this.waterMask[this.idx(x, y)] = 2;
+            } else {
+              // 'confluence': Subtle coastal delta mouth at southern/eastern edge + highland lakes
+              const deltaMouth = Math.pow(Math.max(0, (ny - 0.80) / 0.20), 1.6) *
+                                 Math.exp(-Math.pow((nx - 0.55) / 0.22, 2)) * 0.55;
+              if (n * 0.58 + deltaMouth > 0.81 - waterRatio * 0.20) {
+                this.waterMask[this.idx(x, y)] = 2;
+              }
             }
           }
         }
 
-        // 2B. Carve Meandering Rivers & Y-Confluences (Like the Mini Motorways reference image!)
-        const mainRiverX = W * this.rng.range(0.45, 0.68);
-        const phase1 = this.rng.range(0, Math.PI * 2);
-        const phase2 = this.rng.range(0, Math.PI * 2);
-        const amp = W * (0.06 + waterRatio * 0.08);
-        const baseRadius = 2.8 + waterRatio * 3.8;
+        // 2B. Primary River System (Western/Central River Basin + Confluence Fork)
+        const river1X = W * this.rng.range(0.32, 0.48);
+        const phase1A = this.rng.range(0, Math.PI * 2);
+        const phase1B = this.rng.range(0, Math.PI * 2);
+        const amp1 = W * (0.055 + waterRatio * 0.055);
+        const baseRad1 = 3.2 + waterRatio * 3.8;
 
-        const spinePoints = [];
+        const spine1 = [];
         for (let y = 0; y < H; y++) {
           const t = y / (H - 1);
-          const wave = Math.sin(t * Math.PI * 2.1 + phase1) * amp +
-                       Math.cos(t * Math.PI * 4.2 + phase2) * (amp * 0.35);
-          const rx = Math.max(18, Math.min(W - 18, mainRiverX + wave));
-          const rad = baseRadius * (0.85 + 0.45 * t); // Widens downstream toward bottom
-          spinePoints.push({ x: rx, y, rad });
+          const wave = Math.sin(t * Math.PI * 2.2 + phase1A) * amp1 +
+                       Math.cos(t * Math.PI * 4.1 + phase1B) * (amp1 * 0.34);
+          const rx = Math.max(22, Math.min(W - 22, river1X + wave + (t - 0.5) * W * 0.08));
+          const rad = baseRad1 * (0.82 + 0.46 * t);
+          spine1.push({ x: rx, y, rad });
           this.carveDisk(rx, y, rad, 1);
         }
 
-        // Carve a Y-shaped Confluence Branch / Delta Fork all the way to the map boundary
-        const forkIdx = Math.floor(H * this.rng.range(0.28, 0.52));
-        const forkOrigin = spinePoints[forkIdx];
-        const forkDir = this.rng.next() > 0.5 ? 1 : -1;
-        let bx = forkOrigin.x;
-        let by = forkOrigin.y;
-        const branchAngle = (forkDir > 0 ? 0.65 : 2.45) + this.rng.range(-0.18, 0.18);
-        for (let step = 0; step < 320; step++) {
-          bx += Math.cos(branchAngle + Math.sin(step * 0.07) * 0.24) * 1.1;
-          by += Math.sin(branchAngle + Math.cos(step * 0.07) * 0.20) * 1.1;
-          if (!this.inBounds(Math.round(bx), Math.round(by), 1)) break;
-          this.carveDisk(bx, by, baseRadius * 0.82, 1);
+        // Primary River Y-Confluence Tributary reaching the western/northern boundary
+        const fork1Idx = Math.floor(H * this.rng.range(0.30, 0.50));
+        const fork1 = spine1[fork1Idx];
+        this.hydroFeatures.push({ x: Math.round(fork1.x), y: Math.round(fork1.y), type: 'confluence' });
+        let bx1 = fork1.x;
+        let by1 = fork1.y;
+        const angle1 = this.rng.range(2.35, 2.72); // Heads NW/W across the western basin
+        for (let step = 0; step < 480; step++) {
+          bx1 += Math.cos(angle1 + Math.sin(step * 0.05) * 0.24) * 1.15;
+          by1 += Math.sin(angle1 + Math.cos(step * 0.05) * 0.20) * 1.15;
+          if (!this.inBounds(Math.round(bx1), Math.round(by1), 1)) break;
+          this.carveDisk(bx1, by1, baseRad1 * 0.80, 1);
         }
 
-        // Optional second tributary reaching the southern boundary cleanly (never a blunt mid-land stump)
-        const splitIdx = Math.floor(H * this.rng.range(0.55, 0.72));
-        const splitOrigin = spinePoints[splitIdx];
-        if (splitOrigin) {
-          let sx = splitOrigin.x - forkDir * 2;
-          let sy = splitOrigin.y;
-          for (let step = 0; step < 220; step++) {
-            sx -= forkDir * 0.48 + Math.sin(step * 0.09) * 0.22;
-            sy += 0.95;
-            if (!this.inBounds(Math.round(sx), Math.round(sy), 1)) break;
-            this.carveDisk(sx, sy, baseRadius * 0.74, 1);
+        // 2C. Secondary Regional River System (Eastern / Cross-State Valley Basin)
+        const river2X = W * this.rng.range(0.68, 0.82);
+        const phase2A = this.rng.range(0, Math.PI * 2);
+        const amp2 = W * (0.045 + waterRatio * 0.045);
+        const baseRad2 = (2.6 + waterRatio * 3.1);
+
+        const spine2 = [];
+        for (let y = 0; y < H; y++) {
+          const t = y / (H - 1);
+          const wave = Math.sin(t * Math.PI * 1.9 + phase2A) * amp2;
+          const rx = Math.max(24, Math.min(W - 24, river2X + wave - t * W * 0.10));
+          const rad = baseRad2 * (0.80 + 0.42 * t);
+          spine2.push({ x: rx, y, rad });
+          this.carveDisk(rx, y, rad, 1);
+        }
+
+        const fork2Idx = Math.floor(H * this.rng.range(0.45, 0.68));
+        const fork2 = spine2[fork2Idx];
+        this.hydroFeatures.push({ x: Math.round(fork2.x), y: Math.round(fork2.y), type: 'eastern-basin' });
+
+        // Carve a cross-basin connecting tributary or eastern fork to the map boundary
+        let bx2 = fork2.x;
+        let by2 = fork2.y;
+        const angle2 = this.rng.range(-0.45, 0.35); // Flows from the eastern highlands
+        for (let step = 0; step < 420; step++) {
+          bx2 += Math.cos(angle2 + Math.sin(step * 0.06) * 0.22) * 1.15;
+          by2 += Math.sin(angle2 + Math.cos(step * 0.06) * 0.20) * 1.15;
+          if (!this.inBounds(Math.round(bx2), Math.round(by2), 1)) break;
+          this.carveDisk(bx2, by2, baseRad2 * 0.76, 1);
+        }
+
+        // 2D. Carve 1-2 Regional Lake Basins / Bay Harbors at headwaters or valley bends
+        const lakeSpots = [
+          { x: Math.round(W * this.rng.range(0.16, 0.28)), y: Math.round(H * this.rng.range(0.62, 0.80)) },
+          { x: Math.round(W * this.rng.range(0.74, 0.86)), y: Math.round(H * this.rng.range(0.20, 0.38)) }
+        ];
+        for (const ls of lakeSpots) {
+          const lakeR = 7.5 + waterRatio * 6.5;
+          for (let a = 0; a < 10; a++) {
+            const ang = (a / 10) * Math.PI * 2;
+            const ox = ls.x + Math.cos(ang) * lakeR * this.rng.range(0.3, 0.7);
+            const oy = ls.y + Math.sin(ang) * lakeR * this.rng.range(0.3, 0.7);
+            if (this.inBounds(Math.round(ox), Math.round(oy), 8)) {
+              this.carveDisk(ox, oy, lakeR * 0.68, 2);
+            }
           }
+          this.hydroFeatures.push({ x: ls.x, y: ls.y, type: 'lake' });
         }
 
-        this.confluencePoint = { x: Math.round(forkOrigin.x), y: Math.round(forkOrigin.y) };
+        this.confluencePoint = this.hydroFeatures[0] || { x: Math.round(W * 0.5), y: Math.round(H * 0.5) };
 
-        // 2C. Morphological Cellular Automata Majority-Smoothing (6 passes for ultra-clean vector coastlines)
+        // 2E. Morphological Cellular Automata Majority-Smoothing (6 passes for ultra-clean vector coastlines)
         for (let pass = 0; pass < 6; pass++) {
           const nextMask = new Uint8Array(this.waterMask);
           for (let y = 1; y < H - 1; y++) {
@@ -775,7 +821,7 @@
           }
         }
 
-        // Compute Alluvial Fertility & Central Place Urban Suitability Field
+        // Compute Multi-Basin Alluvial Fertility & State-Scale Urban Suitability Field
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
             const id = this.idx(x, y);
@@ -785,20 +831,24 @@
               continue;
             }
             const dWater = this.distToWater[id];
-            const baseFert = this.noise.fbm(x * 0.035 + 10, y * 0.035 + 20, 3);
-            // Alluvial bonus near rivers (ideal 3..14 tiles from water)
-            const riverBonus = Math.exp(-Math.pow((dWater - 6.5) / 8.0, 2));
-            const confluenceDist = Math.hypot(x - this.confluencePoint.x, y - this.confluencePoint.y);
-            const confluenceBonus = Math.exp(-confluenceDist / 28.0) * 0.45;
+            const baseFert = this.noise.fbm(x * 0.024 + 10, y * 0.024 + 20, 3);
+            // Alluvial bonus near rivers & bays (ideal 4..16 tiles from water)
+            const riverBonus = Math.exp(-Math.pow((dWater - 7.5) / 9.5, 2));
+
+            let featureBonus = 0;
+            for (const hf of this.hydroFeatures) {
+              const dFeat = Math.hypot(x - hf.x, y - hf.y);
+              featureBonus = Math.max(featureBonus, Math.exp(-dFeat / 42.0) * 0.35);
+            }
 
             // Edge penalty so towns don't spawn clipped at canvas border
             const borderDist = Math.min(x, W - 1 - x, y, H - 1 - y);
-            const borderFactor = Math.min(1, Math.max(0, (borderDist - 9) / 10));
+            const borderFactor = Math.min(1, Math.max(0, (borderDist - 12) / 12));
 
             this.fertilityField[id] = Math.min(1, baseFert * 0.55 + riverBonus * 0.45);
             this.urbanSuitability[id] = Math.min(
               1,
-              (riverBonus * 0.48 + confluenceBonus * 0.32 + baseFert * 0.20) * borderFactor
+              (riverBonus * 0.50 + featureBonus * 0.28 + baseFert * 0.22) * borderFactor
             );
           }
         }
@@ -808,8 +858,8 @@
         const targetCount = this.config.townCount;
         const usedNames = new Set();
         const generateTownName = () => {
-          for (let attempt = 0; attempt < 30; attempt++) {
-            const prefix = this.rng.next() < 0.25 ? this.rng.pick(SYLLABLES_START) : '';
+          for (let attempt = 0; attempt < 40; attempt++) {
+            const prefix = this.rng.next() < 0.28 ? this.rng.pick(SYLLABLES_START) : '';
             const rootA = this.rng.pick(SYLLABLES_PRE);
             const rootB = this.rng.pick(SYLLABLES_ROOT);
             const name = (prefix + rootA + rootB).replace(/\b\w/g, c => c.toUpperCase());
@@ -821,41 +871,59 @@
           return 'Metro ' + (usedNames.size + 1);
         };
 
-        // Central Place Theory Hierarchy:
-        // Tier 1: Metropolis (1-2), Tier 2: Regional Town (2-5), Tier 3: Satellite / Industrial Hub
+        // Multi-Cluster State Settlement Hierarchy:
+        // 1. Seed 3-4 Tier-1 Regional Metropolises widely spaced across distinct quadrants/basins of the state.
+        // 2. Seed Tier-2 Regional Cities & Tier-3 Satellite/Industrial Hubs orbiting those clusters.
+        const numClusters = Math.min(4, Math.max(3, Math.round(targetCount / 4.2)));
+        this.clusters = [];
+
+        // Quadrant sector biases so the Tier-1 Metropolises span the entire state map
+        const sectorCenters = [
+          { x: this.W * 0.24, y: this.H * 0.28 },
+          { x: this.W * 0.76, y: this.H * 0.30 },
+          { x: this.W * 0.26, y: this.H * 0.74 },
+          { x: this.W * 0.74, y: this.H * 0.72 }
+        ];
+
         for (let i = 0; i < targetCount; i++) {
-          const tier = i < 2 ? 1 : (i < 5 ? 2 : 3);
-          const minSpacing = tier === 1 ? 44 : (tier === 2 ? 31 : 23);
+          const isClusterAnchor = i < numClusters;
+          const tier = isClusterAnchor ? 1 : (i < numClusters * 2 + 1 ? 2 : 3);
+          const minSpacing = tier === 1 ? 88 : (tier === 2 ? 32 : 22);
+          const parentCluster = !isClusterAnchor && this.clusters.length > 0
+            ? this.clusters[(i - numClusters) % this.clusters.length]
+            : null;
 
           let bestScore = -1;
           let bestPt = null;
 
-          // Sample candidate locations across the suitability field
-          for (let y = 14; y < this.H - 14; y += 2) {
-            for (let x = 14; x < this.W - 14; x += 2) {
+          for (let y = 18; y < this.H - 18; y += 3) {
+            for (let x = 18; x < this.W - 18; x += 3) {
               const id = this.idx(x, y);
-              if (this.waterMask[id] > 0 || this.distToWater[id] < 4.0) continue;
+              if (this.waterMask[id] > 0 || this.distToWater[id] < 4.5) continue;
 
-              // Check inhibition distance to existing towns
               let tooClose = false;
-              let minDistExisting = 999;
               for (const t of this.towns) {
                 const d = Math.hypot(x - t.x, y - t.y);
-                if (d < minSpacing) {
+                const reqDist = (isClusterAnchor && t.tier === 1) ? 88 : Math.max(minSpacing, t.urbanRadius + 10);
+                if (d < reqDist) {
                   tooClose = true;
                   break;
                 }
-                if (d < minDistExisting) minDistExisting = d;
               }
               if (tooClose) continue;
 
-              // Encourage towns on BOTH sides of the river system for rich bridge/logistics networks
-              let score = this.urbanSuitability[id] + this.rng.range(-0.04, 0.04);
-              if (this.towns.length > 0 && i === 1) {
-                // Second metropolis prefers opposite bank of river if possible
-                if (Math.sign(x - this.confluencePoint.x) !== Math.sign(this.towns[0].x - this.confluencePoint.x)) {
-                  score += 0.25;
-                }
+              let score = this.urbanSuitability[id] * 0.75 + this.rng.range(-0.03, 0.03);
+
+              if (isClusterAnchor) {
+                const sec = sectorCenters[i % sectorCenters.length];
+                const dSec = Math.hypot(x - sec.x, y - sec.y);
+                score += Math.exp(-Math.pow(dSec / (this.W * 0.26), 2)) * 0.42;
+              } else if (parentCluster) {
+                // Orbiting satellite town around its parent Metropolis (ideal 30..58 tiles away)
+                const dParent = Math.hypot(x - parentCluster.x, y - parentCluster.y);
+                if (dParent > 95) continue;
+                const orbitBonus = Math.exp(-Math.pow((dParent - 40) / 22, 2)) * 0.48;
+                score += orbitBonus;
               }
 
               if (score > bestScore) {
@@ -866,14 +934,16 @@
           }
 
           if (bestPt) {
-            const colorIdx = i % PALETTE.districtColors.length;
-            const tierTitle = tier === 1 ? 'Metropolis' : (tier === 2 ? 'Regional Town' : 'Industrial Hub');
-            const urbanRadius = tier === 1 ? 17 : (tier === 2 ? 13 : 9);
+            const clusterId = isClusterAnchor ? i : (parentCluster ? parentCluster.clusterId : 0);
+            const colorIdx = (isClusterAnchor ? i : clusterId + (i % 2)) % PALETTE.districtColors.length;
+            const tierTitle = tier === 1 ? 'Metropolis' : (tier === 2 ? 'Regional City' : 'Industrial Town');
+            const urbanRadius = tier === 1 ? 19 : (tier === 2 ? 14 : 10);
             const name = generateTownName();
             const iata = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
 
-            this.towns.push({
-              id: i,
+            const townObj = {
+              id: this.towns.length,
+              clusterId,
               name,
               iata,
               tier,
@@ -883,14 +953,20 @@
               urbanRadius,
               colorIdx,
               palette: PALETTE.districtColors[colorIdx],
-              suitabilityScore: Math.round(bestPt.score * 100),
+              suitabilityScore: Math.round(Math.min(99, bestPt.score * 100)),
               housesCount: 0,
               destinationsCount: 0,
               airportId: null
-            });
+            };
+            this.towns.push(townObj);
+            if (isClusterAnchor) {
+              this.clusters.push(townObj);
+            }
           }
         }
-        this.logs.push(`Seeded <b>${this.towns.length} settlements</b> via Central Place Hierarchy.`);
+        this.logs.push(
+          `Seeded <b>${this.towns.length} settlements</b> across <b>${this.clusters.length} urban clusters</b>.`
+        );
       }
 
       /*************************************************************************
@@ -955,17 +1031,23 @@
           let bestSite = null;
           let bestScore = -1;
 
-          // Scan map to populate the diagnostic Airport Suitability Heatmap
-          for (let cy = 14; cy < this.H - 14; cy += 2) {
+          // Scan map around the host town to populate the diagnostic Airport Suitability Heatmap
+          const scanR = Math.round(hostTown.urbanRadius + (isHub ? 42 : 34));
+          const y0 = Math.max(16, hostTown.y - scanR);
+          const y1 = Math.min(this.H - 16, hostTown.y + scanR);
+          const x0 = Math.max(16, hostTown.x - scanR);
+          const x1 = Math.min(this.W - 16, hostTown.x + scanR);
+
+          for (let cy = y0; cy <= y1; cy += 2) {
             // 1. Peri-urban distance bell-curve to host town CBD
-            for (let cx = 14; cx < this.W - 14; cx += 2) {
+            for (let cx = x0; cx <= x1; cx += 2) {
               const id = this.idx(cx, cy);
               if (this.waterMask[id] > 0) continue;
 
               const distHost = Math.hypot(cx - hostTown.x, cy - hostTown.y);
-              const idealDist = hostTown.urbanRadius + (isHub ? 9.5 : 7.0);
-              if (distHost < hostTown.urbanRadius * 0.82 || distHost > idealDist + 28) continue;
-              const proximityScore = Math.exp(-Math.pow((distHost - idealDist) / 12.5, 2));
+              const idealDist = hostTown.urbanRadius + (isHub ? 10.0 : 7.5);
+              if (distHost < hostTown.urbanRadius * 0.85 || distHost > idealDist + 28) continue;
+              const proximityScore = Math.exp(-Math.pow((distHost - idealDist) / 13.0, 2));
 
               // Ensure the airport terminal broadside faces the host town and also has strong
               // regional landside connectivity so the airport gate never faces an empty map corner.
@@ -988,7 +1070,7 @@
                 const ody = otherT.y - cy;
                 const odist = Math.hypot(odx, ody);
                 const oLandV = odx * candLandNx + ody * candLandNy;
-                if (oLandV >= 6.0 && odist >= 20 && odist <= 105) {
+                if (oLandV >= 6.0 && odist >= 20 && odist <= 185) {
                   landsideTownsCount++;
                 }
               }
@@ -997,7 +1079,7 @@
               const metroCy = sumMetroY / (this.towns.length || 1);
               const toMetroDist = Math.hypot(metroCx - cx, metroCy - cy) || 1;
               const inwardMetroDot = ((metroCx - cx) * candLandNx + (metroCy - cy) * candLandNy) / toMetroDist;
-              if (isHub && inwardMetroDot < -0.15) continue;
+              if (isHub && inwardMetroDot < -0.25) continue;
 
               // 2. NIMBY & Urban Core Exclusion against ALL towns
               let nimbyViolation = false;
@@ -1013,7 +1095,7 @@
               // 3. Minimum airspace separation from already placed airports
               let tooCloseToAirport = false;
               for (const ap of this.airports) {
-                if (Math.hypot(cx - ap.x, cy - ap.y) < 42) {
+                if (Math.hypot(cx - ap.x, cy - ap.y) < 48) {
                   tooCloseToAirport = true;
                   break;
                 }
@@ -1386,8 +1468,43 @@
         const parent = new Int32Array(W * H).fill(-1);
         const closed = new Uint8Array(W * H);
 
-        // Simple priority queue
-        const open = [{ id: startId, f: 0 }];
+        // O(log N) binary min-heap priority queue for fast state-scale A* pathfinding
+        const heapId = [startId];
+        const heapF = [0];
+        const heapPush = (id, f) => {
+          let i = heapId.length;
+          heapId.push(id);
+          heapF.push(f);
+          while (i > 0) {
+            const p = (i - 1) >> 1;
+            if (heapF[p] <= f) break;
+            heapId[i] = heapId[p];
+            heapF[i] = heapF[p];
+            i = p;
+          }
+          heapId[i] = id;
+          heapF[i] = f;
+        };
+        const heapPopId = () => {
+          const topId = heapId[0];
+          const lastId = heapId.pop();
+          const lastF = heapF.pop();
+          const n = heapId.length;
+          if (n > 0) {
+            let i = 0;
+            while ((i << 1) + 1 < n) {
+              let c = (i << 1) + 1;
+              if (c + 1 < n && heapF[c + 1] < heapF[c]) c++;
+              if (lastF <= heapF[c]) break;
+              heapId[i] = heapId[c];
+              heapF[i] = heapF[c];
+              i = c;
+            }
+            heapId[i] = lastId;
+            heapF[i] = lastF;
+          }
+          return topId;
+        };
         gScore[startId] = 0;
 
         // 8-way octilinear movement (Mini Motorways style 45° and 90° geometry)
@@ -1396,16 +1513,8 @@
           [1, 1, 1.414], [-1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414]
         ];
 
-        while (open.length > 0) {
-          let bestIdx = 0;
-          for (let i = 1; i < open.length; i++) {
-            if (open[i].f < open[bestIdx].f) bestIdx = i;
-          }
-          const curr = open[bestIdx];
-          open[bestIdx] = open[open.length - 1];
-          open.pop();
-
-          const cid = curr.id;
+        while (heapId.length > 0) {
+          const cid = heapPopId();
           if (cid === endId) {
             const path = [];
             let trace = endId;
@@ -1468,7 +1577,7 @@
               gScore[nid] = tentativeG;
               parent[nid] = cid;
               const h = Math.hypot(ex - nx, ey - ny) * 0.95;
-              open.push({ id: nid, f: tentativeG + h });
+              heapPush(nid, tentativeG + h);
             }
           }
         }
@@ -1499,11 +1608,15 @@
        * STAGE 7: URBAN STREET GRIDS, DESTINATIONS & COLOR-CODED HOUSES
        *************************************************************************/
       growUrbanFabric() {
-        const densityMult = (this.config.buildingDensity || 100) / 100;
+        const densityMult = (this.config.buildingDensity || 250) / 100;
 
         for (const town of this.towns) {
-          const R = Math.round(town.urbanRadius * (0.82 + 0.25 * Math.sqrt(densityMult)));
-          const step = densityMult >= 1.45 ? 3 : 4;
+          const R = Math.round(town.urbanRadius * (0.80 + 0.34 * Math.sqrt(densityMult)));
+          const step = densityMult >= 1.35 ? 3 : 4;
+
+          // Ensure the center cross-avenues extend out to the full high-density radius R
+          this.carveStreetFromCenter(town.x, town.y, 1, 0, R, R);
+          this.carveStreetFromCenter(town.x, town.y, 0, 1, R, R);
 
           // 7A. Paint soft pastel urban background zone around the town
           for (let dy = -R - 3; dy <= R + 3; dy++) {
@@ -1519,31 +1632,38 @@
           }
 
           // 7B. Generate organic local street grid segments outward from town center axes
-          // (stops immediately at water or airport boundaries so no orphaned street islands form)
-          for (let offset = -R + 3; offset <= R - 3; offset += step) {
-            if (offset === 0) continue; // Center cross-avenues were already carved in Stage 6
-            const yRow = town.y + offset;
-            if (this.inBounds(town.x, yRow, 4) && this.roadGrid[this.idx(town.x, yRow)] > 0) {
-              const span = Math.floor(Math.sqrt(Math.max(0, R * R - offset * offset)) * this.rng.range(0.65, 0.95));
-              this.carveStreetFromCenter(town.x, yRow, 1, 0, span, span);
-            }
-            const xCol = town.x + offset;
-            if (this.inBounds(xCol, town.y, 4) && this.roadGrid[this.idx(xCol, town.y)] > 0) {
-              const span = Math.floor(Math.sqrt(Math.max(0, R * R - offset * offset)) * this.rng.range(0.65, 0.95));
-              this.carveStreetFromCenter(xCol, town.y, 0, 1, span, span);
+          // (2 passes so secondary cross-streets can branch off newly carved parallel streets)
+          for (let pass = 0; pass < 2; pass++) {
+            for (let offset = -R + 3; offset <= R - 3; offset += step) {
+              if (offset === 0) continue;
+              const span = Math.floor(Math.sqrt(Math.max(0, R * R - offset * offset)) * this.rng.range(0.72, 0.98));
+              const yRow = town.y + offset;
+              for (let probeX = town.x; Math.abs(probeX - town.x) <= Math.min(9, span); probeX += (probeX >= town.x ? 3 : -3)) {
+                if (this.inBounds(probeX, yRow, 4) && this.roadGrid[this.idx(probeX, yRow)] > 0) {
+                  this.carveStreetFromCenter(probeX, yRow, 1, 0, span, span);
+                  break;
+                }
+              }
+              const xCol = town.x + offset;
+              for (let probeY = town.y; Math.abs(probeY - town.y) <= Math.min(9, span); probeY += (probeY >= town.y ? 3 : -3)) {
+                if (this.inBounds(xCol, probeY, 4) && this.roadGrid[this.idx(xCol, probeY)] > 0) {
+                  this.carveStreetFromCenter(xCol, probeY, 0, 1, span, span);
+                  break;
+                }
+              }
             }
           }
 
           // 7C. Place Commercial / Industrial Destination Buildings (scaled by Building Density)
-          const baseDestinations = town.tier === 1 ? 4 : (town.tier === 2 ? 3 : 2);
-          const numDestinations = Math.max(1, Math.round(baseDestinations * densityMult));
+          const baseDestinations = town.tier === 1 ? 5 : (town.tier === 2 ? 3 : 2);
+          const numDestinations = Math.max(1, Math.round(baseDestinations * Math.pow(densityMult, 0.78)));
           for (let dIdx = 0; dIdx < numDestinations; dIdx++) {
             this.tryPlaceDestinationBuilding(town, dIdx === 0, R);
           }
 
           // 7D. Pack Residential Houses along local streets (scaled by Building Density)
-          const baseHouses = town.tier === 1 ? 26 : (town.tier === 2 ? 18 : 11);
-          const targetHouses = Math.max(2, Math.round(baseHouses * densityMult));
+          const baseHouses = town.tier === 1 ? 30 : (town.tier === 2 ? 20 : 12);
+          const targetHouses = Math.max(4, Math.round(baseHouses * densityMult));
           this.tryPlaceNeighborhoodHouses(town, targetHouses, R);
         }
       }
@@ -2372,7 +2492,7 @@
             if (!this.isTrumpetFootprintDry(hitPt.x, hitPt.y, angleMain, sideSign)) continue;
 
             const chord = Math.hypot(hitPt.x - originX, hitPt.y - originY);
-            if (chord < 14 || chord > 82) continue;
+            if (chord < 14 || chord > 145) continue;
 
             // Ensure the origin lies beside the trunk (not collinearly beyond its endpoints)
             // so a spur never overshoots a trunk endpoint to run parallel alongside the trunk.
@@ -2385,16 +2505,16 @@
 
             // Ensure the origin lies on the sideSign half-space of the trunk
             const cosPerp = ((originX - hitPt.x) * outNx + (originY - hitPt.y) * outNy) / (chord || 1);
-            if (cosPerp < 0.28) continue;
+            if (cosPerp < 0.25) continue;
 
             // If departing an airport gate, ensure the trumpet target is reachable from the landside gate
             if (ap) {
               const alignGate = ((hitPt.x - originX) * ap.landNx + (hitPt.y - originY) * ap.landNy) / chord;
-              if (alignGate < (ap.isHub ? -0.15 : 0.15)) continue;
+              if (alignGate < (ap.isHub ? -0.18 : 0.12)) continue;
             }
 
-            const pullStart = ap ? Math.min(20, Math.max(7.5, chord * 0.34)) : chord * 0.34;
-            const pullEnd = Math.min(22, Math.max(8.5, chord * 0.38));
+            const pullStart = ap ? Math.min(26, Math.max(8.0, chord * 0.34)) : chord * 0.34;
+            const pullEnd = Math.min(28, Math.max(9.0, chord * 0.38));
             const p0 = { x: originX, y: originY };
             const p1 = ap
               ? { x: originX + ap.landNx * pullStart, y: originY + ap.landNy * pullStart }
@@ -2596,123 +2716,125 @@
           );
           if (hasMajorIc && arcLen < 48) continue;
 
-          let bestCandidate = null;
-          let bestScore = -Infinity;
+          // Long cross-state interstates (>= 88 tiles) can host up to 2 intermediate slip-ramps
+          const maxRampsForMw = arcLen >= 88 ? 2 : 1;
+          for (let rPass = 0; rPass < maxRampsForMw; rPass++) {
+            let bestCandidate = null;
+            let bestScore = -Infinity;
 
-          const iStart = Math.floor(samples.length * 0.28);
-          const iEnd = Math.ceil(samples.length * 0.72);
+            const iStart = Math.floor(samples.length * 0.22);
+            const iEnd = Math.ceil(samples.length * 0.78);
 
-          for (let i = iStart; i <= iEnd; i += 2) {
-            const pt = samples[i];
-            const gx = Math.round(pt.x);
-            const gy = Math.round(pt.y);
-            if (!this.inBounds(gx, gy, 6)) continue;
-            const id = this.idx(gx, gy);
-            if (this.waterMask[id] > 0 || this.distToWater[id] < 3.4) continue;
-            if (this.buildingMask[id] === 3 || this.isPointInAirportPad(pt.x, pt.y, 3.8)) continue;
+            for (let i = iStart; i <= iEnd; i += 2) {
+              const pt = samples[i];
+              const gx = Math.round(pt.x);
+              const gy = Math.round(pt.y);
+              if (!this.inBounds(gx, gy, 6)) continue;
+              const id = this.idx(gx, gy);
+              if (this.waterMask[id] > 0 || this.distToWater[id] < 3.4) continue;
+              if (this.buildingMask[id] === 3 || this.isPointInAirportPad(pt.x, pt.y, 3.8)) continue;
 
-            if (Math.hypot(pt.x - mw.sx, pt.y - mw.sy) < 16) continue;
-            if (Math.hypot(pt.x - mw.ex, pt.y - mw.ey) < 16) continue;
+              if (Math.hypot(pt.x - mw.sx, pt.y - mw.sy) < 16) continue;
+              if (Math.hypot(pt.x - mw.ex, pt.y - mw.ey) < 16) continue;
 
-            const nearExisting = this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 16);
-            if (nearExisting) continue;
+              const nearExisting = this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 22);
+              if (nearExisting) continue;
 
-            let nearestTown = null;
-            let minTownDist = Infinity;
-            for (const t of this.towns) {
-              const d = Math.hypot(pt.x - t.x, pt.y - t.y);
-              if (d < minTownDist) {
-                minTownDist = d;
-                nearestTown = t;
+              let nearestTown = null;
+              let minTownDist = Infinity;
+              for (const t of this.towns) {
+                const d = Math.hypot(pt.x - t.x, pt.y - t.y);
+                if (d < minTownDist) {
+                  minTownDist = d;
+                  nearestTown = t;
+                }
+              }
+              if (!nearestTown || minTownDist > 42) continue;
+
+              const pPrev = samples[Math.max(0, i - 1)];
+              const pNext = samples[Math.min(samples.length - 1, i + 1)];
+              const angleRad = Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x);
+              const nx = -Math.sin(angleRad);
+              const ny = Math.cos(angleRad);
+              const crossHalf = 2.65;
+
+              const c1x = pt.x + nx * crossHalf;
+              const c1y = pt.y + ny * crossHalf;
+              const c2x = pt.x - nx * crossHalf;
+              const c2y = pt.y - ny * crossHalf;
+              const d1 = Math.hypot(c1x - nearestTown.x, c1y - nearestTown.y);
+              const d2 = Math.hypot(c2x - nearestTown.x, c2y - nearestTown.y);
+              const connSide = d1 <= d2 ? 1 : -1;
+              const termX = connSide > 0 ? c1x : c2x;
+              const termY = connSide > 0 ? c1y : c2y;
+              const startX = Math.max(5, Math.min(this.W - 6, Math.round(termX)));
+              const startY = Math.max(5, Math.min(this.H - 6, Math.round(termY)));
+
+              if (this.waterMask[this.idx(startX, startY)] > 0 || this.distToWater[this.idx(startX, startY)] < 2.5) continue;
+              if (this.isPointInAirportPad(termX, termY, 2.5)) continue;
+
+              const score = 50 - minTownDist;
+              if (score > bestScore) {
+                bestScore = score;
+                bestCandidate = {
+                  x: pt.x,
+                  y: pt.y,
+                  angleRad,
+                  connSide,
+                  termX,
+                  termY,
+                  startX,
+                  startY,
+                  nearestTown
+                };
               }
             }
-            if (!nearestTown || minTownDist > 36) continue;
 
-            const pPrev = samples[Math.max(0, i - 1)];
-            const pNext = samples[Math.min(samples.length - 1, i + 1)];
-            const angleRad = Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x);
-            const nx = -Math.sin(angleRad);
-            const ny = Math.cos(angleRad);
-            const crossHalf = 2.65;
+            if (bestCandidate) {
+              const { x, y, angleRad, connSide, termX, termY, startX, startY, nearestTown } = bestCandidate;
+              const cosA = Math.cos(angleRad);
+              const sinA = Math.sin(angleRad);
+              const nx = -sinA;
+              const ny = cosA;
 
-            const c1x = pt.x + nx * crossHalf;
-            const c1y = pt.y + ny * crossHalf;
-            const c2x = pt.x - nx * crossHalf;
-            const c2y = pt.y - ny * crossHalf;
-            const d1 = Math.hypot(c1x - nearestTown.x, c1y - nearestTown.y);
-            const d2 = Math.hypot(c2x - nearestTown.x, c2y - nearestTown.y);
-            const connSide = d1 <= d2 ? 1 : -1;
-            const termX = connSide > 0 ? c1x : c2x;
-            const termY = connSide > 0 ? c1y : c2y;
-            const startX = Math.max(5, Math.min(this.W - 6, Math.round(termX)));
-            const startY = Math.max(5, Math.min(this.H - 6, Math.round(termY)));
+              this.pruneUnderpassRoadsAtRamp(x, y, angleRad, connSide);
 
-            if (this.waterMask[this.idx(startX, startY)] > 0 || this.distToWater[this.idx(startX, startY)] < 2.5) continue;
-            if (this.isPointInAirportPad(termX, termY, 2.5)) continue;
+              const blockUnderpassFn = (tx, ty) => {
+                const dx = tx - x;
+                const dy = ty - y;
+                const u = dx * cosA + dy * sinA;
+                const v = (dx * nx + dy * ny) * connSide;
+                if (Math.abs(u) < 16 && v < 1.6) return true;
+                for (let s = 0; s < samples.length; s += 2) {
+                  if (Math.hypot(tx - samples[s].x, ty - samples[s].y) < 1.6) return true;
+                }
+                return false;
+              };
 
-            const score = 45 - minTownDist;
-            if (score > bestScore) {
-              bestScore = score;
-              bestCandidate = {
-                x: pt.x,
-                y: pt.y,
-                angleRad,
+              const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false, blockUnderpassFn);
+              if (!connectorPath || connectorPath.length < 2) continue;
+
+              this.displaceBuildingsInRadius(x, y, 3.4);
+              this.displaceBuildingsInRadius(termX, termY, 2.5);
+
+              const fullStubPath = [{ x: termX, y: termY, isBridge: false }, ...connectorPath];
+              this.commitRoadPath(fullStubPath, 'arterial');
+
+              this.interchanges.push({
+                type: 'diamond-ramp',
+                x,
+                y,
                 connSide,
                 termX,
                 termY,
-                startX,
-                startY,
-                nearestTown
-              };
+                connectX: startX,
+                connectY: startY,
+                angleRad,
+                mwayNumber: mw.number,
+                townName: nearestTown.name,
+                label: `M-${mw.number} / ${nearestTown.name} Slip-Ramp`
+              });
             }
-          }
-
-          if (bestCandidate) {
-            const { x, y, angleRad, connSide, termX, termY, startX, startY, nearestTown } = bestCandidate;
-            const cosA = Math.cos(angleRad);
-            const sinA = Math.sin(angleRad);
-            const nx = -sinA;
-            const ny = cosA;
-
-            // Prune any existing surface underpasses or dead-end street stubs beneath the ramp
-            this.pruneUnderpassRoadsAtRamp(x, y, angleRad, connSide);
-
-            // Prevent the ramp's surface connector path from ever crossing back under the motorway
-            const blockUnderpassFn = (tx, ty) => {
-              const dx = tx - x;
-              const dy = ty - y;
-              const u = dx * cosA + dy * sinA;
-              const v = (dx * nx + dy * ny) * connSide;
-              if (Math.abs(u) < 16 && v < 1.6) return true;
-              for (let s = 0; s < samples.length; s += 2) {
-                if (Math.hypot(tx - samples[s].x, ty - samples[s].y) < 1.6) return true;
-              }
-              return false;
-            };
-
-            const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false, blockUnderpassFn);
-            if (!connectorPath || connectorPath.length < 2) continue;
-
-            this.displaceBuildingsInRadius(x, y, 3.4);
-            this.displaceBuildingsInRadius(termX, termY, 2.5);
-
-            const fullStubPath = [{ x: termX, y: termY, isBridge: false }, ...connectorPath];
-            this.commitRoadPath(fullStubPath, 'arterial');
-
-            this.interchanges.push({
-              type: 'diamond-ramp',
-              x,
-              y,
-              connSide,
-              termX,
-              termY,
-              connectX: startX,
-              connectY: startY,
-              angleRad,
-              mwayNumber: mw.number,
-              townName: nearestTown.name,
-              label: `M-${mw.number} / ${nearestTown.name} Slip-Ramp`
-            });
           }
         }
       }
@@ -2721,27 +2843,38 @@
         const algo = this.config.expresswayAlgo || 'gravity-ring';
         let mwayNumber = 1;
 
-        const townPop = (t) => (t.housesCount + t.destinationsCount * 3 + 12) * (t.airportId !== null ? 1.35 : 1);
+        const townPop = (t) => (t.housesCount + t.destinationsCount * 3 + 16) * (t.airportId !== null ? 1.35 : 1) * (t.tier === 1 ? 1.45 : 1.0);
         const townMotorwayDegree = new Int8Array(this.towns.length);
+        const connectedClusters = new Set();
 
-        // 1. Primary Regional Trunk Spine (M-1) between highest-gravity cross-regional town pair
+        const isTownNearAnyMotorway = (town, maxDist = 22) => {
+          for (const mw of this.motorways) {
+            for (let i = 0; i < mw.samples.length; i += 2) {
+              if (Math.hypot(town.x - mw.samples[i].x, town.y - mw.samples[i].y) < maxDist) {
+                return true;
+              }
+            }
+          }
+          return false;
+        };
+
+        // 1. Primary Inter-Cluster Interstate Spine (M-1) between the two highest-gravity Metropolises
         const pairs = [];
         for (let i = 0; i < this.towns.length; i++) {
           for (let j = i + 1; j < this.towns.length; j++) {
             const tA = this.towns[i];
             const tB = this.towns[j];
             const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
-            if (d < 44) continue;
-            const crossBankBonus = Math.sign(tA.x - this.confluencePoint.x) !== Math.sign(tB.x - this.confluencePoint.x) ? 1.38 : 1.0;
-            const spanBell = 0.75 + 0.55 * Math.exp(-Math.pow((d - 64) / 28, 2));
-            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.45)) * crossBankBonus * spanBell;
+            if (d < 52 || d > 215) continue;
+            const diffClusterBonus = tA.clusterId !== tB.clusterId ? 1.55 : 0.75;
+            const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 115) / 48, 2));
+            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.42)) * diffClusterBonus * spanBell;
             pairs.push({ tA, tB, gravity, d });
           }
         }
         pairs.sort((a, b) => b.gravity - a.gravity);
 
         let primaryPair = null;
-        let primaryMidPt = null;
 
         for (const cand of pairs) {
           const { tA, tB } = cand;
@@ -2761,7 +2894,7 @@
             ? this.createTerminalStreetStub(apB, true, tA.x, tA.y)
             : this.createTerminalStreetStub(tB, false, tA.x, tA.y);
 
-          if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 33) {
+          if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 42) {
             if (!useHubGateA) this.removeOrphanedTerminalStub(rampA.x, rampA.y);
             if (!useHubGateB) this.removeOrphanedTerminalStub(rampB.x, rampB.y);
             continue;
@@ -2780,18 +2913,9 @@
             this.motorways.push(mw1);
             townMotorwayDegree[tA.id]++;
             townMotorwayDegree[tB.id]++;
+            connectedClusters.add(tA.clusterId);
+            connectedClusters.add(tB.clusterId);
             primaryPair = cand;
-            const midSample = mw1.samples[Math.floor(mw1.samples.length * 0.5)];
-            const mx = Math.round(midSample.x);
-            const my = Math.round(midSample.y);
-            if (
-              this.inBounds(mx, my, 8) &&
-              this.waterMask[this.idx(mx, my)] === 0 &&
-              this.distToWater[this.idx(mx, my)] >= 3.8 &&
-              !this.isPointInAirportPad(midSample.x, midSample.y, 3.8)
-            ) {
-              primaryMidPt = { x: midSample.x, y: midSample.y };
-            }
             break;
           } else {
             this.removeOrphanedTerminalStub(rampA.x, rampA.y);
@@ -2799,32 +2923,93 @@
           }
         }
 
-        const isTownNearAnyMotorway = (town, maxDist = 18) => {
-          for (const mw of this.motorways) {
-            for (let i = 0; i < mw.samples.length; i += 2) {
-              if (Math.hypot(town.x - mw.samples[i].x, town.y - mw.samples[i].y) < maxDist) {
-                return true;
+        // 2. Connect Remaining Metropolitan Clusters into the State Interstate Network
+        //    (via 3-way Trumpet Spurs onto existing trunks, shared pass-through beltways, or Cloverleafs)
+        const maxStateMotorways = 5;
+        const clusterMetros = [...this.clusters].sort((a, b) => townPop(b) - townPop(a));
+        for (let pass = 0; pass < 2 && this.motorways.length < maxStateMotorways; pass++) {
+          for (const metro of clusterMetros) {
+            if (this.motorways.length >= maxStateMotorways) break;
+            if (connectedClusters.has(metro.clusterId) || isTownNearAnyMotorway(metro, 26)) {
+              connectedClusters.add(metro.clusterId);
+              continue;
+            }
+
+            // 2A. First try a 3-way Trumpet Spur from this Cluster Metropolis into an existing Interstate trunk
+            let bestTargetPt = { x: this.W * 0.5, y: this.H * 0.5 };
+            let minD = Infinity;
+            for (const mw of this.motorways) {
+              for (let s = Math.floor(mw.samples.length * 0.18); s <= Math.ceil(mw.samples.length * 0.82); s += 3) {
+                const d = Math.hypot(metro.x - mw.samples[s].x, metro.y - mw.samples[s].y);
+                if (d < minD) {
+                  minD = d;
+                  bestTargetPt = mw.samples[s];
+                }
+              }
+            }
+
+            const mStub = this.createTerminalStreetStub(metro, false, bestTargetPt.x, bestTargetPt.y);
+            const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, mStub.x, mStub.y, algo, null, metro.id);
+            if (spurRes) {
+              mwayNumber++;
+              this.motorways.push(spurRes.mw);
+              this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+              this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
+              this.interchanges.push(spurRes.trumpetIc);
+              townMotorwayDegree[metro.id]++;
+              connectedClusters.add(metro.clusterId);
+              continue;
+            } else {
+              this.removeOrphanedTerminalStub(mStub.x, mStub.y);
+            }
+
+            // 2B. Otherwise link `metro` to an already-connected hub town via a pass-through beltway or Cloverleaf
+            const hubCandidates = this.towns
+              .filter(t => t.id !== metro.id && (townMotorwayDegree[t.id] === 1 || connectedClusters.has(t.clusterId)))
+              .sort((a, b) => Math.hypot(a.x - metro.x, a.y - metro.y) - Math.hypot(b.x - metro.x, b.y - metro.y));
+
+            for (const hubTown of hubCandidates) {
+              if (townMotorwayDegree[hubTown.id] >= 2) continue;
+              const d = Math.hypot(hubTown.x - metro.x, hubTown.y - metro.y);
+              if (d < 42 || d > 195) continue;
+              const canShare =
+                townMotorwayDegree[hubTown.id] === 1 &&
+                this.findPassThroughStubAtTown(hubTown, metro.x, metro.y) !== null;
+              if (townMotorwayDegree[hubTown.id] >= 1 && !canShare) continue;
+
+              const rA = this.createTerminalStreetStub(metro, false, hubTown.x, hubTown.y);
+              const rB = this.createTerminalStreetStub(hubTown, false, metro.x, metro.y);
+              const mwCluster = this.createMotorwayEntity(mwayNumber, rA.x, rA.y, rB.x, rB.y, algo, null, hubTown.id);
+              const crossesExisting =
+                mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
+              if (mwCluster && (canShare || crossesExisting)) {
+                mwayNumber++;
+                this.motorways.push(mwCluster);
+                townMotorwayDegree[metro.id]++;
+                townMotorwayDegree[hubTown.id]++;
+                connectedClusters.add(metro.clusterId);
+                this.detectAndBuildCloverleafs();
+                break;
+              } else {
+                this.removeOrphanedTerminalStub(rA.x, rA.y);
+                this.removeOrphanedTerminalStub(rB.x, rB.y);
               }
             }
           }
-          return false;
-        };
+        }
 
-        // 2. International Hub & Regional Airport Expressways:
-        // Prioritize connecting the International Hub Airport into the trunk spine via a 3-way Trumpet Spur
-        // or a non-redundant regional corridor to a trunk city.
+        // 3. International Hub & Regional Airport Expressways
         const sortedAirports = [...this.airports].sort((a, b) => (b.isHub ? 1 : 0) - (a.isHub ? 1 : 0));
         for (const ap of sortedAirports) {
           if (ap.motorwayId !== null) continue;
-          if (!ap.isHub && this.motorways.length >= 3) continue;
-          // If an existing motorway already passes right by this regional airport's host town, skip redundant stub
+          if (!ap.isHub && this.motorways.length >= maxStateMotorways) continue;
           const host = this.towns[ap.hostTownId];
-          if (!ap.isHub && host && isTownNearAnyMotorway(host, 19)) continue;
+          if (!ap.isHub && host && isTownNearAnyMotorway(host, 24)) continue;
 
           let builtApMotorway = false;
 
-          // 2A. Try connecting the airport gate directly into an existing trunk motorway via a 3-way Trumpet Interchange
-          const apStubForSpur = this.createTerminalStreetStub(ap, true, ap.x + ap.landNx * 30, ap.y + ap.landNy * 30);
+          // 3A. Try connecting the airport gate directly into an existing trunk motorway via a 3-way Trumpet Interchange
+          const apStubForSpur = this.createTerminalStreetStub(ap, true, ap.x + ap.landNx * 35, ap.y + ap.landNy * 35);
           const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, apStubForSpur.x, apStubForSpur.y, algo, ap.id, ap.hostTownId);
           if (spurRes) {
             ap.motorwayId = mwayNumber++;
@@ -2836,15 +3021,13 @@
             builtApMotorway = true;
           }
 
-          // 2B. Otherwise connect the airport gate to a major landside city hub that links into the trunk network
-          const minAlignPasses = ap.isHub ? [0.40, 0.12] : [0.46];
+          // 3B. Otherwise connect the airport gate to a major landside city hub that links into the trunk network
+          const minAlignPasses = ap.isHub ? [0.38, 0.10] : [0.44];
           for (const minAlign of minAlignPasses) {
             if (builtApMotorway) break;
             const townCandidates = [];
             for (const t of this.towns) {
               if (townMotorwayDegree[t.id] >= 2) continue;
-              // If connecting to a town that already has a motorway, require that it can share
-              // a pass-through beltway roundabout (>= 100°) rather than spawning a second disconnected stub.
               const canSharePassThrough =
                 townMotorwayDegree[t.id] === 1 && this.findPassThroughStubAtTown(t, ap.gateX, ap.gateY) !== null;
               if (townMotorwayDegree[t.id] >= 1 && !canSharePassThrough) continue;
@@ -2862,8 +3045,8 @@
               if (landV < 4.0) continue;
 
               const gateDist = Math.hypot(t.x - ap.gateX, t.y - ap.gateY);
-              const minSpan = ap.isHub ? 18 : 25;
-              if (gateDist < minSpan || gateDist > 110) continue;
+              const minSpan = ap.isHub ? 18 : 26;
+              if (gateDist < minSpan || gateDist > 155) continue;
 
               const alignCos = ((t.x - ap.gateX) * ap.landNx + (t.y - ap.gateY) * ap.landNy) / (gateDist || 1);
               if (alignCos < minAlign) continue;
@@ -2884,7 +3067,7 @@
               const apStub = this.createTerminalStreetStub(ap, true, targetTown.x, targetTown.y);
               const townStub = this.createTerminalStreetStub(targetTown, false, ap.gateX, ap.gateY);
               const stubChord = Math.hypot(townStub.x - apStub.x, townStub.y - apStub.y);
-              if (stubChord < (ap.isHub ? 18 : 22)) {
+              if (stubChord < (ap.isHub ? 18 : 24)) {
                 this.removeOrphanedTerminalStub(townStub.x, townStub.y);
                 continue;
               }
@@ -2906,6 +3089,7 @@
                 townMotorwayDegree[targetTown.id]++;
                 if (host) townMotorwayDegree[host.id]++;
                 builtApMotorway = true;
+                this.detectAndBuildCloverleafs();
                 break;
               } else {
                 this.removeOrphanedTerminalStub(townStub.x, townStub.y);
@@ -2920,126 +3104,35 @@
           }
         }
 
-        this.detectAndBuildCloverleafs();
+        // 4. Additional Regional Spurs for Underserved Tier-1/2 Cities (up to maxStateMotorways)
+        const underservedTowns = [...this.towns]
+          .filter(t => townMotorwayDegree[t.id] === 0 && !isTownNearAnyMotorway(t, 24))
+          .sort((a, b) => townPop(b) - townPop(a));
 
-        // 3. Secondary Regional Corridor: Connect the largest remaining underserved metropolitan pole
-        // into the trunk highway network via a 3-way Trumpet Spur, 4-way Cloverleaf, or beltway extension.
-        if (this.towns.length >= 4 && pairs.length > 1 && primaryPair && this.motorways.length < 3) {
-          const m1Set = new Set([primaryPair.tA.id, primaryPair.tB.id]);
-          const m1Ang = Math.atan2(primaryPair.tB.y - primaryPair.tA.y, primaryPair.tB.x - primaryPair.tA.x);
-
-          let builtRegionalBranch = false;
-          const underservedTowns = [...this.towns]
-            .filter(t => townMotorwayDegree[t.id] === 0 && !isTownNearAnyMotorway(t, 16))
-            .sort((a, b) => townPop(b) - townPop(a));
-
-          // 3A. Try a clean 3-way Trumpet Spur from the top underserved regional town into an existing trunk motorway
-          for (const uTown of underservedTowns) {
-            let targetPt = primaryMidPt || { x: this.W * 0.5, y: this.H * 0.5 };
-            let minTrunkD = Infinity;
-            for (const mw of this.motorways) {
-              for (let s = Math.floor(mw.samples.length * 0.2); s <= Math.ceil(mw.samples.length * 0.8); s += 3) {
-                const d = Math.hypot(uTown.x - mw.samples[s].x, uTown.y - mw.samples[s].y);
-                if (d < minTrunkD) {
-                  minTrunkD = d;
-                  targetPt = mw.samples[s];
-                }
+        for (const uTown of underservedTowns) {
+          if (this.motorways.length >= maxStateMotorways) break;
+          let targetPt = { x: this.W * 0.5, y: this.H * 0.5 };
+          let minTrunkD = Infinity;
+          for (const mw of this.motorways) {
+            for (let s = Math.floor(mw.samples.length * 0.2); s <= Math.ceil(mw.samples.length * 0.8); s += 3) {
+              const d = Math.hypot(uTown.x - mw.samples[s].x, uTown.y - mw.samples[s].y);
+              if (d < minTrunkD) {
+                minTrunkD = d;
+                targetPt = mw.samples[s];
               }
-            }
-            const stub = this.createTerminalStreetStub(uTown, false, targetPt.x, targetPt.y);
-            const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, stub.x, stub.y, algo, null, uTown.id);
-            if (spurRes) {
-              mwayNumber++;
-              this.motorways.push(spurRes.mw);
-              this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
-              this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
-              this.interchanges.push(spurRes.trumpetIc);
-              townMotorwayDegree[uTown.id]++;
-              builtRegionalBranch = true;
-              break;
-            } else {
-              this.removeOrphanedTerminalStub(stub.x, stub.y);
             }
           }
-
-          // 3B. Otherwise build a transverse cross-corridor (via Cloverleaf) or pass-through beltway extension
-          if (!builtRegionalBranch) {
-            const secCandidates = [];
-            for (const cand of pairs) {
-              if (cand === primaryPair) continue;
-              const sharedCount = (m1Set.has(cand.tA.id) ? 1 : 0) + (m1Set.has(cand.tB.id) ? 1 : 0);
-              if (sharedCount >= 2) continue;
-
-              const cAng = Math.atan2(cand.tB.y - cand.tA.y, cand.tB.x - cand.tA.x);
-              const sinCross = Math.abs(Math.sin(cAng - m1Ang));
-
-              const midCx = (cand.tA.x + cand.tB.x) * 0.5;
-              const midCy = (cand.tA.y + cand.tB.y) * 0.5;
-              const midM1x = (primaryPair.tA.x + primaryPair.tB.x) * 0.5;
-              const midM1y = (primaryPair.tA.y + primaryPair.tB.y) * 0.5;
-              if (sinCross < 0.48 && Math.hypot(midCx - midM1x, midCy - midM1y) < 34) continue;
-
-              let useVia = null;
-              if (primaryMidPt && sharedCount === 0 && sinCross >= 0.75) {
-                const vx1 = primaryMidPt.x - cand.tA.x;
-                const vy1 = primaryMidPt.y - cand.tA.y;
-                const vx2 = cand.tB.x - primaryMidPt.x;
-                const vy2 = cand.tB.y - primaryMidPt.y;
-                const l1 = Math.hypot(vx1, vy1) || 1;
-                const l2 = Math.hypot(vx2, vy2) || 1;
-                const cosDeflect = (vx1 * vx2 + vy1 * vy2) / (l1 * l2);
-                if (cosDeflect >= 0.86 && l1 >= 22 && l2 >= 22) {
-                  useVia = primaryMidPt;
-                }
-              }
-
-              // If either endpoint town already has a motorway, it must be able to share its pass-through stub
-              const shareA = townMotorwayDegree[cand.tA.id] === 1
-                ? this.findPassThroughStubAtTown(cand.tA, cand.tB.x, cand.tB.y) !== null
-                : false;
-              const shareB = townMotorwayDegree[cand.tB.id] === 1
-                ? this.findPassThroughStubAtTown(cand.tB, cand.tA.x, cand.tA.y) !== null
-                : false;
-              if (townMotorwayDegree[cand.tA.id] >= 1 && !shareA) continue;
-              if (townMotorwayDegree[cand.tB.id] >= 1 && !shareB) continue;
-
-              const validShared = (shareA ? 1 : 0) + (shareB ? 1 : 0);
-              if (validShared === 0 && !useVia) continue;
-              const connectedBonus = validShared >= 1 ? 2.8 : 3.2;
-              const secScore = cand.gravity * connectedBonus;
-              secCandidates.push({ tA: cand.tA, tB: cand.tB, useVia, secScore });
-            }
-
-            secCandidates.sort((a, b) => b.secScore - a.secScore);
-
-            for (const bestSecondary of secCandidates) {
-              const { tA: cA, tB: cB, useVia } = bestSecondary;
-              if (townMotorwayDegree[cA.id] >= 2 || townMotorwayDegree[cB.id] >= 2) continue;
-              const rampA = this.createTerminalStreetStub(cA, false, cB.x, cB.y);
-              const rampB = this.createTerminalStreetStub(cB, false, cA.x, cA.y);
-              if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 22) {
-                this.removeOrphanedTerminalStub(rampA.x, rampA.y);
-                this.removeOrphanedTerminalStub(rampB.x, rampB.y);
-                continue;
-              }
-              const mw2 = this.createMotorwayEntity(
-                mwayNumber,
-                rampA.x, rampA.y,
-                rampB.x, rampB.y,
-                algo, null, cB.id,
-                useVia
-              );
-              if (mw2) {
-                mwayNumber++;
-                this.motorways.push(mw2);
-                townMotorwayDegree[cA.id]++;
-                townMotorwayDegree[cB.id]++;
-                break;
-              } else {
-                this.removeOrphanedTerminalStub(rampA.x, rampA.y);
-                this.removeOrphanedTerminalStub(rampB.x, rampB.y);
-              }
-            }
+          const stub = this.createTerminalStreetStub(uTown, false, targetPt.x, targetPt.y);
+          const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, stub.x, stub.y, algo, null, uTown.id);
+          if (spurRes) {
+            mwayNumber++;
+            this.motorways.push(spurRes.mw);
+            this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+            this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
+            this.interchanges.push(spurRes.trumpetIc);
+            townMotorwayDegree[uTown.id]++;
+          } else {
+            this.removeOrphanedTerminalStub(stub.x, stub.y);
           }
         }
 
@@ -3091,7 +3184,7 @@
       initAgents() {
         const { world } = this;
         // Spawn Mini Motorways cars along road paths and motorways
-        for (let i = 0; i < 65; i++) {
+        for (let i = 0; i < 135; i++) {
           this.spawnCar();
         }
         // Spawn aircraft operating between airports (or regional off-map airways if 1 airport)
