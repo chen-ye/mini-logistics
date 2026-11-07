@@ -930,8 +930,8 @@
               if (distHost < hostTown.urbanRadius * 0.82 || distHost > idealDist + 28) continue;
               const proximityScore = Math.exp(-Math.pow((distHost - idealDist) / 12.5, 2));
 
-              // Ensure the airport terminal broadside (perpendicular to runway) faces the host town
-              // rather than placing the town off the runway ends
+              // Ensure the airport terminal broadside faces the host town and also has strong
+              // regional landside connectivity so the airport gate never faces an empty map corner.
               const toTownX = hostTown.x - cx;
               const toTownY = hostTown.y - cy;
               const dotNormal = toTownX * (-sinA) + toTownY * cosA;
@@ -941,6 +941,18 @@
               const candLandNx = -sinA * candidateApronSide;
               const candLandNy = cosA * candidateApronSide;
               const candStubDist = isHub ? 8.8 : 6.6;
+
+              let landsideTownsCount = 0;
+              for (const otherT of this.towns) {
+                const odx = otherT.x - cx;
+                const ody = otherT.y - cy;
+                const odist = Math.hypot(odx, ody);
+                const oLandV = odx * candLandNx + ody * candLandNy;
+                if (oLandV >= 6.0 && odist >= 20 && odist <= 105) {
+                  landsideTownsCount++;
+                }
+              }
+              if (landsideTownsCount === 0) continue;
 
               // 2. NIMBY & Urban Core Exclusion against ALL towns
               let nimbyViolation = false;
@@ -1009,7 +1021,11 @@
 
               const waterApproachBonus = sampleCount > 0 ? (waterUnderApproach / sampleCount) * 0.22 : 0;
               const broadsideBonus = broadsideAlignment * 0.14;
-              const totalScore = Math.min(1.0, proximityScore * 0.56 + approachScore * 0.24 + waterApproachBonus + broadsideBonus);
+              const regionalReachBonus = Math.min(0.14, landsideTownsCount * 0.045);
+              const totalScore = Math.min(
+                1.0,
+                proximityScore * 0.50 + approachScore * 0.22 + waterApproachBonus + broadsideBonus + regionalReachBonus
+              );
 
               for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
@@ -1234,28 +1250,47 @@
       buildRegionalRoadNetwork() {
         this.bridgeCount = 0;
 
-        // Pre-seed each town's primary cardinal cross-avenues so inter-town A* arterials
-        // snap onto the orthogonal urban street grid rather than slicing 45° triangles across CBD blocks.
+        // Pre-seed each town's primary cardinal cross-avenues outward from the town center
+        // so inter-town A* arterials snap onto the orthogonal urban street grid without creating
+        // disconnected street islands across rivers or airport pads.
         for (const town of this.towns) {
           const span = Math.round(town.urbanRadius * 0.65);
-          this.carveLocalStreetLine(town.x - span, town.y, town.x + span, town.y);
-          this.carveLocalStreetLine(town.x, town.y - span, town.x, town.y + span);
+          this.carveStreetFromCenter(town.x, town.y, 1, 0, span, span);
+          this.carveStreetFromCenter(town.x, town.y, 0, 1, span, span);
         }
 
-        // Connect Towns in a Minimum Spanning Tree + extra regional loop edges
+        // Connect Towns in a River-Aware Minimum Spanning Tree + 1 regional loop chord.
+        // Penalizing water crossings in edge selection connects same-bank towns along continuous
+        // valley corridors first and places bridges only at strategic cross-river links.
         const nodes = this.towns.map(t => ({ x: t.x, y: t.y, type: 'town', ref: t }));
         const connected = new Set([0]);
         const edges = [];
 
+        const riverAwareEdgeCost = (a, b) => {
+          const d = Math.hypot(b.x - a.x, b.y - a.y);
+          let waterHits = 0;
+          const steps = 18;
+          for (let s = 1; s < steps; s++) {
+            const t = s / steps;
+            const sx = Math.round(a.x + (b.x - a.x) * t);
+            const sy = Math.round(a.y + (b.y - a.y) * t);
+            if (this.inBounds(sx, sy, 1)) {
+              if (this.waterMask[this.idx(sx, sy)] > 0) waterHits++;
+              if (this.buildingMask[this.idx(sx, sy)] === 3) waterHits += 4;
+            }
+          }
+          return d + (waterHits > 0 ? 22 + waterHits * 3.5 : 0);
+        };
+
         while (connected.size < nodes.length) {
           let bestEdge = null;
-          let bestDist = Infinity;
+          let bestCost = Infinity;
           for (const i of connected) {
             for (let j = 0; j < nodes.length; j++) {
               if (connected.has(j)) continue;
-              const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
-              if (d < bestDist) {
-                bestDist = d;
+              const cost = riverAwareEdgeCost(nodes[i], nodes[j]);
+              if (cost < bestCost) {
+                bestCost = cost;
                 bestEdge = [i, j];
               }
             }
@@ -1265,7 +1300,7 @@
           edges.push(bestEdge);
         }
 
-        // Add 1 or 2 extra chord connections for realistic logistics redundancy
+        // Add 1 extra chord connection for realistic logistics redundancy
         if (nodes.length >= 4) {
           let bestChord = null;
           let bestScore = Infinity;
@@ -1273,9 +1308,9 @@
             for (let j = i + 1; j < nodes.length; j++) {
               const already = edges.some(e => (e[0] === i && e[1] === j) || (e[0] === j && e[1] === i));
               if (already) continue;
-              const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
-              if (d < bestScore) {
-                bestScore = d;
+              const cost = riverAwareEdgeCost(nodes[i], nodes[j]);
+              if (cost < bestScore) {
+                bestScore = cost;
                 bestChord = [i, j];
               }
             }
@@ -1438,18 +1473,19 @@
             }
           }
 
-          // 7B. Generate organic local street grid segments around town center
+          // 7B. Generate organic local street grid segments outward from town center axes
+          // (stops immediately at water or airport boundaries so no orphaned street islands form)
           for (let offset = -R + 3; offset <= R - 3; offset += step) {
             if (offset === 0) continue; // Center cross-avenues were already carved in Stage 6
             const yRow = town.y + offset;
-            if (this.inBounds(town.x, yRow, 4)) {
+            if (this.inBounds(town.x, yRow, 4) && this.roadGrid[this.idx(town.x, yRow)] > 0) {
               const span = Math.floor(Math.sqrt(Math.max(0, R * R - offset * offset)) * this.rng.range(0.65, 0.95));
-              this.carveLocalStreetLine(town.x - span, yRow, town.x + span, yRow);
+              this.carveStreetFromCenter(town.x, yRow, 1, 0, span, span);
             }
             const xCol = town.x + offset;
-            if (this.inBounds(xCol, town.y, 4)) {
+            if (this.inBounds(xCol, town.y, 4) && this.roadGrid[this.idx(xCol, town.y)] > 0) {
               const span = Math.floor(Math.sqrt(Math.max(0, R * R - offset * offset)) * this.rng.range(0.65, 0.95));
-              this.carveLocalStreetLine(xCol, town.y - span, xCol, town.y + span);
+              this.carveStreetFromCenter(xCol, town.y, 0, 1, span, span);
             }
           }
 
@@ -1467,28 +1503,44 @@
         }
       }
 
-      carveLocalStreetLine(x0, y0, x1, y1) {
-        const dx = Math.sign(x1 - x0);
-        const dy = Math.sign(y1 - y0);
-        let x = x0;
-        let y = y0;
-        const pts = [];
-        while (true) {
-          if (this.inBounds(x, y, 3)) {
-            const id = this.idx(x, y);
-            if (this.waterMask[id] === 0 && this.buildingMask[id] === 0 && this.distToWater[id] >= 1.8) {
-              if (this.roadGrid[id] === 0) this.roadGrid[id] = 1;
-              pts.push({ x, y, isBridge: false });
-            } else {
-              if (pts.length > 2) this.roads.push({ points: [...pts], type: 'street' });
-              pts.length = 0;
-            }
-          }
-          if (x === x1 && y === y1) break;
-          x += dx;
-          y += dy;
+      /**
+       * Carves a street line starting at `(cx, cy)` and marching outward in both `-dir` and `+dir`,
+       * stopping immediately upon hitting water, riverbank buffer, or an airport pad so streets
+       * never jump across obstacles to form disconnected islands.
+       */
+      carveStreetFromCenter(cx, cy, ux, uy, negSteps, posSteps) {
+        const isPassable = (x, y) => {
+          if (!this.inBounds(x, y, 3)) return false;
+          const id = this.idx(x, y);
+          return this.waterMask[id] === 0 && this.buildingMask[id] === 0 && this.distToWater[id] >= 1.8;
+        };
+        if (!isPassable(cx, cy)) return;
+
+        const negPts = [];
+        for (let s = 1; s <= negSteps; s++) {
+          const x = cx - ux * s;
+          const y = cy - uy * s;
+          if (!isPassable(x, y)) break;
+          negPts.push({ x, y, isBridge: false });
         }
-        if (pts.length > 2) this.roads.push({ points: pts, type: 'street' });
+        negPts.reverse();
+
+        const posPts = [];
+        for (let s = 1; s <= posSteps; s++) {
+          const x = cx + ux * s;
+          const y = cy + uy * s;
+          if (!isPassable(x, y)) break;
+          posPts.push({ x, y, isBridge: false });
+        }
+
+        const pts = [...negPts, { x: cx, y: cy, isBridge: false }, ...posPts];
+        if (pts.length >= 3) {
+          for (const pt of pts) {
+            const id = this.idx(pt.x, pt.y);
+            if (this.roadGrid[id] === 0) this.roadGrid[id] = 1;
+          }
+          this.roads.push({ points: pts, type: 'street' });
+        }
       }
 
       tryPlaceDestinationBuilding(town, isCircularHub, customRadius = null) {
@@ -1798,10 +1850,73 @@
         ];
       }
 
-      scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId = null, preferOff = 0, candidateOff = 0) {
+      isCloverleafFootprintDry(x, y, angleA, angleB, signsA = [-1, 1], signsB = [-1, 1]) {
+        const gx = Math.round(x);
+        const gy = Math.round(y);
+        if (!this.inBounds(gx, gy, 6)) return false;
+        const cid = this.idx(gx, gy);
+        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 3.8) return false;
+        if (this.isPointInAirportPad(x, y, 3.8)) return false;
+
+        const uAx = Math.cos(angleA), uAy = Math.sin(angleA);
+        const uBx = Math.cos(angleB), uBy = Math.sin(angleB);
+
+        for (const sA of signsA) {
+          for (const sB of signsB) {
+            const rAx = sA * uAx, rAy = sA * uAy;
+            const rBx = sB * uBx, rBy = sB * uBy;
+            const checkPts = [
+              { px: x + rAx * 2.9, py: y + rAy * 2.9 },
+              { px: x + rBx * 2.9, py: y + rBy * 2.9 },
+              { px: x + (rAx + rBx) * 1.95, py: y + (rAy + rBy) * 1.95 }
+            ];
+            for (const { px, py } of checkPts) {
+              const rx = Math.round(px);
+              const ry = Math.round(py);
+              if (!this.inBounds(rx, ry, 4)) return false;
+              const rid = this.idx(rx, ry);
+              if (this.waterMask[rid] > 0 || this.distToWater[rid] < 1.8) return false;
+              if (this.isPointInAirportPad(px, py, 2.2)) return false;
+            }
+          }
+        }
+        return true;
+      }
+
+      isTrumpetFootprintDry(x, y, angleMain, sideSign) {
+        const gx = Math.round(x);
+        const gy = Math.round(y);
+        if (!this.inBounds(gx, gy, 6)) return false;
+        const cid = this.idx(gx, gy);
+        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 3.6) return false;
+        if (this.isPointInAirportPad(x, y, 3.8)) return false;
+
+        const ux = Math.cos(angleMain), uy = Math.sin(angleMain);
+        const nx = -uy * sideSign, ny = ux * sideSign;
+
+        // Check both the directional slip-ramps on the terminating highway side (+sideSign)
+        // AND the 270° trumpet loop on the OPPOSITE side (-sideSign) across the mainline.
+        const localPts = [
+          [-2.8, 0.4], [2.8, 0.4], [0, 2.8], [-1.4, 1.5], [1.4, 1.5],
+          [0, -2.2], [1.8, -1.8], [2.2, -1.0]
+        ];
+        for (const [lu, lv] of localPts) {
+          const px = x + ux * lu + nx * lv;
+          const py = y + uy * lu + ny * lv;
+          const rx = Math.round(px);
+          const ry = Math.round(py);
+          if (!this.inBounds(rx, ry, 4)) return false;
+          const rid = this.idx(rx, ry);
+          if (this.waterMask[rid] > 0 || this.distToWater[rid] < 1.6) return false;
+          if (this.isPointInAirportPad(px, py, 2.2)) return false;
+        }
+        return true;
+      }
+
+      scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId = null, preferOff = 0, candidateOff = 0, forbidAnyCrossing = false, allowTouchTrunkNum = null) {
         if (!samples || samples.length < 2) return Infinity;
         const chord = Math.hypot(ex - sx, ey - sy) || 1;
-        if (chord < 18) return Infinity;
+        if (chord < 16) return Infinity;
 
         // Hard invariant 1: Never go out of bounds
         for (const pt of samples) {
@@ -1826,7 +1941,7 @@
             const l2 = Math.hypot(segDx, segDy);
             if (l1 > 1e-4 && l2 > 1e-4) {
               const cosTurn = (prevDx * segDx + prevDy * segDy) / (l1 * l2);
-              if (cosTurn < 0.35) return Infinity; // Reject sharp kinks
+              if (cosTurn < 0.35) return Infinity;
             }
           }
         }
@@ -1855,7 +1970,6 @@
           const checkShared = (myX, myY, myUx, myUy, otX, otY, otUx, otUy) => {
             if (Math.hypot(myX - otX, myY - otY) < 8.5) {
               const dot = myUx * otUx + myUy * otUy;
-              // Outgoing unit vectors from a shared/nearby terminal must point >= 128° apart (dot <= -0.61)
               if (dot > -0.61) return false;
             }
             return true;
@@ -1866,19 +1980,37 @@
           if (!checkShared(ex, ey, endDirX / endLen, endDirY / endLen, other.sx, other.sy, oStartDirX / oStartLen, oStartDirY / oStartLen)) return Infinity;
           if (!checkShared(ex, ey, endDirX / endLen, endDirY / endLen, other.ex, other.ey, oEndDirX / oEndLen, oEndDirY / oEndLen)) return Infinity;
 
-          // Hard invariant 5: Check interior crossings with existing motorways
+          // Hard invariant 5: Prevent parallel duplicate corridors & check interior crossings
+          const candAng = Math.atan2(ey - sy, ex - sx);
+          const otherAng = Math.atan2(other.ey - other.sy, other.ex - other.sx);
+          const chordSinDiff = Math.abs(Math.sin(candAng - otherAng));
+          const midCand = samples[Math.floor(samples.length * 0.5)];
+          const midOther = oS[Math.floor(oS.length * 0.5)];
+          if (chordSinDiff < 0.58 && Math.hypot(midCand.x - midOther.x, midCand.y - midOther.y) < 28) {
+            return Infinity; // Reject parallel duplicate motorways in the same corridor
+          }
+
           const hit = this.findPolylineIntersection(other.samples, samples);
           if (hit) {
-            crossCount++;
-            if (crossCount > 1) return Infinity;
-            const crossSin = Math.abs(Math.sin(hit.angleA - hit.angleB));
-            if (crossSin < 0.60) return Infinity; // Forbid shallow crossings (< 37°)
-            const hgx = Math.round(hit.x);
-            const hgy = Math.round(hit.y);
-            if (!this.inBounds(hgx, hgy, 6) || this.waterMask[this.idx(hgx, hgy)] > 0 || this.distToWater[this.idx(hgx, hgy)] < 2.2) {
-              return Infinity; // Never cross two motorways over water
+            const isTrumpetTargetTouch =
+              allowTouchTrunkNum === other.number && Math.hypot(hit.x - ex, hit.y - ey) < 4.5;
+            if (!isTrumpetTargetTouch) {
+              if (forbidAnyCrossing) return Infinity;
+              crossCount++;
+              if (crossCount > 1) return Infinity;
+              const crossSin = Math.abs(Math.sin(hit.angleA - hit.angleB));
+              if (crossSin < 0.78) return Infinity;
+
+              const dStartA = this.polylineArcLength(other.samples, 0, hit.idxA);
+              const dEndA = this.polylineArcLength(other.samples, hit.idxA, other.samples.length - 1);
+              const dStartB = this.polylineArcLength(samples, 0, hit.idxB);
+              const dEndB = this.polylineArcLength(samples, hit.idxB, samples.length - 1);
+
+              if (dStartA < 20 || dEndA < 20 || dStartB < 20 || dEndB < 20) return Infinity;
+              if (!this.isCloverleafFootprintDry(hit.x, hit.y, hit.angleA, hit.angleB, [-1, 1], [-1, 1])) {
+                return Infinity;
+              }
             }
-            if (this.isPointInAirportPad(hit.x, hit.y, 3.5)) return Infinity;
           }
         }
 
@@ -1899,12 +2031,19 @@
             if (this.distToWater[id] < 1.8) penalty += 1.2;
           }
 
-          // Penalize running parallel and too close to existing motorways
+          // Hard reject passing near an existing motorway's endpoints or running parallel nearby
           if (i > 3 && i < samples.length - 4) {
             for (const other of this.motorways) {
-              for (let j = 3; j < other.samples.length - 3; j += 2) {
+              if (allowTouchTrunkNum === other.number && i > samples.length - 10) continue;
+              if (
+                Math.hypot(pt.x - other.sx, pt.y - other.sy) < 11.5 ||
+                Math.hypot(pt.x - other.ex, pt.y - other.ey) < 11.5
+              ) {
+                return Infinity;
+              }
+              for (let j = 2; j < other.samples.length - 2; j += 2) {
                 const d = Math.hypot(pt.x - other.samples[j].x, pt.y - other.samples[j].y);
-                if (d < 7.5) {
+                if (d < 11.0) {
                   const a1 = Math.atan2(
                     samples[Math.min(samples.length - 1, i + 1)].y - samples[Math.max(0, i - 1)].y,
                     samples[Math.min(samples.length - 1, i + 1)].x - samples[Math.max(0, i - 1)].x
@@ -1914,8 +2053,8 @@
                     other.samples[Math.min(other.samples.length - 1, j + 1)].x - other.samples[Math.max(0, j - 1)].x
                   );
                   const sinCross = Math.abs(Math.sin(a1 - a2));
-                  if (sinCross < 0.55) {
-                    penalty += (8.0 - d) * 24;
+                  if (sinCross < 0.75) {
+                    return Infinity;
                   }
                 }
               }
@@ -2139,6 +2278,113 @@
         }
       }
 
+      /**
+       * Attempts to build a 3-way Trumpet Spur Motorway from `(originX, originY)` (an airport gate
+       * or unserved town beltway stub) directly into a dry interior point on an existing trunk motorway,
+       * terminating at the trumpet throat with a perpendicular arrival tangent.
+       */
+      tryBuildTrumpetSpurToTrunk(number, originX, originY, algo, airportId = null, townId = null) {
+        const ap = airportId !== null ? this.airports[airportId] : null;
+        let bestResult = null;
+        let bestScore = Infinity;
+
+        for (const trunk of this.motorways) {
+          const tSamples = trunk.samples;
+          if (!tSamples || tSamples.length < 16) continue;
+          const trunkLen = this.polylineArcLength(tSamples, 0, tSamples.length - 1);
+          if (trunkLen < 34) continue;
+
+          const iStart = Math.floor(tSamples.length * 0.16);
+          const iEnd = Math.ceil(tSamples.length * 0.84);
+
+          for (let i = iStart; i <= iEnd; i++) {
+            const hitPt = tSamples[i];
+            if (Math.hypot(hitPt.x - trunk.sx, hitPt.y - trunk.sy) < 13) continue;
+            if (Math.hypot(hitPt.x - trunk.ex, hitPt.y - trunk.ey) < 13) continue;
+
+            const nearOtherIc = this.interchanges.some(ic => Math.hypot(ic.x - hitPt.x, ic.y - hitPt.y) < 13);
+            if (nearOtherIc) continue;
+
+            const pPrev = tSamples[Math.max(0, i - 1)];
+            const pNext = tSamples[Math.min(tSamples.length - 1, i + 1)];
+            const angleMain = Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x);
+            const ux = Math.cos(angleMain);
+            const uy = Math.sin(angleMain);
+            const nx = -uy;
+            const ny = ux;
+
+            const toOrigX = originX - hitPt.x;
+            const toOrigY = originY - hitPt.y;
+            const sideSign = (toOrigX * nx + toOrigY * ny) >= 0 ? 1 : -1;
+            const outNx = nx * sideSign;
+            const outNy = ny * sideSign;
+
+            if (!this.isTrumpetFootprintDry(hitPt.x, hitPt.y, angleMain, sideSign)) continue;
+
+            const chord = Math.hypot(hitPt.x - originX, hitPt.y - originY);
+            if (chord < 15 || chord > 78) continue;
+
+            // Ensure the origin lies on the sideSign half-space of the trunk
+            const cosPerp = ((originX - hitPt.x) * outNx + (originY - hitPt.y) * outNy) / (chord || 1);
+            if (cosPerp < 0.36) continue;
+
+            // If departing an airport gate, ensure the trumpet target lies in front of the landside gate
+            if (ap) {
+              const alignGate = ((hitPt.x - originX) * ap.landNx + (hitPt.y - originY) * ap.landNy) / chord;
+              if (alignGate < 0.25) continue;
+            }
+
+            const pullStart = ap ? Math.min(20, Math.max(7.5, chord * 0.34)) : chord * 0.34;
+            const pullEnd = Math.min(22, Math.max(8.5, chord * 0.38));
+            const p0 = { x: originX, y: originY };
+            const p1 = ap
+              ? { x: originX + ap.landNx * pullStart, y: originY + ap.landNy * pullStart }
+              : { x: originX + (hitPt.x - originX) * 0.34, y: originY + (hitPt.y - originY) * 0.34 };
+            // Lock P2 along outNx, outNy from hitPt so the spur arrives strictly perpendicular (90°) to the trunk
+            const p2 = { x: hitPt.x + outNx * pullEnd, y: hitPt.y + outNy * pullEnd };
+            const p3 = { x: hitPt.x, y: hitPt.y };
+
+            const waypoints = [p0, p1, p2, p3];
+            const samples = this.sampleMotorwayCurve(waypoints, false);
+            const score = this.scoreMotorwaySamples(samples, originX, originY, hitPt.x, hitPt.y, airportId, 0, 0, true, trunk.number);
+            if (!Number.isFinite(score)) continue;
+
+            const totalScore = score + chord * 0.45 + (1.0 - cosPerp) * 18;
+            if (totalScore < bestScore) {
+              bestScore = totalScore;
+              bestResult = {
+                mw: {
+                  number,
+                  sx: originX,
+                  sy: originY,
+                  ex: hitPt.x,
+                  ey: hitPt.y,
+                  waypoints,
+                  samples,
+                  algo,
+                  airportId,
+                  townId,
+                  prunedStart: false,
+                  prunedEnd: true
+                },
+                trumpetIc: {
+                  type: 'trumpet',
+                  x: hitPt.x,
+                  y: hitPt.y,
+                  angleMain,
+                  sideSign,
+                  mwayMain: trunk.number,
+                  mwaySpur: number,
+                  label: `M-${trunk.number} × M-${number} Trumpet Interchange`
+                }
+              };
+            }
+          }
+        }
+
+        return bestResult;
+      }
+
       detectAndBuildCloverleafs() {
         for (let i = 0; i < this.motorways.length; i++) {
           for (let j = i + 1; j < this.motorways.length; j++) {
@@ -2147,67 +2393,18 @@
             const hit = this.findPolylineIntersection(mA.samples, mB.samples);
             if (!hit) continue;
 
-            // Ensure the two motorways cross at a non-glancing angle (>= 32 degrees)
             const crossSin = Math.abs(Math.sin(hit.angleA - hit.angleB));
-            if (crossSin < 0.52) continue;
+            if (crossSin < 0.72) continue;
 
-            // Never place a cloverleaf on top of an airport or in water
-            const gx = Math.round(hit.x);
-            const gy = Math.round(hit.y);
-            if (!this.inBounds(gx, gy, 5) || this.waterMask[this.idx(gx, gy)] > 0) continue;
-            if (this.isPointInAirportPad(hit.x, hit.y, 3.2)) continue;
+            if (!this.isCloverleafFootprintDry(hit.x, hit.y, hit.angleA, hit.angleB, [-1, 1], [-1, 1])) {
+              continue;
+            }
 
             const tooClose = this.interchanges.some(
-              ic => ic.type === 'cloverleaf' && Math.hypot(ic.x - hit.x, ic.y - hit.y) < 14
+              ic => (ic.type === 'cloverleaf' || ic.type === 'trumpet') && Math.hypot(ic.x - hit.x, ic.y - hit.y) < 14
             );
             if (tooClose) continue;
 
-            // Check if EITHER crossing motorway (mB or mA) has a short overhanging stub past the intersection.
-            // If so, prune the overhanging stub at the interchange and elide the cloverleaf ramps
-            // toward the pruned stub end (forming a clean 3-way Trumpet / T-interchange).
-            let activeSignsA = [-1, 1];
-            let activeSignsB = [-1, 1];
-            let prunedBridgeB = false;
-
-            const distStartA = this.polylineArcLength(mA.samples, 0, hit.idxA);
-            const distEndA = this.polylineArcLength(mA.samples, hit.idxA, mA.samples.length - 1);
-            const distStartB = this.polylineArcLength(mB.samples, 0, hit.idxB);
-            const distEndB = this.polylineArcLength(mB.samples, hit.idxB, mB.samples.length - 1);
-            const minStubKeep = 18;
-
-            if (distEndB < minStubKeep && distStartB >= minStubKeep) {
-              const oldEx = mB.ex, oldEy = mB.ey;
-              mB.samples = [...mB.samples.slice(0, hit.idxB + 1), { x: hit.x, y: hit.y }];
-              mB.ex = hit.x; mB.ey = hit.y;
-              mB.prunedEnd = true;
-              activeSignsB = [-1];
-              prunedBridgeB = true;
-              this.removeOrphanedTerminalStub(oldEx, oldEy);
-            } else if (distStartB < minStubKeep && distEndB >= minStubKeep && mB.airportId === null) {
-              const oldSx = mB.sx, oldSy = mB.sy;
-              mB.samples = [{ x: hit.x, y: hit.y }, ...mB.samples.slice(hit.idxB + 1)];
-              mB.sx = hit.x; mB.sy = hit.y;
-              mB.prunedStart = true;
-              activeSignsB = [1];
-              prunedBridgeB = true;
-              this.removeOrphanedTerminalStub(oldSx, oldSy);
-            } else if (distEndA < minStubKeep && distStartA >= minStubKeep) {
-              const oldEx = mA.ex, oldEy = mA.ey;
-              mA.samples = [...mA.samples.slice(0, hit.idxA + 1), { x: hit.x, y: hit.y }];
-              mA.ex = hit.x; mA.ey = hit.y;
-              mA.prunedEnd = true;
-              activeSignsA = [-1];
-              this.removeOrphanedTerminalStub(oldEx, oldEy);
-            } else if (distStartA < minStubKeep && distEndA >= minStubKeep && mA.airportId === null) {
-              const oldSx = mA.sx, oldSy = mA.sy;
-              mA.samples = [{ x: hit.x, y: hit.y }, ...mA.samples.slice(hit.idxA + 1)];
-              mA.sx = hit.x; mA.sy = hit.y;
-              mA.prunedStart = true;
-              activeSignsA = [1];
-              this.removeOrphanedTerminalStub(oldSx, oldSy);
-            }
-
-            const isTrumpet = activeSignsA.length < 2 || activeSignsB.length < 2;
             this.displaceBuildingsInRadius(hit.x, hit.y, 5.2);
             this.interchanges.push({
               type: 'cloverleaf',
@@ -2215,37 +2412,36 @@
               y: hit.y,
               angleA: hit.angleA,
               angleB: hit.angleB,
-              activeSignsA,
-              activeSignsB,
-              prunedBridgeB,
+              activeSignsA: [-1, 1],
+              activeSignsB: [-1, 1],
+              prunedBridgeB: false,
               mwayA: mA.number,
               mwayB: mB.number,
-              label: isTrumpet
-                ? `M-${mA.number} × M-${mB.number} Trumpet T-Interchange`
-                : `M-${mA.number} × M-${mB.number} Cloverleaf`
+              label: `M-${mA.number} × M-${mB.number} Cloverleaf`
             });
           }
         }
       }
 
       findPolylineIntersection(samplesA, samplesB) {
-        const startA = Math.floor(samplesA.length * 0.05);
-        const endA = Math.ceil(samplesA.length * 0.95);
-        const startB = Math.floor(samplesB.length * 0.05);
-        const endB = Math.ceil(samplesB.length * 0.95);
+        if (!samplesA || !samplesB || samplesA.length < 2 || samplesB.length < 2) return null;
+        const aStart = samplesA[0];
+        const aEnd = samplesA[samplesA.length - 1];
+        const bStart = samplesB[0];
+        const bEnd = samplesB[samplesB.length - 1];
 
-        for (let i = startA; i < endA - 1; i++) {
+        for (let i = 0; i < samplesA.length - 1; i++) {
           const a1 = samplesA[i];
           const a2 = samplesA[i + 1];
-          for (let j = startB; j < endB - 1; j++) {
+          for (let j = 0; j < samplesB.length - 1; j++) {
             const b1 = samplesB[j];
             const b2 = samplesB[j + 1];
             const pt = this.segmentIntersection(a1.x, a1.y, a2.x, a2.y, b1.x, b1.y, b2.x, b2.y);
             if (pt) {
-              if (Math.hypot(pt.x - samplesA[0].x, pt.y - samplesA[0].y) < 3.0) continue;
-              if (Math.hypot(pt.x - samplesA[samplesA.length - 1].x, pt.y - samplesA[samplesA.length - 1].y) < 3.0) continue;
-              if (Math.hypot(pt.x - samplesB[0].x, pt.y - samplesB[0].y) < 3.0) continue;
-              if (Math.hypot(pt.x - samplesB[samplesB.length - 1].x, pt.y - samplesB[samplesB.length - 1].y) < 3.0) continue;
+              // Ignore intentional shared terminal roundabouts where both motorways meet at the same endpoint
+              const nearAEnd = Math.min(Math.hypot(pt.x - aStart.x, pt.y - aStart.y), Math.hypot(pt.x - aEnd.x, pt.y - aEnd.y)) < 2.2;
+              const nearBEnd = Math.min(Math.hypot(pt.x - bStart.x, pt.y - bStart.y), Math.hypot(pt.x - bEnd.x, pt.y - bEnd.y)) < 2.2;
+              if (nearAEnd && nearBEnd) continue;
               return {
                 x: pt.x,
                 y: pt.y,
@@ -2276,10 +2472,10 @@
 
       /**
        * Prunes any pre-existing surface street / arterial segments that cross underneath
-       * the expressway or poke under the slip-ramps at a one-sided intermediate ramp,
-       * tying any severed street on the connected side directly into the ramp roundabout.
+       * the expressway or poke under the slip-ramps at a one-sided intermediate ramp
+       * so only a single clean connector stub enters the roundabout terminal.
        */
-      pruneUnderpassRoadsAtRamp(cx, cy, angleRad, connSide, termX, termY) {
+      pruneUnderpassRoadsAtRamp(cx, cy, angleRad, connSide) {
         const cosA = Math.cos(angleRad);
         const sinA = Math.sin(angleRad);
         const nx = -sinA;
@@ -2290,9 +2486,7 @@
           const dy = py - cy;
           const u = dx * cosA + dy * sinA;
           const v = (dx * nx + dy * ny) * connSide;
-          // Prune any surface road passing under the motorway deck or onto the unconnected side
-          // within ±4.2 tiles along the motorway, as well as any stub under the slip-ramps (v < 2.35)
-          return Math.abs(u) <= 4.2 && v >= -3.8 && v < 2.35;
+          return Math.abs(u) <= 4.2 && v >= -3.8 && v < 2.65;
         };
 
         const updatedRoads = [];
@@ -2311,21 +2505,10 @@
                 this.roadGrid[this.idx(gx, gy)] = 0;
               }
               if (currentSeg.length >= 2) {
-                const lastPt = currentSeg[currentSeg.length - 1];
-                const lastV = ((lastPt.x - cx) * nx + (lastPt.y - cy) * ny) * connSide;
-                if (lastV >= 1.5 && Math.hypot(lastPt.x - termX, lastPt.y - termY) < 4.2) {
-                  currentSeg.push({ x: termX, y: termY, isBridge: false });
-                }
                 updatedRoads.push({ points: currentSeg, type: r.type });
               }
               currentSeg = [];
             } else {
-              if (currentSeg.length === 0 && i > 0 && isInsideRampPruneBox(r.points[i - 1].x, r.points[i - 1].y)) {
-                const currV = ((pt.x - cx) * nx + (pt.y - cy) * ny) * connSide;
-                if (currV >= 1.5 && Math.hypot(pt.x - termX, pt.y - termY) < 4.2) {
-                  currentSeg.push({ x: termX, y: termY, isBridge: false });
-                }
-              }
               currentSeg.push(pt);
             }
           }
@@ -2344,15 +2527,21 @@
 
         for (const mw of this.motorways) {
           const samples = mw.samples;
-          if (!samples || samples.length < 12) continue;
-          const totalChord = Math.hypot(mw.ex - mw.sx, mw.ey - mw.sy);
-          if (totalChord < 30) continue;
+          if (!samples || samples.length < 14) continue;
+          const arcLen = this.polylineArcLength(samples, 0, samples.length - 1);
+          if (arcLen < 38) continue;
+
+          const hasMajorIc = this.interchanges.some(
+            ic => (ic.type === 'cloverleaf' || ic.type === 'trumpet') &&
+                  (ic.mwayA === mw.number || ic.mwayB === mw.number || ic.mwayMain === mw.number || ic.mwaySpur === mw.number)
+          );
+          if (hasMajorIc && arcLen < 48) continue;
 
           let bestCandidate = null;
           let bestScore = -Infinity;
 
-          const iStart = Math.floor(samples.length * 0.26);
-          const iEnd = Math.ceil(samples.length * 0.74);
+          const iStart = Math.floor(samples.length * 0.28);
+          const iEnd = Math.ceil(samples.length * 0.72);
 
           for (let i = iStart; i <= iEnd; i += 2) {
             const pt = samples[i];
@@ -2360,13 +2549,13 @@
             const gy = Math.round(pt.y);
             if (!this.inBounds(gx, gy, 6)) continue;
             const id = this.idx(gx, gy);
-            if (this.waterMask[id] > 0 || this.distToWater[id] < 3.2) continue;
-            if (this.buildingMask[id] === 3 || this.isPointInAirportPad(pt.x, pt.y, 3.5)) continue;
+            if (this.waterMask[id] > 0 || this.distToWater[id] < 3.4) continue;
+            if (this.buildingMask[id] === 3 || this.isPointInAirportPad(pt.x, pt.y, 3.8)) continue;
 
-            if (Math.hypot(pt.x - mw.sx, pt.y - mw.sy) < 14) continue;
-            if (Math.hypot(pt.x - mw.ex, pt.y - mw.ey) < 14) continue;
+            if (Math.hypot(pt.x - mw.sx, pt.y - mw.sy) < 16) continue;
+            if (Math.hypot(pt.x - mw.ex, pt.y - mw.ey) < 16) continue;
 
-            const nearExisting = this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 14);
+            const nearExisting = this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 16);
             if (nearExisting) continue;
 
             let nearestTown = null;
@@ -2427,7 +2616,7 @@
             const ny = cosA;
 
             // Prune any existing surface underpasses or dead-end street stubs beneath the ramp
-            this.pruneUnderpassRoadsAtRamp(x, y, angleRad, connSide, termX, termY);
+            this.pruneUnderpassRoadsAtRamp(x, y, angleRad, connSide);
 
             // Prevent the ramp's surface connector path from ever crossing back under the motorway
             const blockUnderpassFn = (tx, ty) => {
@@ -2476,16 +2665,16 @@
         const townPop = (t) => (t.housesCount + t.destinationsCount * 3 + 12) * (t.airportId !== null ? 1.35 : 1);
         const townMotorwayDegree = new Int8Array(this.towns.length);
 
-        // 1. Primary Regional Trunk Spine (M-1) between highest-gravity town pair
+        // 1. Primary Regional Trunk Spine (M-1) between highest-gravity cross-regional town pair
         const pairs = [];
         for (let i = 0; i < this.towns.length; i++) {
           for (let j = i + 1; j < this.towns.length; j++) {
             const tA = this.towns[i];
             const tB = this.towns[j];
             const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
-            if (d < 28) continue;
-            const crossBankBonus = Math.sign(tA.x - this.confluencePoint.x) !== Math.sign(tB.x - this.confluencePoint.x) ? 1.28 : 1.0;
-            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 1.08)) * crossBankBonus;
+            if (d < 38) continue;
+            const crossBankBonus = Math.sign(tA.x - this.confluencePoint.x) !== Math.sign(tB.x - this.confluencePoint.x) ? 1.32 : 1.0;
+            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.65)) * crossBankBonus;
             pairs.push({ tA, tB, gravity, d });
           }
         }
@@ -2498,6 +2687,11 @@
           const { tA, tB } = cand;
           const rampA = this.createTerminalStreetStub(tA, false, tB.x, tB.y);
           const rampB = this.createTerminalStreetStub(tB, false, tA.x, tA.y);
+          if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 28) {
+            this.removeOrphanedTerminalStub(rampA.x, rampA.y);
+            this.removeOrphanedTerminalStub(rampB.x, rampB.y);
+            continue;
+          }
           const mw1 = this.createMotorwayEntity(mwayNumber, rampA.x, rampA.y, rampB.x, rampB.y, algo, null, tB.id);
           if (mw1) {
             mwayNumber++;
@@ -2511,7 +2705,8 @@
             if (
               this.inBounds(mx, my, 8) &&
               this.waterMask[this.idx(mx, my)] === 0 &&
-              !this.isPointInAirportPad(midSample.x, midSample.y, 3.5)
+              this.distToWater[this.idx(mx, my)] >= 3.8 &&
+              !this.isPointInAirportPad(midSample.x, midSample.y, 3.8)
             ) {
               primaryMidPt = { x: midSample.x, y: midSample.y };
             }
@@ -2522,127 +2717,105 @@
           }
         }
 
-        // 2. Secondary Regional Corridor (M-2): prefer unserved towns or a clean transverse cross-corridor
-        if (this.towns.length >= 4 && pairs.length > 1 && primaryPair) {
-          const m1Set = new Set([primaryPair.tA.id, primaryPair.tB.id]);
-          const m1Ang = Math.atan2(primaryPair.tB.y - primaryPair.tA.y, primaryPair.tB.x - primaryPair.tA.x);
-
-          const secCandidates = [];
-          for (const cand of pairs) {
-            if (cand === primaryPair) continue;
-            const sharedCount = (m1Set.has(cand.tA.id) ? 1 : 0) + (m1Set.has(cand.tB.id) ? 1 : 0);
-            if (sharedCount >= 2) continue;
-
-            const cAng = Math.atan2(cand.tB.y - cand.tA.y, cand.tB.x - cand.tA.x);
-            const sinCross = Math.abs(Math.sin(cAng - m1Ang));
-
-            const midCx = (cand.tA.x + cand.tB.x) * 0.5;
-            const midCy = (cand.tA.y + cand.tB.y) * 0.5;
-            const midM1x = (primaryPair.tA.x + primaryPair.tB.x) * 0.5;
-            const midM1y = (primaryPair.tA.y + primaryPair.tB.y) * 0.5;
-            if (sinCross < 0.45 && Math.hypot(midCx - midM1x, midCy - midM1y) < 32) continue;
-
-            let useVia = null;
-            if (primaryMidPt && sharedCount === 0 && sinCross >= 0.58) {
-              const vx1 = primaryMidPt.x - cand.tA.x;
-              const vy1 = primaryMidPt.y - cand.tA.y;
-              const vx2 = cand.tB.x - primaryMidPt.x;
-              const vy2 = cand.tB.y - primaryMidPt.y;
-              const l1 = Math.hypot(vx1, vy1) || 1;
-              const l2 = Math.hypot(vx2, vy2) || 1;
-              const cosDeflect = (vx1 * vx2 + vy1 * vy2) / (l1 * l2);
-              if (cosDeflect >= 0.85 && l1 >= 18 && l2 >= 18) {
-                useVia = primaryMidPt;
+        const isTownNearAnyMotorway = (town, maxDist = 18) => {
+          for (const mw of this.motorways) {
+            for (let i = 0; i < mw.samples.length; i += 2) {
+              if (Math.hypot(town.x - mw.samples[i].x, town.y - mw.samples[i].y) < maxDist) {
+                return true;
               }
             }
-
-            const secScore = cand.gravity * (sharedCount === 0 ? 1.45 : 0.82) * (useVia ? 1.3 : 1.0);
-            secCandidates.push({ tA: cand.tA, tB: cand.tB, useVia, secScore });
           }
+          return false;
+        };
 
-          secCandidates.sort((a, b) => b.secScore - a.secScore);
-
-          for (const bestSecondary of secCandidates) {
-            const { tA: cA, tB: cB, useVia } = bestSecondary;
-            if (townMotorwayDegree[cA.id] >= 2 || townMotorwayDegree[cB.id] >= 2) continue;
-            const rampA = this.createTerminalStreetStub(cA, false, cB.x, cB.y);
-            const rampB = this.createTerminalStreetStub(cB, false, cA.x, cA.y);
-            const mw2 = this.createMotorwayEntity(
-              mwayNumber,
-              rampA.x, rampA.y,
-              rampB.x, rampB.y,
-              algo, null, cB.id,
-              useVia
-            );
-            if (mw2) {
-              mwayNumber++;
-              this.motorways.push(mw2);
-              townMotorwayDegree[cA.id]++;
-              townMotorwayDegree[cB.id]++;
-              break;
-            } else {
-              this.removeOrphanedTerminalStub(rampA.x, rampA.y);
-              this.removeOrphanedTerminalStub(rampB.x, rampB.y);
-            }
-          }
-        }
-
-        // 3. Airport Expressways: Connect International Hubs (and regional airports with clean
-        // landside alignment) to underserved regional towns without doglegs or acute V-spikes.
+        // 2. International Hub & Regional Airport Expressways:
+        // Prioritize connecting the International Hub Airport into the trunk spine via a 3-way Trumpet Spur
+        // or a non-redundant regional corridor to a trunk city.
         const sortedAirports = [...this.airports].sort((a, b) => (b.isHub ? 1 : 0) - (a.isHub ? 1 : 0));
         for (const ap of sortedAirports) {
-          const townCandidates = [];
-          for (const t of this.towns) {
-            if (townMotorwayDegree[t.id] >= 2) continue;
-            const dx = t.x - ap.x;
-            const dy = t.y - ap.y;
-            const landV = dx * ap.landNx + dy * ap.landNy;
-            if (landV < 4.0) continue;
-
-            const gateDist = Math.hypot(t.x - ap.gateX, t.y - ap.gateY);
-            const minSpan = ap.isHub ? 20 : 25;
-            if (gateDist < minSpan || gateDist > 105) continue;
-
-            const alignCos = ((t.x - ap.gateX) * ap.landNx + (t.y - ap.gateY) * ap.landNy) / (gateDist || 1);
-            // Require target town within ±61° of the airport's landside normal so there is no gate dogleg
-            if (alignCos < 0.48) continue;
-
-            const isHost = t.id === ap.hostTownId;
-            const unservedBonus = townMotorwayDegree[t.id] === 0 ? 1.45 : 0.85;
-            const score =
-              (townPop(t) / Math.pow(gateDist, 0.62)) *
-              (0.55 + 0.65 * alignCos) *
-              (isHost ? 1.2 : 1.0) *
-              unservedBonus;
-            townCandidates.push({ town: t, score });
-          }
-
-          townCandidates.sort((a, b) => b.score - a.score);
+          if (!ap.isHub && this.motorways.length >= 3) continue;
+          // If an existing motorway already passes right by this regional airport's host town, skip redundant stub
+          const host = this.towns[ap.hostTownId];
+          if (!ap.isHub && host && isTownNearAnyMotorway(host, 19)) continue;
 
           let builtApMotorway = false;
-          for (const { town: targetTown } of townCandidates) {
-            const apStub = this.createTerminalStreetStub(ap, true, targetTown.x, targetTown.y);
-            const townStub = this.createTerminalStreetStub(targetTown, false, ap.gateX, ap.gateY);
-            const stubChord = Math.hypot(townStub.x - apStub.x, townStub.y - apStub.y);
-            if (stubChord < (ap.isHub ? 18 : 22)) {
-              this.removeOrphanedTerminalStub(townStub.x, townStub.y);
-              continue;
+
+          // 2A. Try connecting the airport gate directly into an existing trunk motorway via a 3-way Trumpet Interchange
+          const apStubForSpur = this.createTerminalStreetStub(ap, true, ap.x + ap.landNx * 30, ap.y + ap.landNy * 30);
+          const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, apStubForSpur.x, apStubForSpur.y, algo, ap.id, ap.hostTownId);
+          if (spurRes) {
+            ap.motorwayId = mwayNumber++;
+            this.motorways.push(spurRes.mw);
+            this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+            this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
+            this.interchanges.push(spurRes.trumpetIc);
+            builtApMotorway = true;
+          }
+
+          // 2B. Otherwise connect the airport gate to a major landside city hub
+          const minAlignPasses = ap.isHub ? [0.44, 0.18] : [0.48];
+          for (const minAlign of minAlignPasses) {
+            if (builtApMotorway) break;
+            const townCandidates = [];
+            for (const t of this.towns) {
+              if (townMotorwayDegree[t.id] >= 2) continue;
+              // Do not build a parallel lens motorway from an airport to a town that is already
+              // directly connected to this airport's host town by M-1.
+              if (
+                primaryPair &&
+                ((primaryPair.tA.id === ap.hostTownId && primaryPair.tB.id === t.id) ||
+                 (primaryPair.tB.id === ap.hostTownId && primaryPair.tA.id === t.id))
+              ) {
+                continue;
+              }
+              const dx = t.x - ap.x;
+              const dy = t.y - ap.y;
+              const landV = dx * ap.landNx + dy * ap.landNy;
+              if (landV < 4.0) continue;
+
+              const gateDist = Math.hypot(t.x - ap.gateX, t.y - ap.gateY);
+              const minSpan = ap.isHub ? 20 : 26;
+              if (gateDist < minSpan || gateDist > 110) continue;
+
+              const alignCos = ((t.x - ap.gateX) * ap.landNx + (t.y - ap.gateY) * ap.landNy) / (gateDist || 1);
+              if (alignCos < minAlign) continue;
+
+              const isHost = t.id === ap.hostTownId;
+              const networkLinkBonus = townMotorwayDegree[t.id] === 1 ? 3.2 : 0.75;
+              const score =
+                (townPop(t) / Math.pow(gateDist, 0.58)) *
+                (0.55 + 0.65 * alignCos) *
+                (isHost ? 1.15 : 1.0) *
+                networkLinkBonus;
+              townCandidates.push({ town: t, score });
             }
 
-            const mwAp = this.createMotorwayEntity(
-              mwayNumber,
-              apStub.x, apStub.y,
-              townStub.x, townStub.y,
-              algo, ap.id, targetTown.id
-            );
-            if (mwAp) {
-              ap.motorwayId = mwayNumber++;
-              this.motorways.push(mwAp);
-              townMotorwayDegree[targetTown.id]++;
-              builtApMotorway = true;
-              break;
-            } else {
-              this.removeOrphanedTerminalStub(townStub.x, townStub.y);
+            townCandidates.sort((a, b) => b.score - a.score);
+
+            for (const { town: targetTown } of townCandidates) {
+              const apStub = this.createTerminalStreetStub(ap, true, targetTown.x, targetTown.y);
+              const townStub = this.createTerminalStreetStub(targetTown, false, ap.gateX, ap.gateY);
+              const stubChord = Math.hypot(townStub.x - apStub.x, townStub.y - apStub.y);
+              if (stubChord < (ap.isHub ? 18 : 22)) {
+                this.removeOrphanedTerminalStub(townStub.x, townStub.y);
+                continue;
+              }
+
+              const mwAp = this.createMotorwayEntity(
+                mwayNumber,
+                apStub.x, apStub.y,
+                townStub.x, townStub.y,
+                algo, ap.id, targetTown.id
+              );
+              if (mwAp) {
+                ap.motorwayId = mwayNumber++;
+                this.motorways.push(mwAp);
+                townMotorwayDegree[targetTown.id]++;
+                builtApMotorway = true;
+                break;
+              } else {
+                this.removeOrphanedTerminalStub(townStub.x, townStub.y);
+              }
             }
           }
 
@@ -2653,13 +2826,112 @@
           }
         }
 
+        // 3. Secondary Regional Corridor: Connect the largest remaining underserved metropolitan pole
+        // into the trunk highway network via a 3-way Trumpet Spur, 4-way Cloverleaf, or beltway extension.
+        if (this.towns.length >= 4 && pairs.length > 1 && primaryPair && this.motorways.length < 3) {
+          const m1Set = new Set([primaryPair.tA.id, primaryPair.tB.id]);
+          const m1Ang = Math.atan2(primaryPair.tB.y - primaryPair.tA.y, primaryPair.tB.x - primaryPair.tA.x);
+
+          let builtRegionalBranch = false;
+          const underservedTowns = [...this.towns]
+            .filter(t => townMotorwayDegree[t.id] === 0 && !isTownNearAnyMotorway(t, 16))
+            .sort((a, b) => townPop(b) - townPop(a));
+
+          // 3A. Try a clean 3-way Trumpet Spur from the top underserved regional town into an existing trunk motorway
+          for (const uTown of underservedTowns) {
+            const targetPt = primaryMidPt || { x: this.W * 0.5, y: this.H * 0.5 };
+            const stub = this.createTerminalStreetStub(uTown, false, targetPt.x, targetPt.y);
+            const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, stub.x, stub.y, algo, null, uTown.id);
+            if (spurRes) {
+              mwayNumber++;
+              this.motorways.push(spurRes.mw);
+              this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+              this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
+              this.interchanges.push(spurRes.trumpetIc);
+              townMotorwayDegree[uTown.id]++;
+              builtRegionalBranch = true;
+              break;
+            } else {
+              this.removeOrphanedTerminalStub(stub.x, stub.y);
+            }
+          }
+
+          // 3B. Otherwise build a transverse cross-corridor or pass-through beltway extension
+          if (!builtRegionalBranch) {
+            const secCandidates = [];
+            for (const cand of pairs) {
+              if (cand === primaryPair) continue;
+              const sharedCount = (m1Set.has(cand.tA.id) ? 1 : 0) + (m1Set.has(cand.tB.id) ? 1 : 0);
+              if (sharedCount >= 2) continue;
+
+              const cAng = Math.atan2(cand.tB.y - cand.tA.y, cand.tB.x - cand.tA.x);
+              const sinCross = Math.abs(Math.sin(cAng - m1Ang));
+
+              const midCx = (cand.tA.x + cand.tB.x) * 0.5;
+              const midCy = (cand.tA.y + cand.tB.y) * 0.5;
+              const midM1x = (primaryPair.tA.x + primaryPair.tB.x) * 0.5;
+              const midM1y = (primaryPair.tA.y + primaryPair.tB.y) * 0.5;
+              if (sinCross < 0.48 && Math.hypot(midCx - midM1x, midCy - midM1y) < 34) continue;
+
+              let useVia = null;
+              if (primaryMidPt && sharedCount === 0 && sinCross >= 0.75) {
+                const vx1 = primaryMidPt.x - cand.tA.x;
+                const vy1 = primaryMidPt.y - cand.tA.y;
+                const vx2 = cand.tB.x - primaryMidPt.x;
+                const vy2 = cand.tB.y - primaryMidPt.y;
+                const l1 = Math.hypot(vx1, vy1) || 1;
+                const l2 = Math.hypot(vx2, vy2) || 1;
+                const cosDeflect = (vx1 * vx2 + vy1 * vy2) / (l1 * l2);
+                if (cosDeflect >= 0.86 && l1 >= 22 && l2 >= 22) {
+                  useVia = primaryMidPt;
+                }
+              }
+
+              const connectedBonus = sharedCount === 1 ? 2.8 : (useVia ? 3.0 : 0.45);
+              const secScore = cand.gravity * connectedBonus;
+              secCandidates.push({ tA: cand.tA, tB: cand.tB, useVia, secScore });
+            }
+
+            secCandidates.sort((a, b) => b.secScore - a.secScore);
+
+            for (const bestSecondary of secCandidates) {
+              const { tA: cA, tB: cB, useVia } = bestSecondary;
+              if (townMotorwayDegree[cA.id] >= 2 || townMotorwayDegree[cB.id] >= 2) continue;
+              const rampA = this.createTerminalStreetStub(cA, false, cB.x, cB.y);
+              const rampB = this.createTerminalStreetStub(cB, false, cA.x, cA.y);
+              if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 28) {
+                this.removeOrphanedTerminalStub(rampA.x, rampA.y);
+                this.removeOrphanedTerminalStub(rampB.x, rampB.y);
+                continue;
+              }
+              const mw2 = this.createMotorwayEntity(
+                mwayNumber,
+                rampA.x, rampA.y,
+                rampB.x, rampB.y,
+                algo, null, cB.id,
+                useVia
+              );
+              if (mw2) {
+                mwayNumber++;
+                this.motorways.push(mw2);
+                townMotorwayDegree[cA.id]++;
+                townMotorwayDegree[cB.id]++;
+                break;
+              } else {
+                this.removeOrphanedTerminalStub(rampA.x, rampA.y);
+                this.removeOrphanedTerminalStub(rampB.x, rampB.y);
+              }
+            }
+          }
+        }
+
         this.detectAndBuildCloverleafs();
         this.buildIntermediateExpresswayRamps();
 
-        const cloverCount = this.interchanges.filter(i => i.type === 'cloverleaf').length;
+        const cloverCount = this.interchanges.filter(i => i.type === 'cloverleaf' || i.type === 'trumpet').length;
         const rampCount = this.interchanges.filter(i => i.type === 'diamond-ramp').length;
         this.logs.push(
-          `Built <b>${this.motorways.length} expressways</b>, <b>${cloverCount} cloverleafs</b> & <b>${rampCount} intermediate ramps</b> (displaced ${this.displacedBuildingsCount} buildings).`
+          `Built <b>${this.motorways.length} expressways</b>, <b>${cloverCount} system interchanges</b> & <b>${rampCount} intermediate ramps</b> (displaced ${this.displacedBuildingsCount} buildings).`
         );
       }
 
@@ -3635,6 +3907,64 @@
               }
             }
             ctx.restore();
+          } else if (ic.type === 'trumpet') {
+            // =================================================================
+            // AUTHENTIC 3-WAY TRUMPET INTERCHANGE
+            // - Terminating highway approaches from +sy side, with two directional
+            //   outer slip-ramps on the +sy side.
+            // - The 270° trumpet loop ("the bell") sits on the OPPOSITE side (-sy)
+            //   across the mainline overpass!
+            // =================================================================
+            const sy = ic.sideSign || 1;
+            const oppSy = -sy;
+            const outerDist = ts * 2.75;
+            const outerCtrl = ts * 0.92;
+            const leafSpan  = ts * 2.45;
+
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.translate(cx, cy);
+            ctx.rotate(ic.angleMain);
+
+            const drawTrumpetRamps = (oxS, oyS) => {
+              // 1. Two Concave Outer Directional Slip-Ramps on the Terminating Highway Side (+sy)
+              for (const sA of [-1, 1]) {
+                ctx.beginPath();
+                ctx.moveTo(sA * outerDist + oxS, 0 + oyS);
+                ctx.quadraticCurveTo(
+                  sA * outerCtrl + oxS,
+                  sy * outerCtrl + oyS,
+                  0 + oxS,
+                  sy * outerDist + oyS
+                );
+                ctx.stroke();
+              }
+
+              // 2. Single 270° Trumpet Loop on the OPPOSITE Side (-sy) across the mainline overpass
+              ctx.beginPath();
+              ctx.moveTo(0 + oxS, 0 + oyS);
+              ctx.bezierCurveTo(
+                0 + oxS, oppSy * leafSpan * 1.15 + oyS,
+                leafSpan * 1.15 + oxS, 0 + oyS,
+                0 + oxS, 0 + oyS
+              );
+              ctx.stroke();
+            };
+
+            // Ground shadow
+            ctx.strokeStyle = 'rgba(54, 56, 62, 0.12)';
+            ctx.lineWidth = ts * 0.42;
+            drawTrumpetRamps(5, 7);
+
+            // Casing + Pink Ramp Fill
+            for (const pass of ['border', 'fill']) {
+              ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : '#f48fb1';
+              ctx.lineWidth = pass === 'border' ? ts * 0.38 : ts * 0.24;
+              drawTrumpetRamps(0, 0);
+            }
+
+            ctx.restore();
           } else if (ic.type === 'diamond-ramp') {
             // =================================================================
             // ONE-SIDED HALF-DIAMOND SLIP-RAMP TO SURFACE STUB
@@ -3738,16 +4068,27 @@
             ctx.stroke();
           }
 
-          // Choose a clean Highway Shield Badge ([1], [2]) position away from interchanges
-          let shieldPt = samples[Math.floor(samples.length * 0.42)];
-          for (const frac of [0.42, 0.56, 0.30, 0.68, 0.22, 0.76]) {
-            const cand = samples[Math.floor(samples.length * frac)];
-            const nearIc = world.interchanges.some(
-              ic => ic.type !== 'terminal-stub' && Math.hypot(ic.x - cand.x, ic.y - cand.y) < 7.0
+          // Choose a clean Highway Shield Badge ([1], [2]) position that maximizes clearance from all interchanges & endpoints
+          let shieldPt = samples[Math.floor(samples.length * 0.5)];
+          let bestClearance = -Infinity;
+          const iMin = Math.max(2, Math.floor(samples.length * 0.16));
+          const iMax = Math.min(samples.length - 3, Math.ceil(samples.length * 0.84));
+          for (let i = iMin; i <= iMax; i++) {
+            const cand = samples[i];
+            let minIcDist = Math.min(
+              Math.hypot(cand.x - mw.sx, cand.y - mw.sy),
+              Math.hypot(cand.x - mw.ex, cand.y - mw.ey)
             );
-            if (!nearIc) {
+            for (const ic of world.interchanges) {
+              const dIc = Math.hypot(ic.x - cand.x, ic.y - cand.y);
+              if (dIc < minIcDist) minIcDist = dIc;
+            }
+            // Prefer central span slightly when clearance is already ample
+            const centerBias = 1.0 - Math.abs(i / (samples.length - 1) - 0.5) * 0.35;
+            const score = Math.min(minIcDist, 14.0) * centerBias;
+            if (score > bestClearance) {
+              bestClearance = score;
               shieldPt = cand;
-              break;
             }
           }
           const bx = shieldPt.x * ts + ts * 0.5;
@@ -3776,13 +4117,13 @@
           ctx.restore();
         }
 
-        // 3. Draw Grade-Separated Overpass Bridge Spans at Cloverleaf / Trumpet Centers
+        // 3. Draw Grade-Separated Overpass Bridge Spans at Cloverleaf & Trumpet Centers
         for (const ic of world.interchanges) {
-          if (ic.type === 'cloverleaf') {
+          if (ic.type === 'cloverleaf' || ic.type === 'trumpet') {
             const cx = ic.x * ts + ts * 0.5;
             const cy = ic.y * ts + ts * 0.5;
             const span = ts * 1.15;
-            const bridgeAng = ic.prunedBridgeB ? ic.angleA : ic.angleB;
+            const bridgeAng = ic.type === 'trumpet' ? ic.angleMain : (ic.prunedBridgeB ? ic.angleA : ic.angleB);
             const ux = Math.cos(bridgeAng);
             const uy = Math.sin(bridgeAng);
             const nx = -uy;
@@ -4169,7 +4510,7 @@
       const hubs = world.airports.filter(a => a.airportClass === 'HUB').length;
       const others = world.airports.length - hubs;
       document.getElementById('statAirports').textContent = `${hubs}H / ${others}R`;
-      const clovers = world.interchanges.filter(i => i.type === 'cloverleaf').length;
+      const clovers = world.interchanges.filter(i => i.type === 'cloverleaf' || i.type === 'trumpet').length;
       const ramps = world.interchanges.filter(i => i.type === 'diamond-ramp').length;
       document.getElementById('statBridges').textContent = `${clovers}C / ${ramps}R`;
 
