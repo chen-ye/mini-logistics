@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Mini Logistics — Procedural World & Airport Generator</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,13 +13,15 @@
       box-sizing: border-box;
       user-select: none;
       -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
     }
     body, html {
       margin: 0;
       padding: 0;
-      width: 100%;
-      height: 100%;
+      width: 100dvw;
+      height: 100dvh;
       overflow: hidden;
+      overscroll-behavior: none;
       background-color: #f2efe9;
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       color: #36383e;
@@ -29,12 +31,18 @@
       width: 100%;
       height: 100%;
       cursor: grab;
+      touch-action: none;
     }
     canvas:active {
       cursor: grabbing;
     }
     .mono {
       font-family: 'JetBrains Mono', monospace;
+    }
+    .drawer-scroll {
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
     }
     /* Custom minimalist scrollbars for inspector drawer */
     ::-webkit-scrollbar {
@@ -58,18 +66,28 @@
       height: 6px;
       border-radius: 999px;
       outline: none;
+      touch-action: pan-y;
     }
     input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none;
       appearance: none;
-      width: 16px;
-      height: 16px;
+      width: 18px;
+      height: 18px;
       border-radius: 50%;
       background: #36383e;
       cursor: pointer;
       border: 2px solid #f2efe9;
       box-shadow: 0 1px 3px rgba(0,0,0,0.25);
       transition: transform 0.15s ease;
+    }
+    @media (pointer: coarse) {
+      input[type="range"] {
+        height: 8px;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        width: 22px;
+        height: 22px;
+      }
     }
     input[type="range"]::-webkit-slider-thumb:hover {
       transform: scale(1.15);
@@ -88,46 +106,54 @@
     }
   </style>
 </head>
-<body class="relative w-screen h-screen overflow-hidden">
+<body class="relative w-dvw h-dvh overflow-hidden">
 
   <!-- MAIN WORLD CANVAS -->
-  <canvas id="worldCanvas"></canvas>
+  <canvas id="worldCanvas" tabindex="0" role="region" aria-label="Interactive procedural logistics map"></canvas>
 
   <!-- TOP-LEFT BUTTON & GENERATOR LAB DRAWER -->
-  <div class="fixed top-4 left-4 z-30 flex flex-col gap-2 max-h-[calc(100vh-2rem)] pointer-events-none">
+  <div class="fixed top-2.5 left-2.5 sm:top-4 sm:left-4 z-30 flex flex-col gap-2 max-h-[calc(100dvh-1.25rem)] sm:max-h-[calc(100dvh-2rem)] pointer-events-none">
     <!-- Top Bar Toggle & Quick Seed -->
-    <div class="flex items-center gap-2 pointer-events-auto">
-      <button id="toggleDrawerBtn" title="Toggle Procedural Algorithm Panel"
-        class="w-11 h-11 rounded-full glass-panel flex items-center justify-center text-[#36383e] hover:bg-[#36383e] hover:text-[#f2efe9] transition-all shadow-sm">
-        <svg id="drawerIconOpen" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24">
+    <div class="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
+      <button id="toggleDrawerBtn" title="Toggle Procedural Algorithm Panel" aria-label="Toggle Procedural Algorithm Panel"
+        class="w-9 h-9 sm:w-11 sm:h-11 shrink-0 rounded-full glass-panel flex items-center justify-center text-[#36383e] hover:bg-[#36383e] hover:text-[#f2efe9] active:scale-95 transition-all shadow-sm">
+        <svg id="drawerIconOpen" class="w-4 h-4 sm:w-5 sm:h-5" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
         </svg>
       </button>
 
-      <div class="glass-panel rounded-full px-3.5 py-1.5 flex items-center gap-2.5">
-        <span class="text-[11px] font-bold uppercase tracking-wider text-stone-500">Seed</span>
-        <input id="seedInput" type="text" value="OTTD-METRO-84"
-          class="mono text-xs font-bold bg-stone-200/70 text-[#36383e] px-2.5 py-1 rounded-full w-32 focus:outline-none focus:ring-2 focus:ring-stone-700" />
+      <div class="glass-panel rounded-full px-2 py-1 sm:px-3.5 sm:py-1.5 flex items-center gap-1 sm:gap-2.5">
+        <span class="hidden sm:inline text-[11px] font-bold uppercase tracking-wider text-stone-500">Seed</span>
+        <input id="seedInput" type="text" value="OTTD-METRO-84" aria-label="World Generation Seed"
+          class="mono text-[10px] sm:text-xs font-bold bg-stone-200/70 text-[#36383e] px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full w-24 sm:w-32 focus:outline-none focus:ring-2 focus:ring-stone-700" />
         <button id="randomSeedBtn" title="Generate New Random World"
-          class="bg-[#e85c90] hover:bg-[#d6487c] text-white text-xs font-bold px-3 py-1 rounded-full transition shadow-sm flex items-center gap-1">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24">
+          class="bg-[#e85c90] hover:bg-[#d6487c] active:scale-95 text-white text-[10px] sm:text-xs font-bold px-2 sm:px-3 py-0.5 sm:py-1 rounded-full transition shadow-sm flex items-center gap-1 shrink-0">
+          <svg class="w-3 h-3 sm:w-3.5 sm:h-3.5" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
           </svg>
-          <span>New World</span>
+          <span class="hidden sm:inline">New World</span>
+          <span class="sm:hidden">New</span>
         </button>
       </div>
     </div>
 
     <!-- Collapsible Procedural Generation Controls Drawer -->
-    <div id="generatorDrawer" class="glass-panel rounded-2xl w-80 sm:w-96 p-4 flex flex-col gap-3.5 overflow-y-auto pointer-events-auto transition-all duration-200 max-h-[calc(100vh-5.5rem)]">
-      <div class="flex items-center justify-between border-b border-stone-300/60 pb-2.5">
+    <div id="generatorDrawer" class="drawer-scroll glass-panel rounded-2xl w-[calc(100dvw-1.25rem)] sm:w-96 p-3.5 sm:p-4 flex flex-col gap-3 sm:gap-3.5 overflow-y-auto pointer-events-auto transition-all duration-200 max-h-[calc(100dvh-4.5rem)] sm:max-h-[calc(100dvh-5.5rem)]">
+      <div class="flex items-center justify-between border-b border-stone-300/60 pb-2.5 gap-2">
         <div>
-          <h1 class="text-sm font-extrabold tracking-tight text-[#36383e]">PROCEDURAL WORLD ENGINE</h1>
-          <p class="text-[11px] text-stone-500 font-medium">Hydrology, Central Place Theory & Airport Solver</p>
+          <h1 class="text-xs sm:text-sm font-extrabold tracking-tight text-[#36383e]">PROCEDURAL WORLD ENGINE</h1>
+          <p class="text-[10px] sm:text-[11px] text-stone-500 font-medium">Hydrology, Central Place Theory & Airport Solver</p>
         </div>
-        <button id="resetViewBtn" class="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-stone-200/80 hover:bg-stone-300 text-stone-700 transition">
-          Fit Camera
-        </button>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="resetViewBtn" class="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-stone-200/80 hover:bg-stone-300 active:scale-95 text-stone-700 transition">
+            Fit Camera
+          </button>
+          <button id="closeDrawerMobileBtn" aria-label="Close settings panel" class="sm:hidden w-7 h-7 rounded-lg bg-stone-200/80 hover:bg-stone-300 flex items-center justify-center text-stone-700">
+            <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <!-- Algorithmic Inspection Overlays -->
@@ -298,60 +324,71 @@
       </div>
 
       <div class="text-[11px] text-stone-500 flex items-center justify-between pt-0.5">
-        <span>Click any <b>Airport</b> or <b>Town</b> to inspect</span>
-        <span>Drag to pan • Scroll to zoom</span>
+        <span>Tap or click any <b>Airport</b> / <b>Town</b></span>
+        <span>Drag to pan • Pinch / Scroll to zoom</span>
       </div>
     </div>
   </div>
 
-  <!-- TOP-RIGHT MINI MOTORWAYS HUD (Trip Counter, Clock, Simulation Speed) -->
-  <div class="fixed top-4 right-4 z-30 flex flex-col items-end gap-2 pointer-events-none">
-    <div class="flex items-center gap-3 glass-panel px-4 py-2 rounded-full pointer-events-auto">
+  <!-- TOP-RIGHT MINI MOTORWAYS HUD (Trip Counter, Clock, Simulation Speed & Zoom Controls) -->
+  <div class="fixed top-2.5 right-2.5 sm:top-4 sm:right-4 z-20 flex flex-col items-end gap-1.5 sm:gap-2 pointer-events-none">
+    <div class="flex items-center gap-1.5 sm:gap-3 glass-panel px-2.5 py-1 sm:px-4 sm:py-2 rounded-full pointer-events-auto">
       <!-- Delivered Passengers / Cargo Counter -->
-      <div class="flex items-center gap-1.5 pr-2 border-r border-stone-300/70">
-        <span id="tripCounter" class="mono text-lg font-extrabold text-[#36383e] tracking-tight">1,372</span>
-        <svg class="w-5 h-5 text-[#36383e]" viewBox="0 0 24 24" fill="currentColor">
+      <div class="flex items-center gap-1 sm:gap-1.5 pr-1.5 sm:pr-2 border-r border-stone-300/70">
+        <span id="tripCounter" class="mono text-xs sm:text-lg font-extrabold text-[#36383e] tracking-tight">1,372</span>
+        <svg class="w-3.5 h-3.5 sm:w-5 sm:h-5 text-[#36383e]" aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
           <path fill-rule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
         </svg>
       </div>
 
       <!-- Day & Minimalist Analog Clock -->
-      <div class="flex items-center gap-2">
-        <span id="dayLabel" class="text-xs font-extrabold tracking-widest uppercase text-[#36383e]">TUE</span>
-        <div class="relative w-7 h-7 rounded-full bg-[#36383e] flex items-center justify-center shadow-inner">
+      <div class="flex items-center gap-1.5 sm:gap-2">
+        <span id="dayLabel" class="hidden min-[420px]:inline text-[10px] sm:text-xs font-extrabold tracking-widest uppercase text-[#36383e]">TUE</span>
+        <div class="relative w-5 h-5 sm:w-7 sm:h-7 rounded-full bg-[#36383e] flex items-center justify-center shadow-inner">
           <!-- Clock tick marks -->
-          <div class="w-5 h-5 rounded-full border border-dashed border-stone-400/50"></div>
-          <div id="clockHand" class="absolute w-0.5 h-2.5 bg-[#f2efe9] rounded-full origin-bottom" style="bottom: 50%; transform: rotate(45deg);"></div>
+          <div class="w-3.5 h-3.5 sm:w-5 sm:h-5 rounded-full border border-dashed border-stone-400/50"></div>
+          <div id="clockHand" class="absolute w-0.5 h-1.5 sm:h-2.5 bg-[#f2efe9] rounded-full origin-bottom" style="bottom: 50%; transform: rotate(45deg);"></div>
         </div>
       </div>
     </div>
 
     <!-- Simulation Speed Controls (Pause, Play, Fast Forward) -->
-    <div class="flex flex-col gap-1.5 glass-panel p-1.5 rounded-2xl pointer-events-auto">
-      <button data-speed="0" class="speed-btn w-8 h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] transition" title="Pause Traffic & Flights">
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
+    <div class="flex flex-col gap-1 sm:gap-1.5 glass-panel p-1 sm:p-1.5 rounded-2xl pointer-events-auto">
+      <button data-speed="0" class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition" title="Pause Traffic & Flights" aria-label="Pause Traffic and Flights">
+        <svg class="w-4 h-4" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
       </button>
-      <button data-speed="1" class="speed-btn w-8 h-8 rounded-xl flex items-center justify-center bg-[#36383e] text-[#f2efe9] transition" title="Normal Speed">
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      <button data-speed="1" class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center bg-[#36383e] text-[#f2efe9] active:scale-95 transition" title="Normal Speed" aria-label="Normal Speed">
+        <svg class="w-4 h-4" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
-      <button data-speed="2.5" class="speed-btn w-8 h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] transition" title="Fast Forward">
-        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+      <button data-speed="2.5" class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition" title="Fast Forward" aria-label="Fast Forward">
+        <svg class="w-4 h-4" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+      </button>
+    </div>
+
+    <!-- Touch & Thumb Camera Zoom Controls (+, −, Fit) -->
+    <div class="flex flex-col gap-1 sm:gap-1.5 glass-panel p-1 sm:p-1.5 rounded-2xl pointer-events-auto">
+      <button id="zoomInBtn" class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition font-bold text-base" title="Zoom In" aria-label="Zoom In">+</button>
+      <button id="zoomOutBtn" class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition font-bold text-base" title="Zoom Out" aria-label="Zoom Out">&minus;</button>
+      <button id="hudFitBtn" class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition" title="Fit World to Screen" aria-label="Fit World to Screen">
+        <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+        </svg>
       </button>
     </div>
   </div>
 
-  <!-- BOTTOM-RIGHT ENTITY INSPECTOR CARD (Shows when clicking an Airport or Town) -->
-  <div id="inspectorCard" class="fixed bottom-4 right-4 z-30 w-80 sm:w-96 glass-panel rounded-2xl p-4 hidden pointer-events-auto transition-all">
+  <!-- BOTTOM ENTITY INSPECTOR CARD (Responsive Bottom Sheet on Mobile, Card on Desktop) -->
+  <div id="inspectorCard" class="fixed bottom-2.5 left-2.5 right-2.5 sm:left-auto sm:bottom-4 sm:right-4 z-30 sm:w-96 glass-panel rounded-2xl p-3.5 sm:p-4 hidden pointer-events-auto transition-all">
     <div class="flex items-start justify-between gap-2 border-b border-stone-300/70 pb-2.5 mb-2.5">
       <div>
         <div class="flex items-center gap-2">
           <span id="inspBadge" class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-pink-600 text-white">AIRPORT</span>
           <span id="inspCode" class="mono text-xs font-bold text-stone-500">IATA: KMT</span>
         </div>
-        <h2 id="inspTitle" class="text-base font-extrabold text-[#36383e] mt-0.5">Metro International Airport</h2>
+        <h2 id="inspTitle" class="text-sm sm:text-base font-extrabold text-[#36383e] mt-0.5">Metro International Airport</h2>
       </div>
-      <button id="closeInspectorBtn" class="text-stone-400 hover:text-stone-700 p-1">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+      <button id="closeInspectorBtn" aria-label="Close inspector" class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-500 hover:text-stone-800 hover:bg-stone-200/70">
+        <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
@@ -3191,8 +3228,38 @@
       }
 
       fitCamera(world) {
-        const worldPxW = world.W * world.tileSize;
-        const worldPxH = world.H * world.tileSize;
+        const ts = world.tileSize;
+        const worldPxW = world.W * ts;
+        const worldPxH = world.H * ts;
+
+        // On portrait or small mobile viewports, fit the camera around the active metropolitan
+        // bounding box (towns + airports) so the network fills the portrait screen legibly.
+        if ((this.canvas.width < 640 || this.canvas.width < this.canvas.height) && world.towns.length > 0) {
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (const t of world.towns) {
+            minX = Math.min(minX, t.x - t.urbanRadius - 4);
+            maxX = Math.max(maxX, t.x + t.urbanRadius + 4);
+            minY = Math.min(minY, t.y - t.urbanRadius - 4);
+            maxY = Math.max(maxY, t.y + t.urbanRadius + 4);
+          }
+          for (const ap of world.airports) {
+            minX = Math.min(minX, ap.x - ap.halfLen - 5);
+            maxX = Math.max(maxX, ap.x + ap.halfLen + 5);
+            minY = Math.min(minY, ap.y - ap.halfLen - 5);
+            maxY = Math.max(maxY, ap.y + ap.halfLen + 5);
+          }
+          const boxW = Math.max(60, maxX - minX) * ts;
+          const boxH = Math.max(50, maxY - minY) * ts;
+          const cx = ((minX + maxX) * 0.5) * ts;
+          const cy = ((minY + maxY) * 0.5) * ts;
+          const scaleX = (this.canvas.width * 0.92) / boxW;
+          const scaleY = (this.canvas.height * 0.78) / boxH;
+          this.camera.zoom = Math.max(0.18, Math.min(1.25, Math.min(scaleX, scaleY)));
+          this.camera.x = this.canvas.width * 0.5 - cx * this.camera.zoom;
+          this.camera.y = this.canvas.height * 0.52 - cy * this.camera.zoom;
+          return;
+        }
+
         const scaleX = this.canvas.width / worldPxW;
         const scaleY = this.canvas.height / worldPxH;
         this.camera.zoom = Math.min(scaleX, scaleY) * 0.94;
@@ -4718,67 +4785,169 @@
     }
     window.addEventListener('resize', handleResize);
 
-    // Pan & Zoom + Click Inspection on Canvas
+    function zoomAroundPoint(factor, centerX, centerY) {
+      const newZoom = Math.max(0.16, Math.min(3.5, renderer.camera.zoom * factor));
+      renderer.camera.x = centerX - (centerX - renderer.camera.x) * (newZoom / renderer.camera.zoom);
+      renderer.camera.y = centerY - (centerY - renderer.camera.y) * (newZoom / renderer.camera.zoom);
+      renderer.camera.zoom = newZoom;
+    }
+
+    // Multi-Touch Pinch-to-Zoom, Pan & Tap Inspection on Canvas
+    const activePointers = new Map();
     let isDragging = false;
+    let hadMultiTouch = false;
     let dragStart = { x: 0, y: 0 };
     let pointerDownPos = { x: 0, y: 0 };
+    let lastPinchDist = 0;
+    let lastPinchMid = { x: 0, y: 0 };
+    let lastTapTime = 0;
+
+    function getTwoPointerMetrics() {
+      const pts = Array.from(activePointers.values());
+      const dx = pts[1].x - pts[0].x;
+      const dy = pts[1].y - pts[0].y;
+      return {
+        dist: Math.hypot(dx, dy) || 1,
+        midX: (pts[0].x + pts[1].x) * 0.5,
+        midY: (pts[0].y + pts[1].y) * 0.5
+      };
+    }
 
     canvas.addEventListener('pointerdown', (e) => {
-      isDragging = true;
-      dragStart.x = e.clientX - renderer.camera.x;
-      dragStart.y = e.clientY - renderer.camera.y;
-      pointerDownPos = { x: e.clientX, y: e.clientY };
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch (_) {}
+
+      if (activePointers.size === 1) {
+        isDragging = true;
+        hadMultiTouch = false;
+        dragStart.x = e.clientX - renderer.camera.x;
+        dragStart.y = e.clientY - renderer.camera.y;
+        pointerDownPos = { x: e.clientX, y: e.clientY };
+      } else if (activePointers.size === 2) {
+        hadMultiTouch = true;
+        const m = getTwoPointerMetrics();
+        lastPinchDist = m.dist;
+        lastPinchMid = { x: m.midX, y: m.midY };
+      }
     });
 
     window.addEventListener('pointermove', (e) => {
-      if (!isDragging) return;
-      renderer.camera.x = e.clientX - dragStart.x;
-      renderer.camera.y = e.clientY - dragStart.y;
-    });
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    window.addEventListener('pointerup', (e) => {
-      if (!isDragging) return;
-      isDragging = false;
-      const moveDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
-      if (moveDist < 6 && currentWorld) {
-        // Convert screen click to world tile coordinates
-        const wx = (e.clientX - renderer.camera.x) / (renderer.camera.zoom * currentWorld.tileSize);
-        const wy = (e.clientY - renderer.camera.y) / (renderer.camera.zoom * currentWorld.tileSize);
-
-        // Check Airports first
-        for (const ap of currentWorld.airports) {
-          if (Math.hypot(wx - ap.x, wy - ap.y) <= ap.halfLen + 2) {
-            renderer.selectedEntity = ap;
-            openEntityInspector('airport', ap);
-            return;
-          }
-        }
-        // Check Towns
-        for (const t of currentWorld.towns) {
-          if (Math.hypot(wx - t.x, wy - t.y) <= t.urbanRadius) {
-            renderer.selectedEntity = t;
-            openEntityInspector('town', t);
-            return;
-          }
-        }
-        renderer.selectedEntity = null;
-        document.getElementById('inspectorCard').classList.add('hidden');
+      if (activePointers.size === 2) {
+        const m = getTwoPointerMetrics();
+        const scaleFactor = m.dist / (lastPinchDist || m.dist);
+        const newZoom = Math.max(0.16, Math.min(3.5, renderer.camera.zoom * scaleFactor));
+        renderer.camera.x = m.midX - (lastPinchMid.x - renderer.camera.x) * (newZoom / renderer.camera.zoom);
+        renderer.camera.y = m.midY - (lastPinchMid.y - renderer.camera.y) * (newZoom / renderer.camera.zoom);
+        renderer.camera.zoom = newZoom;
+        lastPinchDist = m.dist;
+        lastPinchMid = { x: m.midX, y: m.midY };
+      } else if (activePointers.size === 1 && isDragging) {
+        const pt = activePointers.values().next().value;
+        renderer.camera.x = pt.x - dragStart.x;
+        renderer.camera.y = pt.y - dragStart.y;
       }
     });
+
+    function handlePointerEnd(e) {
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.delete(e.pointerId);
+
+      if (activePointers.size === 1) {
+        // Smoothly re-anchor single-finger drag when one finger lifts from a 2-finger pinch
+        const remaining = activePointers.values().next().value;
+        dragStart.x = remaining.x - renderer.camera.x;
+        dragStart.y = remaining.y - renderer.camera.y;
+        return;
+      }
+
+      if (activePointers.size === 0 && isDragging) {
+        isDragging = false;
+        if (hadMultiTouch) return;
+
+        const tapThreshold = e.pointerType === 'touch' ? 12 : 6;
+        const moveDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+        if (moveDist < tapThreshold && currentWorld) {
+          const wx = (e.clientX - renderer.camera.x) / (renderer.camera.zoom * currentWorld.tileSize);
+          const wy = (e.clientY - renderer.camera.y) / (renderer.camera.zoom * currentWorld.tileSize);
+          const touchPad = e.pointerType === 'touch' ? 2.5 : 0;
+
+          // Check Airports first
+          for (const ap of currentWorld.airports) {
+            if (Math.hypot(wx - ap.x, wy - ap.y) <= ap.halfLen + 2 + touchPad) {
+              renderer.selectedEntity = ap;
+              if (window.innerWidth < 640) {
+                document.getElementById('generatorDrawer').classList.add('hidden');
+              }
+              openEntityInspector('airport', ap);
+              return;
+            }
+          }
+          // Check Towns
+          for (const t of currentWorld.towns) {
+            if (Math.hypot(wx - t.x, wy - t.y) <= t.urbanRadius + touchPad) {
+              renderer.selectedEntity = t;
+              if (window.innerWidth < 640) {
+                document.getElementById('generatorDrawer').classList.add('hidden');
+              }
+              openEntityInspector('town', t);
+              return;
+            }
+          }
+
+          // Double-tap on empty map to zoom in on touch devices
+          const now = performance.now();
+          if (e.pointerType === 'touch' && now - lastTapTime < 300) {
+            zoomAroundPoint(1.35, e.clientX, e.clientY);
+            lastTapTime = 0;
+            return;
+          }
+          lastTapTime = now;
+
+          renderer.selectedEntity = null;
+          document.getElementById('inspectorCard').classList.add('hidden');
+          if (window.innerWidth < 640) {
+            document.getElementById('generatorDrawer').classList.add('hidden');
+          }
+        }
+      }
+    }
+
+    window.addEventListener('pointerup', handlePointerEnd);
+    window.addEventListener('pointercancel', handlePointerEnd);
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
-      const newZoom = Math.max(0.35, Math.min(3.5, renderer.camera.zoom * zoomFactor));
-      // Zoom around cursor
-      renderer.camera.x = e.clientX - (e.clientX - renderer.camera.x) * (newZoom / renderer.camera.zoom);
-      renderer.camera.y = e.clientY - (e.clientY - renderer.camera.y) * (newZoom / renderer.camera.zoom);
-      renderer.camera.zoom = newZoom;
+      zoomAroundPoint(zoomFactor, e.clientX, e.clientY);
     }, { passive: false });
+
+    // Keyboard Arrow-key panning & +/- zooming when canvas is focused
+    canvas.addEventListener('keydown', (e) => {
+      const panStep = 40;
+      if (e.key === 'ArrowLeft') renderer.camera.x += panStep;
+      else if (e.key === 'ArrowRight') renderer.camera.x -= panStep;
+      else if (e.key === 'ArrowUp') renderer.camera.y += panStep;
+      else if (e.key === 'ArrowDown') renderer.camera.y -= panStep;
+      else if (e.key === '+' || e.key === '=') zoomAroundPoint(1.18, canvas.width * 0.5, canvas.height * 0.5);
+      else if (e.key === '-') zoomAroundPoint(0.84, canvas.width * 0.5, canvas.height * 0.5);
+    });
 
     // UI Control Bindings
     document.getElementById('toggleDrawerBtn').addEventListener('click', () => {
-      document.getElementById('generatorDrawer').classList.toggle('hidden');
+      const drawer = document.getElementById('generatorDrawer');
+      drawer.classList.toggle('hidden');
+      if (!drawer.classList.contains('hidden') && window.innerWidth < 640) {
+        document.getElementById('inspectorCard').classList.add('hidden');
+      }
+    });
+
+    document.getElementById('closeDrawerMobileBtn').addEventListener('click', () => {
+      document.getElementById('generatorDrawer').classList.add('hidden');
     });
 
     document.getElementById('closeInspectorBtn').addEventListener('click', () => {
@@ -4787,6 +4956,21 @@
     });
 
     document.getElementById('resetViewBtn').addEventListener('click', () => {
+      if (currentWorld) renderer.fitCamera(currentWorld);
+      if (window.innerWidth < 640) {
+        document.getElementById('generatorDrawer').classList.add('hidden');
+      }
+    });
+
+    document.getElementById('zoomInBtn').addEventListener('click', () => {
+      zoomAroundPoint(1.25, canvas.width * 0.5, canvas.height * 0.5);
+    });
+
+    document.getElementById('zoomOutBtn').addEventListener('click', () => {
+      zoomAroundPoint(0.8, canvas.width * 0.5, canvas.height * 0.5);
+    });
+
+    document.getElementById('hudFitBtn').addEventListener('click', () => {
       if (currentWorld) renderer.fitCamera(currentWorld);
     });
 
@@ -4886,6 +5070,9 @@
              <span class="text-[9px] font-bold text-stone-600">${c.name.slice(0,3)}</span>
            </div>`
         ).join('');
+      }
+      if (window.innerWidth < 768) {
+        document.getElementById('generatorDrawer').classList.add('hidden');
       }
       handleResize();
       rebuildWorld(false);
