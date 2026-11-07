@@ -685,27 +685,28 @@
             const ridgedSpines = Math.pow(Math.max(0, 1.0 - Math.abs(2.0 * ridgeRaw - 1.0)), 1.6) * 0.24;
             const fineDetail = this.noise.fbm((x / 32) + offX, (y / 32) + offY, 2) * 0.10;
 
-            // Regional coastal tilt along `coastAng`
-            const cProj = nx * cosC + ny * sinC; // -0.7 .. +0.7
+            // Regional coastal embayment (indents 22%-34% from the coastal edge, never slicing the whole map in half!)
+            const cProj = nx * cosC + ny * sinC;
+            const coastDepth = Math.max(0, (cProj - 0.14) / 0.42);
+            const bayIndent = Math.exp(-Math.pow(vStrike / 0.18, 2)) * Math.pow(coastDepth, 1.25) * 0.48;
 
-            let elev = macroPlate * 0.54 + foldValleys + ridgedSpines + fineDetail;
+            // Bounded interior tectonic lake basins along the fold valleys (separated by broad dry land corridors!)
+            const lakeWell1 = Math.exp(-Math.pow((uStrike + 0.18) / 0.16, 2) - Math.pow((vStrike - 0.08) / 0.11, 2)) * 0.28;
+            const lakeWell2 = Math.exp(-Math.pow((uStrike - 0.22) / 0.15, 2) - Math.pow((vStrike + 0.14) / 0.10, 2)) * 0.26;
+
+            let elev = macroPlate * 0.52 + foldValleys * 0.75 + ridgedSpines + fineDetail;
 
             if (arch === 'estuary') {
-              // Deep drowned coastal sound/estuary along the coastal edge + interior river valleys
-              const bayIndent = Math.exp(-Math.pow(vStrike / 0.22, 2)) * Math.max(0, cProj + 0.15) * 0.52;
-              elev += -cProj * 0.26 - bayIndent;
+              elev += -coastDepth * 0.22 - bayIndent * 1.15 - lakeWell1 * 0.95 - lakeWell2 * 0.85;
             } else if (arch === 'archipelago') {
-              // Submerged tectonic valleys creating an island chain separated by marine straits
-              const crossStrait = Math.cos(uStrike * Math.PI * 3.2 + offX) * 0.13;
-              elev += crossStrait - Math.hypot(nx, ny) * 0.16;
+              const straitWave = Math.cos(uStrike * Math.PI * 2.8 + offX) * Math.sin(vStrike * Math.PI * 2.4 + offY) * 0.22;
+              elev += straitWave - bayIndent * 0.90 - lakeWell1 - lakeWell2;
             } else if (arch === 'inland') {
-              // Continental basin-and-range: highland rim framing interior tectonic valley lakes
-              const rimLift = Math.pow(Math.max(0, Math.hypot(nx, ny) - 0.32) / 0.38, 1.4) * 0.22;
-              elev += rimLift - cProj * 0.10;
+              const lakeWell3 = Math.exp(-Math.pow(uStrike / 0.18, 2) - Math.pow((vStrike - 0.22) / 0.11, 2)) * 0.28;
+              elev += -lakeWell1 * 1.15 - lakeWell2 * 1.15 - lakeWell3 * 1.10;
             } else {
-              // 'confluence': Upland mountain divide sloping into a major alluvial basin & coastal bay
-              const valleyCorridor = Math.exp(-Math.pow(vStrike / 0.26, 2)) * 0.18;
-              elev += -cProj * 0.22 - valleyCorridor;
+              // 'confluence': Coastal harbor bay on one edge + 2 bounded interior valley lakes + broad river valleys
+              elev += -coastDepth * 0.18 - bayIndent - lakeWell1 - lakeWell2;
             }
 
             const id = this.idx(x, y);
@@ -725,8 +726,8 @@
           this.elevationField[i] = 0.02 + ((this.elevationField[i] - minE) / spanE) * 0.96;
         }
 
-        const baseFrac = arch === 'archipelago' ? 0.29 : (arch === 'estuary' ? 0.24 : (arch === 'inland' ? 0.16 : 0.20));
-        const targetWaterFrac = Math.max(0.10, Math.min(0.42, baseFrac * (0.65 + waterRatio * 0.72)));
+        const baseFrac = arch === 'archipelago' ? 0.22 : (arch === 'estuary' ? 0.19 : (arch === 'inland' ? 0.14 : 0.17));
+        const targetWaterFrac = Math.max(0.10, Math.min(0.32, baseFrac * (0.68 + waterRatio * 0.65)));
         const qIdx = Math.floor(sampleElevs.length * targetWaterFrac);
         const seaLevel = 0.02 + ((sampleElevs[qIdx] - minE) / spanE) * 0.96;
         this.seaLevel = seaLevel;
@@ -925,13 +926,14 @@
               const uphill = Math.max(0, nextElev - currElev);
 
               const valleyMeander =
-                this.noise.fbm(nx * 0.045 + 7.1 + salt, ny * 0.045 + 3.9 + salt, 2) * 5.2;
+                this.noise.fbm(nx * 0.075 + 7.1 + salt, ny * 0.075 + 3.9 + salt, 2) * 7.5 +
+                this.noise.noise(nx * 0.19 + 3.4, ny * 0.19 + 8.1) * 3.8;
 
               let stepCost = baseStep + heightAboveSea * 22.0 + uphill * 65.0 + valleyMeander;
 
-              const maxCleanRun = (dx !== 0 && dy !== 0) ? 3 : 6;
+              const maxCleanRun = (dx !== 0 && dy !== 0) ? 1 : 3;
               if (sameDir && nextRun > maxCleanRun) {
-                stepCost += (nextRun - maxCleanRun) * 4.5;
+                stepCost += (nextRun - maxCleanRun) * 6.5;
               }
 
               if (this.waterMask[nid] === 1) {
@@ -954,34 +956,44 @@
           return null;
         };
 
-        const carveTaperingRiverPath = (path, isMainOutflow) => {
-          if (!path || path.length < 6) return;
-          // Trim points that are deep inside the source or destination lake so vector tapering starts at the rim
+        const carveTaperingRiverPath = (rawPath, isMainOutflow) => {
+          if (!rawPath || rawPath.length < 6) return;
+          // Trim leading points that are deep inside the source lake (keep 2 points inside the rim)
+          let i0 = 0;
+          if (isMainOutflow) {
+            while (i0 < rawPath.length - 4 && this.waterMask[this.idx(rawPath[i0 + 2].x, rawPath[i0 + 2].y)] === 2) {
+              i0++;
+            }
+          }
+          const path = rawPath.slice(i0);
+          if (path.length < 5) return;
+
           this.rivers.push({ points: path, isMainOutflow });
           for (let i = 0; i < path.length; i++) {
             const { x, y } = path[i];
             const progress = i / (path.length - 1);
             const id = this.idx(x, y);
             this.drainageField[id] += isMainOutflow ? 2.5 : (0.5 + progress * 1.5);
-            // Main outflows and lower reaches (progress > 0.32) carve into waterMask = 1;
-            // upper headwater rills (progress <= 0.32) erode a valley trough and render as thin tapering vector streams!
-            if (isMainOutflow || progress > 0.32) {
-              const rad = isMainOutflow
-                ? (1.02 + progress * 0.52)
-                : (0.68 + (progress - 0.32) * 0.75);
-              this.carveValleyChannel(x, y, rad, 1);
+            // Mark the 1-tile river centerline (`waterMask = 1`) for distance transforms & A* bridges,
+            // erode a flat-floored valley terrace into `elevationField`, and only expand into `waterMask = 2`
+            // at the final 12% estuary flare (`progress > 0.88`) where the river enters a lake/sea basin!
+            if (this.waterMask[id] === 0) {
+              this.waterMask[id] = 1;
+            }
+            if (progress > 0.88 && this.waterMask[this.idx(path[path.length - 1].x, path[path.length - 1].y)] === 2) {
+              const flareRad = 0.85 + ((progress - 0.88) / 0.12) * 1.15;
+              this.carveValleyChannel(x, y, flareRad, 2);
             } else {
-              this.carveValleyChannel(x, y, 0.55, 0);
+              this.carveValleyChannel(x, y, 0.45, 0);
             }
           }
         };
 
-        // 1. Non-Bifurcating Lake Drainage: Each interior lake (`!touchesBorder` or index > 0) drains via
-        //    at most ONE outflow river into the nearest lower/coastal basin!
+        // 1. Non-Bifurcating Lake Drainage: Each interior lake drains via at most ONE outflow river
         if (basins.length >= 2) {
           for (let bIdx = 1; bIdx < basins.length; bIdx++) {
             const srcB = basins[bIdx];
-            if (srcB.touchesBorder && bIdx > 1) continue; // Coastal bays don't need artificial canals between them
+            if (srcB.touchesBorder && srcB.size > 950 && bIdx > 1) continue;
             let bestSink = basins[0];
             let minD = Infinity;
             for (let sIdx = 0; sIdx < bIdx; sIdx++) {
@@ -2509,10 +2521,11 @@
         const nx = -uy * sideSign, ny = ux * sideSign;
 
         // Check both the directional slip-ramps on the terminating highway side (+sideSign),
-        // the mainline ramp merge toes (±3.4), AND the 270° trumpet loop on the OPPOSITE side (-sideSign).
+        // the spur approach throat (+4.2..+5.8), the mainline ramp merge toes (±3.4),
+        // AND the 270° trumpet loop on the OPPOSITE side (-sideSign).
         const localPts = [
           [-3.4, 0], [3.4, 0],
-          [-2.8, 0.4], [2.8, 0.4], [0, 2.8], [-1.4, 1.5], [1.4, 1.5],
+          [-2.8, 0.4], [2.8, 0.4], [0, 2.8], [0, 4.2], [0, 5.8], [-1.8, 3.4], [1.8, 3.4], [-1.4, 1.5], [1.4, 1.5],
           [0, -2.2], [1.8, -1.8], [2.2, -1.0]
         ];
         for (const [lu, lv] of localPts) {
@@ -2522,7 +2535,7 @@
           const ry = Math.round(py);
           if (!this.inBounds(rx, ry, 4)) return false;
           const rid = this.idx(rx, ry);
-          if (this.waterMask[rid] > 0 || this.distToWater[rid] < 2.2) return false;
+          if (this.waterMask[rid] > 0 || this.distToWater[rid] < 2.6) return false;
           if (this.isPointInAirportPad(px, py, 2.2)) return false;
         }
         return true;
@@ -2560,7 +2573,7 @@
             }
           }
         }
-        if (arcLen / chord > 1.38) return Infinity;
+        if (arcLen / chord > 1.85) return Infinity;
 
         // Hard invariant 4: Never form an acute V-spike (< 115°) when sharing an endpoint with an existing motorway
         const nS = samples.length;
@@ -2646,15 +2659,15 @@
           const segLen = i > 0 ? Math.hypot(pt.x - samples[i - 1].x, pt.y - samples[i - 1].y) : 1.0;
 
           if (this.waterMask[id] > 0) {
-            const wWeight = this.waterMask[id] === 2 ? 1.45 : 1.0;
+            const wWeight = this.waterMask[id] === 2 ? 1.25 : 1.0;
             waterArc += segLen * wWeight;
             totalWaterArc += segLen * wWeight;
-            // Hard invariant 6: Never build causeways across wide open lakes/bays!
-            // Expressways may cross rivers (<= 18 tiles) and narrow straits (<= 12.4 tiles), never open lakes/sounds.
-            if (waterArc > 18.0 || totalWaterArc > 24.5) {
+            // Hard invariant 6: Never build long causeways across wide open lakes/bays!
+            // Expressways may cross rivers and narrow straits (<= 22 weighted tiles), never open lakes/sounds.
+            if (waterArc > 22.0 || totalWaterArc > 30.0) {
               return Infinity;
             }
-            penalty += segLen * (this.waterMask[id] === 2 ? 6.5 : 3.2);
+            penalty += segLen * (this.waterMask[id] === 2 ? 4.8 : 2.8);
           } else {
             waterArc = 0;
             if (this.distToWater[id] < 1.8) penalty += 1.2;
@@ -2781,15 +2794,37 @@
             rawPts.reverse();
             if (rawPts.length < 3) return [{ x: sx, y: sy }, { x: ex, y: ey }];
 
-            // Subsample 6 evenly-spaced valley control points for B-spline smoothing
-            const outWps = [{ x: sx, y: sy }];
-            const numCtrl = Math.min(5, Math.max(2, Math.floor(rawPts.length / 4)));
+            // Subsample control points every ~4 coarse steps and apply 1 gentle smoothing pass + S-curve/valley wave
+            // so the B-spline curves gracefully through valley passes without flattening into a straight ruler!
+            let outWps = [{ x: sx, y: sy }];
+            const numCtrl = Math.min(9, Math.max(4, Math.floor(rawPts.length / 4)));
+            const waveAmp = Math.min(11.0, chordLen * 0.075) * (lateralBias >= 0 ? 1 : -1);
             for (let k = 1; k <= numCtrl; k++) {
-              const idx = Math.floor((k / (numCtrl + 1)) * (rawPts.length - 1));
-              outWps.push(rawPts[idx]);
+              const frac = k / (numCtrl + 1);
+              const idx = Math.floor(frac * (rawPts.length - 1));
+              const wave = Math.sin(frac * Math.PI) * waveAmp;
+              const wx = rawPts[idx].x + chordNx * wave * 0.45;
+              const wy = rawPts[idx].y + chordNy * wave * 0.45;
+              if (this.inBounds(Math.round(wx), Math.round(wy), 5) && !this.isPointInAirportPad(wx, wy, 2.2, airportId)) {
+                outWps.push({ x: wx, y: wy });
+              } else {
+                outWps.push({ x: rawPts[idx].x, y: rawPts[idx].y });
+              }
             }
             outWps.push({ x: ex, y: ey });
-            return outWps;
+
+            const nextWps = [outWps[0]];
+            for (let i = 1; i < outWps.length - 1; i++) {
+              const nx = 0.20 * outWps[i - 1].x + 0.60 * outWps[i].x + 0.20 * outWps[i + 1].x;
+              const ny = 0.20 * outWps[i - 1].y + 0.60 * outWps[i].y + 0.20 * outWps[i + 1].y;
+              if (!this.isPointInAirportPad(nx, ny, 2.2, airportId)) {
+                nextWps.push({ x: nx, y: ny });
+              } else {
+                nextWps.push(outWps[i]);
+              }
+            }
+            nextWps.push(outWps[outWps.length - 1]);
+            return nextWps;
           }
 
           if (closed[cid]) continue;
@@ -2819,11 +2854,26 @@
             const hAbove = Math.max(0, this.elevationField[id] - this.seaLevel);
             const slope = this.slopeField[id];
 
-            let cost = baseStep * stride;
-            if (wm === 2) cost += 28.0; // Strongly skirt open lakes/bays
-            else if (wm === 1) cost += 5.5; // Cross rivers economically at narrow points
-            else {
-              cost += hAbove * 22.0 + slope * 16.0;
+            let cost = baseStep * stride + this.noise.fbm(gx * 0.035 + 4.1, gy * 0.035 + 7.3, 2) * 6.5;
+            if (wm === 2) {
+              // Distinguish narrow strait crossings (land within 12 tiles ahead) from deep open lakes/bays
+              const aheadX = gx + dx * stride * 4;
+              const aheadY = gy + dy * stride * 4;
+              const isNarrowStrait =
+                this.inBounds(aheadX, aheadY, 2) && this.waterMask[this.idx(aheadX, aheadY)] === 0;
+              cost += isNarrowStrait ? 24.0 : 125.0;
+            } else if (wm === 1) {
+              cost += 5.5; // Cross rivers economically at narrow points
+            } else {
+              cost += hAbove * 26.0 + slope * 20.0;
+              // Attract highway corridor to pass tangent (7..16 tiles) to intermediate towns along the valley
+              for (const t of this.towns) {
+                const dt = Math.hypot(gx - t.x, gy - t.y);
+                if (dt >= 7 && dt <= 16) {
+                  cost -= 2.2;
+                  break;
+                }
+              }
             }
 
             // Gentle lateral preference so alternative candidates explore both sides of an obstacle
@@ -2883,7 +2933,7 @@
         const defaultSign = number % 2 === 0 ? 1 : -1;
         const preferMag = algo === 'classic-bezier'
           ? Math.min(12, len * 0.12)
-          : (algo === 'terrain-parkway' ? Math.min(10, len * 0.10) : Math.min(7.0, len * 0.08));
+          : (algo === 'terrain-parkway' ? Math.min(10, len * 0.10) : Math.min(7.5, len * 0.09));
         const preferOff = defaultSign * preferMag;
 
         // 1. Terrain-Guided A* Valley Corridor B-Spline Candidates (follows river valleys & passes, zero giant bowstrings!)
@@ -2894,6 +2944,7 @@
               candidateCurves.push({
                 waypoints: valleyWps,
                 isOctilinear: false,
+                isValleyCorridor: true,
                 off: preferOff,
                 preferOff
               });
@@ -2901,19 +2952,18 @@
           }
         }
 
-        // 2. Low-Deflection Cubic Bezier Candidates (capped at ±24 tiles so curves never bow into giant parabolas)
+        // 2. Graceful Topographic Arc Bezier Candidates (no dead-straight rulers; capped at ±26 tiles)
         const offsetFracs = [
-          0,
-          defaultSign * 0.07,
-          -defaultSign * 0.07,
-          defaultSign * 0.14,
-          -defaultSign * 0.14,
-          defaultSign * 0.22,
-          -defaultSign * 0.22
+          defaultSign * 0.13,
+          -defaultSign * 0.13,
+          defaultSign * 0.19,
+          -defaultSign * 0.19,
+          defaultSign * 0.25,
+          -defaultSign * 0.25
         ];
 
         for (const frac of offsetFracs) {
-          const off = Math.max(-24, Math.min(24, len * frac));
+          const off = Math.max(-26, Math.min(26, len * frac));
           if (ap) {
             for (const pullScale of [1.0, 0.68, 0.42]) {
               const p1 = {
@@ -2954,7 +3004,8 @@
 
         for (const cand of candidateCurves) {
           const samples = this.sampleMotorwayCurve(cand.waypoints, cand.isOctilinear);
-          const score = this.scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId, cand.preferOff, cand.off);
+          const rawScore = this.scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId, cand.preferOff, cand.off);
+          const score = rawScore - (cand.isValleyCorridor ? 15.0 : 0);
           if (score < bestScore) {
             bestScore = score;
             bestCand = { waypoints: cand.waypoints, samples };
@@ -3512,27 +3563,23 @@
           };
         };
 
-        // 1. Primary Inter-Cluster Interstate Spine (M-1) between the two highest-gravity Metropolises
-        //    along a continuous valley/shoreline corridor
+        // Only Tier-1 Metropolises, Tier-2 Regional Cities, and Airport Host Cities serve as motorway termini
+        const isMajorMotorwayHub = (t) => t.tier <= 2 || t.airportId !== null;
+
+        // 1. Primary Inter-Cluster Interstate Spine (M-1) between the two highest-gravity Metropolises/Cities
         const pairs = [];
         for (let i = 0; i < this.towns.length; i++) {
+          const tA = this.towns[i];
+          if (!isMajorMotorwayHub(tA)) continue;
           for (let j = i + 1; j < this.towns.length; j++) {
-            const tA = this.towns[i];
             const tB = this.towns[j];
+            if (!isMajorMotorwayHub(tB)) continue;
             const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
-            if (d < 68 || d > 235) continue;
-            let openWaterHits = 0;
-            for (let s = 1; s < 20; s++) {
-              const sx = Math.round(tA.x + (tB.x - tA.x) * (s / 20));
-              const sy = Math.round(tA.y + (tB.y - tA.y) * (s / 20));
-              if (this.inBounds(sx, sy, 1) && this.waterMask[this.idx(sx, sy)] === 2) {
-                openWaterHits++;
-              }
-            }
-            const dryCorridorFactor = Math.exp(-openWaterHits * 0.06);
+            if (d < 58 || d > 245) continue;
             const diffClusterBonus = tA.clusterId !== tB.clusterId ? 2.40 : 0.45;
+            const metroBonus = (tA.tier === 1 ? 1.6 : 1.0) * (tB.tier === 1 ? 1.6 : 1.0);
             const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 135) / 56, 2));
-            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.38)) * diffClusterBonus * spanBell * dryCorridorFactor;
+            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.38)) * diffClusterBonus * metroBonus * spanBell;
             pairs.push({ tA, tB, gravity, d });
           }
         }
@@ -3585,10 +3632,10 @@
               continue;
             }
 
-            // 2A. Try a 3-way Trumpet Spur from this Cluster Metropolis (or any town in its cluster) into an existing trunk
+            // 2A. Try a 3-way Trumpet Spur from this Cluster Metropolis (or any Tier-1/2 city in its cluster) into an existing trunk
             const clusterTowns = [
               metro,
-              ...this.towns.filter(t => t.clusterId === metro.clusterId && t.id !== metro.id)
+              ...this.towns.filter(t => t.clusterId === metro.clusterId && t.id !== metro.id && isMajorMotorwayHub(t))
             ];
             let linkedCluster = false;
 
@@ -3637,10 +3684,11 @@
             if (linkedCluster) continue;
 
             // 2B. Otherwise link `cTown` to an already-connected hub town via a shared beltway stub or Cloverleaf crossing
+            //     (or on pass 1 for a Tier-1 Metropolis separated by a wide marine sound, link to the nearest Tier-1/2 city on its landmass)
             for (const cTown of clusterTowns) {
               if (linkedCluster) break;
               const hubCandidates = this.towns
-                .filter(t => t.clusterId !== metro.clusterId && (townMotorwayDegree[t.id] === 1 || connectedClusters.has(t.clusterId)))
+                .filter(t => t.id !== cTown.id && isMajorMotorwayHub(t) && (townMotorwayDegree[t.id] === 1 || connectedClusters.has(t.clusterId) || (pass === 1 && metro.tier === 1)))
                 .sort((a, b) => {
                   const degDiff = (townMotorwayDegree[b.id] === 1 ? 1 : 0) - (townMotorwayDegree[a.id] === 1 ? 1 : 0);
                   if (degDiff !== 0) return degDiff;
@@ -3650,7 +3698,7 @@
               for (const hubTown of hubCandidates) {
                 if (townMotorwayDegree[hubTown.id] >= 2) continue;
                 const d = Math.hypot(hubTown.x - cTown.x, hubTown.y - cTown.y);
-                if (d < 36 || d > 215) continue;
+                if (d < 34 || d > 225) continue;
                 const canShare =
                   townMotorwayDegree[hubTown.id] === 1 &&
                   this.findPassThroughStubAtTown(hubTown, cTown.x, cTown.y) !== null;
@@ -3667,8 +3715,7 @@
                 const mwCluster = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, hubTown.id);
                 const crossesExisting =
                   mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
-                // Strict single-component invariant: must either share a degree-1 hub stub OR cross an existing trunk!
-                if (mwCluster && (canShare || crossesExisting)) {
+                if (mwCluster && (canShare || crossesExisting || (pass === 1 && metro.tier === 1))) {
                   if (endA.usedHubGate) endA.ap.motorwayId = mwayNumber;
                   if (endB.usedHubGate) endB.ap.motorwayId = mwayNumber;
                   mwayNumber++;
@@ -3718,6 +3765,7 @@
             if (builtApMotorway) break;
             const townCandidates = [];
             for (const t of this.towns) {
+              if (!isMajorMotorwayHub(t)) continue;
               if (townMotorwayDegree[t.id] >= 2) continue;
               const canSharePassThrough =
                 townMotorwayDegree[t.id] === 1 && this.findPassThroughStubAtTown(t, ap.gateX, ap.gateY) !== null;
@@ -3735,8 +3783,8 @@
               if (landV < 3.0) continue;
 
               const gateDist = Math.hypot(t.x - ap.gateX, t.y - ap.gateY);
-              const minSpan = ap.isHub ? 18 : 26;
-              if (gateDist < minSpan || gateDist > 165) continue;
+              const minSpan = (canSharePassThrough || townMotorwayDegree[t.id] >= 1) ? (ap.isHub ? 18 : 26) : 44;
+              if (gateDist < minSpan || gateDist > 185) continue;
 
               const alignCos = ((t.x - ap.gateX) * ap.landNx + (t.y - ap.gateY) * ap.landNy) / (gateDist || 1);
               if (alignCos < minAlign) continue;
@@ -3772,7 +3820,8 @@
                 mwAp &&
                 (this.motorways.length === 0 ||
                   canSharePassThrough ||
-                  this.motorways.some(m => this.findPolylineIntersection(m.samples, mwAp.samples) !== null));
+                  this.motorways.some(m => this.findPolylineIntersection(m.samples, mwAp.samples) !== null) ||
+                  (ap.isHub && minAlign < 0));
               if (mwAp && connectsToTrunk) {
                 ap.motorwayId = mwayNumber++;
                 this.motorways.push(mwAp);
@@ -3796,7 +3845,7 @@
 
         // 4. Additional Regional Spurs for Underserved Tier-1/2 Cities (up to maxStateMotorways)
         const underservedTowns = [...this.towns]
-          .filter(t => townMotorwayDegree[t.id] === 0 && !isTownNearAnyMotorway(t, 24))
+          .filter(t => isMajorMotorwayHub(t) && townMotorwayDegree[t.id] === 0 && !isTownNearAnyMotorway(t, 24))
           .sort((a, b) => townPop(b) - townPop(a));
 
         for (const uTown of underservedTowns) {
@@ -4068,13 +4117,15 @@
        * Cyan Water & Cream Riverbanks) onto an offscreen canvas using a true
        * Vignelli-style 45°/90° Octilinear Marching-Squares Polygonizer (zero stippling!).
        */
-      buildVignelliWaterPath(world, ts) {
+      buildVignelliWaterPath(world, ts, customTestFn = null) {
         const path = new Path2D();
         const { W, H } = world;
         const isW = (x, y) => {
           const cx = Math.max(0, Math.min(W - 1, x));
           const cy = Math.max(0, Math.min(H - 1, y));
-          return world.waterMask[world.idx(cx, cy)] > 0;
+          return customTestFn
+            ? customTestFn(cx, cy)
+            : world.waterMask[world.idx(cx, cy)] === 2;
         };
 
         // Marching Squares over dual grid: each cell has 4 corners (tl, tr, br, bl).
@@ -4135,26 +4186,28 @@
         ctx.fillStyle = PALETTE.bgPaper;
         ctx.fillRect(0, 0, pw, ph);
 
-        // 1B. Subtle Hypsometric Elevation Contour Terraces (makes upland ridges, saddles & river valleys legible!)
-        const contourThresholds = [
-          { dh: 0.14, fill: 'rgba(222, 219, 208, 0.48)' },
-          { dh: 0.25, fill: 'rgba(210, 207, 194, 0.52)' },
-          { dh: 0.37, fill: 'rgba(196, 193, 178, 0.56)' }
+        // 1B. Smooth Octilinear Marching-Squares Hypsometric Elevation Contour Terraces (zero 2x2 pixel blocks!)
+        const contourTerraces = [
+          { dh: 0.13, fill: '#ebe7de', stroke: '#dfdace' },
+          { dh: 0.24, fill: '#e3ded2', stroke: '#d5cfc0' },
+          { dh: 0.36, fill: '#dad4c5', stroke: '#cac3b2' }
         ];
-        for (const { dh, fill } of contourThresholds) {
+        ctx.save();
+        ctx.lineJoin = 'bevel';
+        ctx.lineWidth = 1.2;
+        for (const { dh, fill, stroke } of contourTerraces) {
           const thresh = world.seaLevel + dh;
+          const cPath = this.buildVignelliWaterPath(
+            world,
+            ts,
+            (cx, cy) => world.waterMask[world.idx(cx, cy)] === 0 && world.elevationField[world.idx(cx, cy)] >= thresh
+          );
           ctx.fillStyle = fill;
-          ctx.beginPath();
-          for (let y = 0; y < world.H; y += 2) {
-            for (let x = 0; x < world.W; x += 2) {
-              const id = world.idx(x, y);
-              if (world.waterMask[id] === 0 && world.elevationField[id] >= thresh) {
-                ctx.rect(x * ts, y * ts, ts * 2.1, ts * 2.1);
-              }
-            }
-          }
-          ctx.fill();
+          ctx.fill(cPath);
+          ctx.strokeStyle = stroke;
+          ctx.stroke(cPath);
         }
+        ctx.restore();
 
         // 2. Soft Pastel Contour-Hugging Urban & Waterfront Blush Zones
         ctx.save();
@@ -4170,43 +4223,55 @@
         }
         ctx.fill();
 
-        // Build Vignelli 45°/90° Octilinear Marching-Squares Water Path
+        // Build Vignelli 45°/90° Octilinear Marching-Squares Open-Water Basin Path (`waterMask === 2`)
         const waterPath = this.buildVignelliWaterPath(world, ts);
 
         // Use beveled/mitered joins so 45-degree Vignelli shoreline angles stay crisp & architectural
         ctx.lineCap = 'butt';
         ctx.lineJoin = 'bevel';
 
-        // 3. Cream Sand/Bank Casing around Water (Clean 45°/90° architectural bank border)
+        // 3. Cream Sand/Bank Casing around Open Water Basins
         ctx.strokeStyle = PALETTE.bgPaper;
         ctx.lineWidth = ts * 1.45;
         ctx.stroke(waterPath);
         ctx.fillStyle = PALETTE.bgPaper;
         ctx.fill(waterPath);
 
-        // 4. Crisp Cyan Water Body Fill (Zero stippling — pure vector polygon fill!)
-        ctx.fillStyle = PALETTE.waterCyan;
-        ctx.fill(waterPath);
-
-        // 4B. Continuously Tapering Vector Headwater Rills (taper from thin 0.38*ts upland springs into rivers)
+        // 4. Smooth Continuously-Tapering River Network (`world.rivers`) — Two Passes (Cream Bank + Cyan Channel)
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.strokeStyle = PALETTE.waterCyan;
-        for (const rObj of world.rivers) {
-          const pts = Array.isArray(rObj) ? rObj : rObj.points;
-          if (!pts || pts.length < 4) continue;
-          const drawEnd = Math.min(pts.length - 1, Math.ceil(pts.length * 0.45));
-          for (let i = 0; i < drawEnd; i++) {
-            const p0 = pts[i];
-            const p1 = pts[i + 1];
-            const frac = i / (pts.length - 1);
-            ctx.lineWidth = ts * (0.38 + frac * 1.15);
-            ctx.beginPath();
-            ctx.moveTo((p0.x + 0.5) * ts, (p0.y + 0.5) * ts);
-            ctx.lineTo((p1.x + 0.5) * ts, (p1.y + 0.5) * ts);
-            ctx.stroke();
+        for (const pass of ['bank', 'water']) {
+          ctx.strokeStyle = pass === 'bank' ? PALETTE.bgPaper : PALETTE.waterCyan;
+          const bankExtra = pass === 'bank' ? ts * 1.15 : 0;
+          for (const rObj of world.rivers) {
+            const pts = Array.isArray(rObj) ? rObj : rObj.points;
+            const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
+            if (!pts || pts.length < 4) continue;
+            const startW = isMain ? 1.05 : 0.36;
+            const endW = isMain ? 1.95 : 1.55;
+            for (let i = 0; i < pts.length - 1; i++) {
+              const p0 = pts[i];
+              const p1 = pts[i + 1];
+              const p2 = pts[Math.min(pts.length - 1, i + 2)];
+              const frac = i / (pts.length - 1);
+              ctx.lineWidth = ts * (startW + (endW - startW) * Math.pow(frac, 0.85)) + bankExtra;
+              ctx.beginPath();
+              const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
+              const y0 = i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
+              const x1 = (p1.x + 0.5) * ts;
+              const y1 = (p1.y + 0.5) * ts;
+              const x2 = i === pts.length - 2 ? (p1.x + 0.5) * ts : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
+              const y2 = i === pts.length - 2 ? (p1.y + 0.5) * ts : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
+              ctx.moveTo(x0, y0);
+              ctx.quadraticCurveTo(x1, y1, x2, y2);
+              ctx.stroke();
+            }
           }
         }
+
+        // 4B. Crisp Cyan Open-Water Basin Fill on top of river bank casings so river mouths merge seamlessly!
+        ctx.fillStyle = PALETTE.waterCyan;
+        ctx.fill(waterPath);
         ctx.restore();
 
         // 5. Subtle Architectural Grid Lines (visible across land & water like Mini Motorways)
