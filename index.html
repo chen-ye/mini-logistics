@@ -1697,6 +1697,20 @@
         this.displacedBuildingsCount += (beforeHouses - this.houses.length) + (beforeDest - this.destinations.length);
       }
 
+      findPassThroughStubAtTown(town, towardX, towardY) {
+        const baseAngle = Math.atan2(towardY - town.y, towardX - town.x);
+        return this.interchanges.find(ic => {
+          if (ic.type !== 'terminal-stub' || ic.isAirportStub || ic.townId !== town.id) return false;
+          const attachedCount = this.motorways.filter(
+            m => (Math.hypot(m.sx - ic.x, m.sy - ic.y) < 1.5 && !m.prunedStart) ||
+                 (Math.hypot(m.ex - ic.x, m.ey - ic.y) < 1.5 && !m.prunedEnd)
+          ).length;
+          if (attachedCount >= 2) return false;
+          const angDiff = Math.abs(Math.atan2(Math.sin(ic.angleRad - baseAngle), Math.cos(ic.angleRad - baseAngle)));
+          return angDiff >= 1.35;
+        }) || null;
+      }
+
       createTerminalStreetStub(townOrAirport, isAirport, towardX, towardY) {
         if (isAirport) {
           const ap = townOrAirport;
@@ -1727,16 +1741,7 @@
         // Share an existing town terminal-stub when the new corridor arrives at a wide pass-through
         // angle (>= 100° apart) so the two motorways form a connected beltway hub rather than
         // spawning two disconnected roundabouts in the same town.
-        const existingPassThrough = this.interchanges.find(ic => {
-          if (ic.type !== 'terminal-stub' || ic.isAirportStub || ic.townId !== town.id) return false;
-          const attachedCount = this.motorways.filter(
-            m => (Math.hypot(m.sx - ic.x, m.sy - ic.y) < 1.5 && !m.prunedStart) ||
-                 (Math.hypot(m.ex - ic.x, m.ey - ic.y) < 1.5 && !m.prunedEnd)
-          ).length;
-          if (attachedCount >= 2) return false;
-          const angDiff = Math.abs(Math.atan2(Math.sin(ic.angleRad - baseAngle), Math.cos(ic.angleRad - baseAngle)));
-          return angDiff >= 1.75;
-        });
+        const existingPassThrough = this.findPassThroughStubAtTown(town, towardX, towardY);
         if (existingPassThrough) {
           return { x: existingPassThrough.x, y: existingPassThrough.y };
         }
@@ -1978,7 +1983,7 @@
           const checkShared = (myX, myY, myUx, myUy, otX, otY, otUx, otUy) => {
             if (Math.hypot(myX - otX, myY - otY) < 8.5) {
               const dot = myUx * otUx + myUy * otUy;
-              if (dot > -0.18) return false;
+              if (dot > 0.22) return false;
             }
             return true;
           };
@@ -2332,10 +2337,14 @@
             const chord = Math.hypot(hitPt.x - originX, hitPt.y - originY);
             if (chord < 14 || chord > 82) continue;
 
-            // Never overshoot a trunk endpoint to hit an interior point further away than the endpoint itself
-            const distToTrunkStart = Math.hypot(originX - trunk.sx, originY - trunk.sy);
-            const distToTrunkEnd = Math.hypot(originX - trunk.ex, originY - trunk.ey);
-            if (chord > Math.min(distToTrunkStart, distToTrunkEnd) * 0.92) continue;
+            // Ensure the origin lies beside the trunk (not collinearly beyond its endpoints)
+            // so a spur never overshoots a trunk endpoint to run parallel alongside the trunk.
+            const tDx = trunk.ex - trunk.sx;
+            const tDy = trunk.ey - trunk.sy;
+            const tLen = Math.hypot(tDx, tDy) || 1;
+            const projT = ((originX - trunk.sx) * tDx + (originY - trunk.sy) * tDy) / (tLen * tLen);
+            const perpDist = Math.abs((originX - trunk.sx) * (-tDy) + (originY - trunk.sy) * tDx) / tLen;
+            if (projT < -0.25 || projT > 1.25 || perpDist < 10.5) continue;
 
             // Ensure the origin lies on the sideSign half-space of the trunk
             const cosPerp = ((originX - hitPt.x) * outNx + (originY - hitPt.y) * outNy) / (chord || 1);
@@ -2699,15 +2708,37 @@
 
         for (const cand of pairs) {
           const { tA, tB } = cand;
-          const rampA = this.createTerminalStreetStub(tA, false, tB.x, tB.y);
-          const rampB = this.createTerminalStreetStub(tB, false, tA.x, tA.y);
+          const apA = tA.airportId !== null ? this.airports[tA.airportId] : null;
+          const apB = tB.airportId !== null ? this.airports[tB.airportId] : null;
+          const useHubGateA =
+            apA && apA.isHub &&
+            ((tB.x - apA.gateX) * apA.landNx + (tB.y - apA.gateY) * apA.landNy) / (Math.hypot(tB.x - apA.gateX, tB.y - apA.gateY) || 1) >= 0.28;
+          const useHubGateB =
+            apB && apB.isHub && !useHubGateA &&
+            ((tA.x - apB.gateX) * apB.landNx + (tA.y - apB.gateY) * apB.landNy) / (Math.hypot(tA.x - apB.gateX, tA.y - apB.gateY) || 1) >= 0.28;
+
+          const rampA = useHubGateA
+            ? this.createTerminalStreetStub(apA, true, tB.x, tB.y)
+            : this.createTerminalStreetStub(tA, false, tB.x, tB.y);
+          const rampB = useHubGateB
+            ? this.createTerminalStreetStub(apB, true, tA.x, tA.y)
+            : this.createTerminalStreetStub(tB, false, tA.x, tA.y);
+
           if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 33) {
-            this.removeOrphanedTerminalStub(rampA.x, rampA.y);
-            this.removeOrphanedTerminalStub(rampB.x, rampB.y);
+            if (!useHubGateA) this.removeOrphanedTerminalStub(rampA.x, rampA.y);
+            if (!useHubGateB) this.removeOrphanedTerminalStub(rampB.x, rampB.y);
             continue;
           }
-          const mw1 = this.createMotorwayEntity(mwayNumber, rampA.x, rampA.y, rampB.x, rampB.y, algo, null, tB.id);
+          const startX = useHubGateB ? rampB.x : rampA.x;
+          const startY = useHubGateB ? rampB.y : rampA.y;
+          const endX = useHubGateB ? rampA.x : rampB.x;
+          const endY = useHubGateB ? rampA.y : rampB.y;
+          const startApId = useHubGateA ? apA.id : (useHubGateB ? apB.id : null);
+
+          const mw1 = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, tB.id);
           if (mw1) {
+            if (useHubGateA) apA.motorwayId = mwayNumber;
+            if (useHubGateB) apB.motorwayId = mwayNumber;
             mwayNumber++;
             this.motorways.push(mw1);
             townMotorwayDegree[tA.id]++;
@@ -2747,6 +2778,7 @@
         // or a non-redundant regional corridor to a trunk city.
         const sortedAirports = [...this.airports].sort((a, b) => (b.isHub ? 1 : 0) - (a.isHub ? 1 : 0));
         for (const ap of sortedAirports) {
+          if (ap.motorwayId !== null) continue;
           if (!ap.isHub && this.motorways.length >= 3) continue;
           // If an existing motorway already passes right by this regional airport's host town, skip redundant stub
           const host = this.towns[ap.hostTownId];
@@ -2774,8 +2806,12 @@
             const townCandidates = [];
             for (const t of this.towns) {
               if (townMotorwayDegree[t.id] >= 2) continue;
-              // Require linking into a trunk city (degree === 1) if any trunk exists, unless Hub fallback pass
-              if (this.motorways.length > 0 && townMotorwayDegree[t.id] === 0 && minAlign > 0.2) continue;
+              // If connecting to a town that already has a motorway, require that it can share
+              // a pass-through beltway roundabout (>= 100°) rather than spawning a second disconnected stub.
+              const canSharePassThrough =
+                townMotorwayDegree[t.id] === 1 && this.findPassThroughStubAtTown(t, ap.gateX, ap.gateY) !== null;
+              if (townMotorwayDegree[t.id] >= 1 && !canSharePassThrough) continue;
+              if (this.motorways.length > 0 && !canSharePassThrough && minAlign > 0.2) continue;
               if (
                 primaryPair &&
                 ((primaryPair.tA.id === ap.hostTownId && primaryPair.tB.id === t.id) ||
@@ -2789,14 +2825,14 @@
               if (landV < 4.0) continue;
 
               const gateDist = Math.hypot(t.x - ap.gateX, t.y - ap.gateY);
-              const minSpan = ap.isHub ? 20 : 26;
+              const minSpan = ap.isHub ? 18 : 25;
               if (gateDist < minSpan || gateDist > 110) continue;
 
               const alignCos = ((t.x - ap.gateX) * ap.landNx + (t.y - ap.gateY) * ap.landNy) / (gateDist || 1);
               if (alignCos < minAlign) continue;
 
               const isHost = t.id === ap.hostTownId;
-              const networkLinkBonus = townMotorwayDegree[t.id] === 1 ? 4.5 : 0.65;
+              const networkLinkBonus = canSharePassThrough ? 5.0 : 0.65;
               const score =
                 (townPop(t) / Math.pow(gateDist, 0.58)) *
                 (0.55 + 0.65 * alignCos) *
@@ -2822,7 +2858,12 @@
                 townStub.x, townStub.y,
                 algo, ap.id, targetTown.id
               );
-              if (mwAp) {
+              const connectsToTrunk =
+                mwAp &&
+                (this.motorways.length === 0 ||
+                  townMotorwayDegree[targetTown.id] >= 1 ||
+                  this.motorways.some(m => this.findPolylineIntersection(m.samples, mwAp.samples) !== null));
+              if (mwAp && connectsToTrunk) {
                 ap.motorwayId = mwayNumber++;
                 this.motorways.push(mwAp);
                 townMotorwayDegree[targetTown.id]++;
@@ -2857,7 +2898,17 @@
 
           // 3A. Try a clean 3-way Trumpet Spur from the top underserved regional town into an existing trunk motorway
           for (const uTown of underservedTowns) {
-            const targetPt = primaryMidPt || { x: this.W * 0.5, y: this.H * 0.5 };
+            let targetPt = primaryMidPt || { x: this.W * 0.5, y: this.H * 0.5 };
+            let minTrunkD = Infinity;
+            for (const mw of this.motorways) {
+              for (let s = Math.floor(mw.samples.length * 0.2); s <= Math.ceil(mw.samples.length * 0.8); s += 3) {
+                const d = Math.hypot(uTown.x - mw.samples[s].x, uTown.y - mw.samples[s].y);
+                if (d < minTrunkD) {
+                  minTrunkD = d;
+                  targetPt = mw.samples[s];
+                }
+              }
+            }
             const stub = this.createTerminalStreetStub(uTown, false, targetPt.x, targetPt.y);
             const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, stub.x, stub.y, algo, null, uTown.id);
             if (spurRes) {
@@ -2905,9 +2956,19 @@
                 }
               }
 
-              // Require that M-3 connects to the existing highway network (either sharing a hub city or crossing M-1)
-              if (sharedCount === 0 && !useVia) continue;
-              const connectedBonus = sharedCount === 1 ? 2.8 : 3.2;
+              // If either endpoint town already has a motorway, it must be able to share its pass-through stub
+              const shareA = townMotorwayDegree[cand.tA.id] === 1
+                ? this.findPassThroughStubAtTown(cand.tA, cand.tB.x, cand.tB.y) !== null
+                : false;
+              const shareB = townMotorwayDegree[cand.tB.id] === 1
+                ? this.findPassThroughStubAtTown(cand.tB, cand.tA.x, cand.tA.y) !== null
+                : false;
+              if (townMotorwayDegree[cand.tA.id] >= 1 && !shareA) continue;
+              if (townMotorwayDegree[cand.tB.id] >= 1 && !shareB) continue;
+
+              const validShared = (shareA ? 1 : 0) + (shareB ? 1 : 0);
+              if (validShared === 0 && !useVia) continue;
+              const connectedBonus = validShared >= 1 ? 2.8 : 3.2;
               const secScore = cand.gravity * connectedBonus;
               secCandidates.push({ tA: cand.tA, tB: cand.tB, useVia, secScore });
             }
@@ -2919,7 +2980,7 @@
               if (townMotorwayDegree[cA.id] >= 2 || townMotorwayDegree[cB.id] >= 2) continue;
               const rampA = this.createTerminalStreetStub(cA, false, cB.x, cB.y);
               const rampB = this.createTerminalStreetStub(cB, false, cA.x, cA.y);
-              if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 28) {
+              if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 22) {
                 this.removeOrphanedTerminalStub(rampA.x, rampA.y);
                 this.removeOrphanedTerminalStub(rampB.x, rampB.y);
                 continue;
