@@ -2099,9 +2099,9 @@
               // Topographic valley-following cost: avoid steep slopes and high mountain ridges
               const dElev = Math.max(0, this.elevationField[nid] - this.elevationField[cid]);
               stepCost += this.slopeField[nid] * 3.8 + dElev * 16.0 + Math.max(0, this.elevationField[nid] - this.seaLevel - 0.14) * 2.2;
-              // Strongly preserve intact 2×2 city blocks inside urban zones: ride existing orthogonal grid streets!
+              // Gently prefer existing streets inside urban zones while still allowing organic 45° arterial transitions
               if (this.zoneColorIdx[nid] >= 0) {
-                stepCost *= dx !== 0 && dy !== 0 ? 6.5 : 4.2;
+                stepCost *= dx !== 0 && dy !== 0 ? 2.6 : 1.9;
               }
             }
 
@@ -2141,11 +2141,10 @@
       }
 
       /*************************************************************************
-       * STAGE 6A & 7: PHASE-LOCKED 2×2 URBAN BLOCK GRIDS & RCI BUILDING PACKER
+       * STAGE 6A & 7: ORGANIC MULTI-BOROUGH GRIDS, VARIED BLOCK SIZES & RCI PACKER
        *************************************************************************/
       carveTownStreetGrids() {
         const densityMult = (this.config.buildingDensity || 250) / 100;
-        const bStep = 3; // Exact 3-tile street interval -> intact 2×2 buildable city blocks!
 
         for (const town of this.towns) {
           const R = Math.round(town.urbanRadius * (0.78 + 0.18 * Math.sqrt(densityMult)));
@@ -2154,24 +2153,23 @@
           town.commercialCount = 0;
           town.industrialCount = 0;
 
-          // 6A-1. Build Phase-Locked Multi-Nuclei Boroughs (`(br.x - town.x) % 3 === 0`) so all boroughs
-          //       of a city share one continuous collinear street lattice without 1-tile offset slivers!
-          const boroughs = [{ x: town.x, y: town.y, r: R, step: bStep, isMainCBD: true }];
+          // 6A-1. Build Organic Multi-Nuclei Boroughs at their natural topographic optima (NOT locked to a global modulo grid!)
+          //       Each borough has its own independent phase and variable block cadence so transitions form natural T-junctions.
+          const boroughs = [{ x: town.x, y: town.y, r: R, isMainCBD: true }];
           const numExtraBoroughs = town.tier === 1 ? 3 : (town.tier === 2 ? 2 : 0);
 
           for (let b = 0; b < numExtraBoroughs; b++) {
             let bestBx = null, bestBy = null, bestScore = -1;
             for (let a = 0; a < 16; a++) {
-              const ang = (a / 16) * Math.PI * 2 + b * 0.4;
-              const dist = Math.round(R * this.rng.range(0.55, 0.88));
-              // Snap `(cx, cy)` to exact multiples of `bStep = 3` from `(town.x, town.y)`!
-              const cx = town.x + Math.round((Math.cos(ang) * dist) / bStep) * bStep;
-              const cy = town.y + Math.round((Math.sin(ang) * dist) / bStep) * bStep;
+              const ang = (a / 16) * Math.PI * 2 + b * 0.45 + this.rng.range(-0.12, 0.12);
+              const dist = Math.round(R * this.rng.range(0.54, 0.88));
+              const cx = town.x + Math.round(Math.cos(ang) * dist);
+              const cy = town.y + Math.round(Math.sin(ang) * dist);
               if (!this.inBounds(cx, cy, 8)) continue;
               const cid = this.idx(cx, cy);
               if (this.waterMask[cid] > 0 || this.buildingMask[cid] === 3 || this.distToWater[cid] < 2.0) continue;
               if (this.slopeField[cid] > 0.38 || Math.abs(this.elevationField[cid] - townElev) > 0.14) continue;
-              if (boroughs.some(eb => Math.hypot(eb.x - cx, eb.y - cy) < R * 0.42)) continue;
+              if (boroughs.some(eb => Math.hypot(eb.x - cx, eb.y - cy) < R * 0.44)) continue;
 
               let crossesRiver = false;
               for (let s = 1; s < 8; s++) {
@@ -2182,7 +2180,7 @@
                   break;
                 }
               }
-              const score = this.urbanSuitability[cid] + (crossesRiver ? 0.38 : 0);
+              const score = this.urbanSuitability[cid] + (crossesRiver ? 0.38 : 0) + this.rng.range(-0.05, 0.05);
               if (score > bestScore) {
                 bestScore = score;
                 bestBx = cx;
@@ -2190,13 +2188,38 @@
               }
             }
             if (bestBx !== null) {
-              const bRad = Math.round(R * (b === 0 ? 0.68 : 0.56));
-              boroughs.push({ x: bestBx, y: bestBy, r: bRad, step: bStep, isMainCBD: false });
+              const bRad = Math.round(R * (b === 0 ? 0.66 : 0.54));
+              boroughs.push({ x: bestBx, y: bestBy, r: bRad, isMainCBD: false });
             }
           }
           town.boroughs = boroughs;
 
-          // 6A-2. Paint Contour-Hugging Urban Zone & Carve Phase-Locked 3-Tile Street Grids First
+          // Helper to generate irregular street-line offsets outward from 0 using mixed 3, 4, and 5-tile strides
+          // (producing varied 2×2, 2×3, 3×2, 3×3, and 2×4 rectangular blocks instead of a uniform 2×2 waffle!)
+          const buildVariableOffsets = (maxRadius, isCBD) => {
+            const offs = [];
+            for (const dir of [-1, 1]) {
+              let cur = 0;
+              let idx = 0;
+              while (cur < maxRadius - 2) {
+                let stepChoice;
+                if (idx === 0) {
+                  stepChoice = isCBD && this.rng.next() < 0.65 ? 3 : 4;
+                } else if (idx === 1) {
+                  stepChoice = this.rng.next() < 0.50 ? 3 : 4;
+                } else {
+                  const r = this.rng.next();
+                  stepChoice = r < 0.32 ? 3 : (r < 0.78 ? 4 : 5);
+                }
+                cur += stepChoice;
+                if (cur <= maxRadius) offs.push(dir * cur);
+                idx++;
+              }
+            }
+            return offs;
+          };
+
+          // 6A-2. Paint Contour-Hugging Urban Zone & Carve Irregular Rectangular Block Grids
           for (const br of boroughs) {
             const bR = br.r;
             const brElev = this.elevationField[this.idx(br.x, br.y)];
@@ -2209,42 +2232,62 @@
                 const id = this.idx(gx, gy);
                 if (this.waterMask[id] > 0) continue;
                 const elevPenalty = Math.max(0, this.elevationField[id] - brElev) * 30.0 + this.slopeField[id] * 11.0;
-                const d = Math.hypot(dx, dy) + elevPenalty + this.noise.noise(gx * 0.15, gy * 0.15) * 2.5;
-                if (d <= bR + 1.0) {
+                const nJitter = this.noise.fbm(gx * 0.11, gy * 0.11, 2) * 3.8;
+                const d = Math.hypot(dx, dy) + elevPenalty + nJitter;
+                if (d <= bR + 1.2) {
                   this.zoneColorIdx[id] = town.colorIdx;
                 }
               }
             }
 
             // Carve primary borough cross-avenues as arterial boulevards (`roadGrid = 2`)
-            this.carveStreetFromCenter(br.x, br.y, 1, 0, bR, bR, true);
-            this.carveStreetFromCenter(br.x, br.y, 0, 1, bR, bR, true);
+            const mainNegX = Math.round(bR * this.rng.range(0.75, 1.02));
+            const mainPosX = Math.round(bR * this.rng.range(0.75, 1.02));
+            const mainNegY = Math.round(bR * this.rng.range(0.75, 1.02));
+            const mainPosY = Math.round(bR * this.rng.range(0.75, 1.02));
+            this.carveStreetFromCenter(br.x, br.y, 1, 0, mainNegX, mainPosX, br.isMainCBD);
+            this.carveStreetFromCenter(br.x, br.y, 0, 1, mainNegY, mainPosY, br.isMainCBD);
 
-            const maxK = Math.floor(bR / bStep);
-            for (let k = -maxK; k <= maxK; k++) {
-              if (k === 0) continue;
-              const offset = k * bStep;
-              const span = Math.floor(Math.sqrt(Math.max(0, bR * bR - offset * offset)) * this.rng.range(0.82, 0.98));
-              const yRow = br.y + offset;
-              for (const probeOff of [0, bStep, -bStep, bStep * 2, -bStep * 2]) {
-                const probeX = br.x + probeOff;
-                if (Math.abs(probeOff) <= span && this.inBounds(probeX, yRow, 4) && this.roadGrid[this.idx(probeX, yRow)] > 0) {
-                  this.carveStreetFromCenter(probeX, yRow, 1, 0, span, span, false);
-                  break;
+            const yOffsets = buildVariableOffsets(bR, br.isMainCBD);
+            const xOffsets = buildVariableOffsets(bR, br.isMainCBD);
+
+            for (let pass = 0; pass < 2; pass++) {
+              for (const dyOff of yOffsets) {
+                if (pass === 1 && this.rng.next() < 0.25) continue;
+                const chord = Math.sqrt(Math.max(0, bR * bR - dyOff * dyOff));
+                // Asymmetric street spans & occasional one-sided T-intersections for organic neighborhood structure!
+                const oneSided = Math.abs(dyOff) > 4 && this.rng.next() < 0.28;
+                const negSpan = oneSided && this.rng.next() < 0.5 ? 0 : Math.floor(chord * this.rng.range(0.48, 0.96));
+                const posSpan = oneSided && negSpan > 0 && this.rng.next() < 0.5 ? 0 : Math.floor(chord * this.rng.range(0.48, 0.96));
+                const yRow = br.y + dyOff;
+                for (const probeOff of [0, ...xOffsets]) {
+                  const probeX = br.x + probeOff;
+                  if (Math.abs(probeOff) <= Math.max(negSpan, posSpan) && this.inBounds(probeX, yRow, 4) && this.roadGrid[this.idx(probeX, yRow)] > 0) {
+                    this.carveStreetFromCenter(probeX, yRow, 1, 0, negSpan, posSpan, false);
+                    break;
+                  }
                 }
               }
-              const xCol = br.x + offset;
-              for (const probeOff of [0, bStep, -bStep, bStep * 2, -bStep * 2]) {
-                const probeY = br.y + probeOff;
-                if (Math.abs(probeOff) <= span && this.inBounds(xCol, probeY, 4) && this.roadGrid[this.idx(xCol, probeY)] > 0) {
-                  this.carveStreetFromCenter(xCol, probeY, 0, 1, span, span, false);
-                  break;
+
+              for (const dxOff of xOffsets) {
+                if (pass === 1 && this.rng.next() < 0.25) continue;
+                const chord = Math.sqrt(Math.max(0, bR * bR - dxOff * dxOff));
+                const oneSided = Math.abs(dxOff) > 4 && this.rng.next() < 0.28;
+                const negSpan = oneSided && this.rng.next() < 0.5 ? 0 : Math.floor(chord * this.rng.range(0.48, 0.96));
+                const posSpan = oneSided && negSpan > 0 && this.rng.next() < 0.5 ? 0 : Math.floor(chord * this.rng.range(0.48, 0.96));
+                const xCol = br.x + dxOff;
+                for (const probeOff of [0, ...yOffsets]) {
+                  const probeY = br.y + probeOff;
+                  if (Math.abs(probeOff) <= Math.max(negSpan, posSpan) && this.inBounds(xCol, probeY, 4) && this.roadGrid[this.idx(xCol, probeY)] > 0) {
+                    this.carveStreetFromCenter(xCol, probeY, 0, 1, negSpan, posSpan, false);
+                    break;
+                  }
                 }
               }
             }
           }
 
-          // 6A-3. Connect Secondary Boroughs to the Main CBD (now rides the carved orthogonal grid!)
+          // 6A-3. Connect Secondary Boroughs to the Main CBD
           for (let b = 1; b < boroughs.length; b++) {
             const br = boroughs[b];
             const linkPath = this.findRoadPathAStar(br.x, br.y, town.x, town.y, true);
@@ -2259,24 +2302,23 @@
         for (const town of this.towns) {
           const R = town.effectiveR || Math.round(town.urbanRadius * (0.78 + 0.18 * Math.sqrt(densityMult)));
 
-          // 7A. Place Differentiated Commercial (CBD & Arterial) and Industrial (Peripheral / Freight) 2×2 Sinks
+          // 7A. Place Differentiated Commercial (CBD & Arterial) and Industrial (Peripheral / Freight) Multi-Size Sinks
           this.placeTownCommercialAndIndustrial(town, R, densityMult);
 
-          // 7B. Pack Residential Houses Core-First into Remaining Street-Fronting Block Tiles
-          const baseHouses = town.tier === 1 ? 165 : (town.tier === 2 ? 82 : (town.tier === 3 ? 32 : 12));
-          const targetHouses = Math.max(5, Math.round(baseHouses * densityMult));
+          // 7B. Place Residential Houses with Organic Sparseness, Yard Breathing Room & Dimensional Variation
+          const baseHouses = town.tier === 1 ? 66 : (town.tier === 2 ? 34 : (town.tier === 3 ? 16 : 7));
+          const targetHouses = Math.max(4, Math.round(baseHouses * densityMult));
           this.tryPlaceNeighborhoodHouses(town, targetHouses, R);
         }
 
-        // 7C. Prune any outer local street stubs (`roadGrid === 1`) that have no adjacent buildings
-        //     so towns never display empty "ghost grid" subdivisions!
+        // 7C. Trim far-flung empty street tails while preserving natural neighborhood block loops
         this.pruneEmptyOuterStreets();
       }
 
       pruneEmptyOuterStreets() {
         const hasNearbyBuilding = (x, y) => {
-          for (let dy = -2; dy <= 2; dy++) {
-            for (let dx = -2; dx <= 2; dx++) {
+          for (let dy = -3; dy <= 3; dy++) {
+            for (let dx = -3; dx <= 3; dx++) {
               const nx = x + dx;
               const ny = y + dy;
               if (!this.inBounds(nx, ny, 1)) continue;
@@ -2293,7 +2335,6 @@
             cleanedRoads.push(r);
             continue;
           }
-          // Split or trim `street` polylines so only segments near buildings remain
           let currentSeg = [];
           for (const pt of r.points) {
             const id = this.idx(pt.x, pt.y);
@@ -2319,15 +2360,14 @@
 
       /**
        * Carves a street line starting at `(cx, cy)` and marching outward in both `-dir` and `+dir`,
-       * stopping immediately upon hitting water, steep hillsides, an airport pad, or a parallel street
-       * only 1 tile away (`nx, ny`) so 2×2 city blocks are never sliced into 1-tile slivers.
+       * stopping upon hitting water, steep hillsides, an airport pad, or a parallel street within 2 tiles
+       * so multi-phase borough grids meet cleanly at T-junctions without 1-tile slivers.
        */
       carveStreetFromCenter(cx, cy, ux, uy, negSteps, posSteps, isMainBoulevard = false) {
         const baseElev = this.inBounds(cx, cy, 1) ? this.elevationField[this.idx(cx, cy)] : this.seaLevel;
         const nx = -uy;
         const ny = ux;
 
-        // Abort if this exact street line is already carved along `(ux, uy)`
         if (
           this.inBounds(cx + ux, cy + uy, 2) &&
           this.inBounds(cx - ux, cy - uy, 2) &&
@@ -2340,15 +2380,17 @@
           return;
         }
 
+        // Enforce a 2-tile minimum gap between parallel streets so offset boroughs terminate in T-junctions
         const hasParallelNeighbor = (x, y) => {
-          for (const s of [-1, 1]) {
+          for (const s of [-2, -1, 1, 2]) {
             const px = x + nx * s;
             const py = y + ny * s;
             if (!this.inBounds(px, py, 2)) continue;
             if (this.roadGrid[this.idx(px, py)] > 0) {
               const fwd = this.inBounds(px + ux, py + uy, 1) && this.roadGrid[this.idx(px + ux, py + uy)] > 0;
               const bwd = this.inBounds(px - ux, py - uy, 1) && this.roadGrid[this.idx(px - ux, py - uy)] > 0;
-              if (fwd || bwd) return true;
+              if (fwd && bwd) return true;
+              if (Math.abs(s) === 1 && (fwd || bwd)) return true;
             }
           }
           return false;
@@ -2386,7 +2428,7 @@
           for (const pt of pts) {
             const id = this.idx(pt.x, pt.y);
             if (isMainBoulevard) {
-              this.roadGrid[id] = 2; // Mark primary CBD cross-boulevards as arterials!
+              this.roadGrid[id] = 2;
             } else if (this.roadGrid[id] === 0) {
               this.roadGrid[id] = 1;
             }
@@ -2396,132 +2438,167 @@
       }
 
       /**
-       * Deterministically scans all valid 2×2 city-block slots inside `town`'s boroughs and places:
-       * 1. Commercial (`C`) Sinks: Concentrated tightly in the CBD core and along Arterial Avenues (`roadGrid === 2`).
-       * 2. Industrial (`I`) Sinks & Producers: Placed on the peripheral industrial belt, waterfront docks,
-       *    and foothill/alluvial resource edges (`RAW` Extraction, `MFG` Sawtooth Factories, `LOG` Warehouses).
+       * Places Commercial (`C`) and Industrial (`I`) sinks with true dimensional variation:
+       * - `3×2` and `2×3` elongated rectangular halls/warehouses/sawtooth plants along arterials & industrial yards,
+       * - `2×2` square CBD high-rise rotundas and `RAW` silo yards,
+       * - `2×1` and `1×2` compact corner commercial blocks that fit into tighter central blocks and transition zones!
        */
       placeTownCommercialAndIndustrial(town, R, densityMult) {
         const boroughs = town.boroughs && town.boroughs.length > 0
           ? town.boroughs
           : [{ x: town.x, y: town.y, r: R }];
 
-        // Target counts by town tier
-        const baseCom = town.tier === 1 ? 13 : (town.tier === 2 ? 6 : (town.tier === 3 ? 3 : 1));
-        const baseInd = town.tier === 1 ? 7 : (town.tier === 2 ? 4 : (town.tier === 3 ? 2 : 1));
-        const targetCom = Math.max(1, Math.round(baseCom * Math.pow(densityMult, 0.72)));
-        const targetInd = Math.max(1, Math.round(baseInd * Math.pow(densityMult, 0.68)));
+        const baseCom = town.tier === 1 ? 11 : (town.tier === 2 ? 5 : (town.tier === 3 ? 2 : 1));
+        const baseInd = town.tier === 1 ? 6 : (town.tier === 2 ? 3 : (town.tier === 3 ? 2 : 1));
+        const targetCom = Math.max(1, Math.round(baseCom * Math.pow(densityMult, 0.70)));
+        const targetInd = Math.max(1, Math.round(baseInd * Math.pow(densityMult, 0.66)));
 
-        // Collect all candidate 2×2 clear block slots `(gx, gy)` across the town's envelope
-        const scanR = R + 4;
-        const candidates = [];
-        const perimDirs = [
-          [0, -1], [1, -1],
-          [-1, 0], [2, 0],
-          [-1, 1], [2, 1],
-          [0, 2], [1, 2]
-        ];
+        // Asymmetric directional sector angle for industrial zoning (so industrial districts form distinct clusters/yards)
+        const indSectorAngle = this.rng.range(0, Math.PI * 2);
+        const indDirX = Math.cos(indSectorAngle);
+        const indDirY = Math.sin(indSectorAngle);
 
-        for (let gy = town.y - scanR; gy <= town.y + scanR; gy++) {
-          for (let gx = town.x - scanR; gx <= town.x + scanR; gx++) {
-            if (!this.inBounds(gx, gy, 5) || !this.inBounds(gx + 1, gy + 1, 5)) continue;
-
-            // Check that the 2×2 footprint `[gx..gx+1, gy..gy+1]` is 100% clear dry land
-            let clear = true;
-            for (let dy = 0; dy <= 1; dy++) {
-              for (let dx = 0; dx <= 1; dx++) {
-                const id = this.idx(gx + dx, gy + dy);
-                if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) {
-                  clear = false;
-                  break;
-                }
+        const scanR = R + 5;
+        const evaluateFootprint = (gx, gy, wTiles, hTiles) => {
+          if (!this.inBounds(gx, gy, 5) || !this.inBounds(gx + wTiles - 1, gy + hTiles - 1, 5)) return null;
+          for (let dy = 0; dy < hTiles; dy++) {
+            for (let dx = 0; dx < wTiles; dx++) {
+              const id = this.idx(gx + dx, gy + dy);
+              if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) {
+                return null;
               }
-              if (!clear) break;
             }
-            if (!clear) continue;
+          }
 
-            // Check perimeter for road access & whether it fronts onto a main Arterial (`roadGrid === 2`)
-            let roadTouch = null;
-            let touchesArterial = false;
-            let arterialSides = 0;
-            for (const [px, py] of perimDirs) {
-              const rx = gx + px;
+          // Scan perimeter around `[gx..gx+wTiles-1, gy..gy+hTiles-1]` for street & arterial frontage
+          let roadTouch = null;
+          let touchesArterial = false;
+          let arterialCount = 0;
+          let streetCount = 0;
+
+          for (let dx = 0; dx < wTiles; dx++) {
+            for (const py of [-1, hTiles]) {
+              const rx = gx + dx;
               const ry = gy + py;
               const rg = this.roadGrid[this.idx(rx, ry)];
               if (rg === 2) {
                 touchesArterial = true;
-                arterialSides++;
+                arterialCount++;
                 if (!roadTouch) roadTouch = { x: rx, y: ry };
-              } else if (rg === 1 && !roadTouch) {
-                roadTouch = { x: rx, y: ry };
+              } else if (rg === 1) {
+                streetCount++;
+                if (!roadTouch) roadTouch = { x: rx, y: ry };
               }
             }
-            if (!roadTouch) continue;
-
-            const cx = gx + 0.5;
-            const cy = gy + 0.5;
-            let minBrDist = Infinity;
-            for (const br of boroughs) {
-              const d = Math.hypot(cx - br.x, cy - br.y);
-              if (d < minBrDist) minBrDist = d;
+          }
+          for (let dy = 0; dy < hTiles; dy++) {
+            for (const px of [-1, wTiles]) {
+              const rx = gx + px;
+              const ry = gy + dy;
+              const rg = this.roadGrid[this.idx(rx, ry)];
+              if (rg === 2) {
+                touchesArterial = true;
+                arterialCount++;
+                if (!roadTouch) roadTouch = { x: rx, y: ry };
+              } else if (rg === 1) {
+                streetCount++;
+                if (!roadTouch) roadTouch = { x: rx, y: ry };
+              }
             }
-            const distTownCenter = Math.hypot(cx - town.x, cy - town.y);
-            if (minBrDist > R + 2) continue;
+          }
+          if (!roadTouch) return null;
 
-            // Commercial score peaks right at the CBD core AND along Arterial Boulevards (`roadGrid === 2`)
-            const cbdScore =
-              (touchesArterial ? 24.0 + arterialSides * 4.5 : 0) -
-              minBrDist * 2.4 -
-              distTownCenter * 0.8 +
-              this.rng.range(-1.2, 1.2);
+          const cx = gx + (wTiles - 1) * 0.5;
+          const cy = gy + (hTiles - 1) * 0.5;
+          let minBrDist = Infinity;
+          for (const br of boroughs) {
+            const d = Math.hypot(cx - br.x, cy - br.y);
+            if (d < minBrDist) minBrDist = d;
+          }
+          if (minBrDist > R + 2.5) return null;
 
-            // Industrial score peaks on the outer arterial approaches (`minBrDist >= 0.40 * R`), waterfronts & resource edges
-            const dW = this.distToWater[this.idx(gx, gy)];
-            const indRingBonus = minBrDist >= R * 0.36 ? 18.0 : -20.0;
-            const indScore =
-              indRingBonus +
-              minBrDist * 1.3 +
-              (touchesArterial ? 14.0 : 0) +
-              (dW < 6.5 ? 7.5 : 0) +
-              this.rng.range(-1.8, 1.8);
+          const distTownCenter = Math.hypot(cx - town.x, cy - town.y);
+          // Organic transition noise so C/R/I boundaries undulate instead of forming rigid concentric rings
+          const transitionNoise = this.noise.fbm(cx * 0.09 + 1.7, cy * 0.09 + 4.3, 2) * 11.5;
 
-            candidates.push({
-              gx,
-              gy,
-              cx,
-              cy,
-              roadTouch,
-              touchesArterial,
-              minBrDist,
-              cbdScore,
-              indScore
-            });
+          const cbdScore =
+            (touchesArterial ? 22.0 + arterialCount * 3.8 : streetCount * 1.4) -
+            minBrDist * 2.1 -
+            distTownCenter * 0.75 +
+            transitionNoise +
+            this.rng.range(-3.2, 3.2);
+
+          const vecLen = Math.max(1, distTownCenter);
+          const sectorAlign = ((cx - town.x) * indDirX + (cy - town.y) * indDirY) / vecLen;
+          const dW = this.distToWater[this.idx(gx, gy)];
+          const indRingBonus = minBrDist >= R * (0.34 + this.rng.range(-0.08, 0.10)) ? 16.0 : -18.0;
+          const indScore =
+            indRingBonus +
+            minBrDist * 1.15 +
+            sectorAlign * 9.5 +
+            (touchesArterial ? 13.5 : 0) +
+            (dW < 6.5 ? 7.0 : 0) -
+            transitionNoise * 0.6 +
+            this.rng.range(-3.0, 3.0);
+
+          return {
+            gx,
+            gy,
+            wTiles,
+            hTiles,
+            cx,
+            cy,
+            roadTouch,
+            touchesArterial,
+            minBrDist,
+            cbdScore,
+            indScore
+          };
+        };
+
+        const slots2x2 = [];
+        const slotsRect = []; // 3×2 and 2×3 elongated lots
+        const slotsCompact = []; // 2×1 and 1×2 corner/boutique commercial lots
+
+        for (let gy = town.y - scanR; gy <= town.y + scanR; gy++) {
+          for (let gx = town.x - scanR; gx <= town.x + scanR; gx++) {
+            const s22 = evaluateFootprint(gx, gy, 2, 2);
+            if (s22) slots2x2.push(s22);
+            const s32 = evaluateFootprint(gx, gy, 3, 2);
+            if (s32) slotsRect.push(s32);
+            const s23 = evaluateFootprint(gx, gy, 2, 3);
+            if (s23) slotsRect.push(s23);
+            const s21 = evaluateFootprint(gx, gy, 2, 1);
+            if (s21) slotsCompact.push(s21);
+            const s12 = evaluateFootprint(gx, gy, 1, 2);
+            if (s12) slotsCompact.push(s12);
           }
         }
 
-        const isSlotFree = (gx, gy, minSpacing = 2.8) => {
-          for (let dy = 0; dy <= 1; dy++) {
-            for (let dx = 0; dx <= 1; dx++) {
-              if (this.buildingMask[this.idx(gx + dx, gy + dy)] > 0) return false;
+        const isLotFree = (cand, minSpacing) => {
+          for (let dy = 0; dy < cand.hTiles; dy++) {
+            for (let dx = 0; dx < cand.wTiles; dx++) {
+              if (this.buildingMask[this.idx(cand.gx + dx, cand.gy + dy)] > 0) return false;
             }
           }
           for (const d of this.destinations) {
-            if (d.townId === town.id && Math.hypot(d.x - (gx + 0.5), d.y - (gy + 0.5)) < minSpacing) {
+            if (d.townId === town.id && Math.hypot(d.x - cand.cx, d.y - cand.cy) < minSpacing) {
               return false;
             }
           }
           return true;
         };
 
-        const commit2x2Lot = (cand, zoneType, subType, isCircular) => {
-          for (let dy = 0; dy <= 1; dy++) {
-            for (let dx = 0; dx <= 1; dx++) {
+        const commitLot = (cand, zoneType, subType, isCircular) => {
+          for (let dy = 0; dy < cand.hTiles; dy++) {
+            for (let dx = 0; dx < cand.wTiles; dx++) {
               this.buildingMask[this.idx(cand.gx + dx, cand.gy + dy)] = 2;
             }
           }
           const colorIdx = zoneType === 'commercial'
             ? town.colorIdx
             : (town.colorIdx + 1) % PALETTE.districtColors.length;
+          const area = cand.wTiles * cand.hTiles;
 
           this.destinations.push({
             id: this.destinations.length,
@@ -2529,14 +2606,16 @@
             y: cand.cy,
             gx: cand.gx,
             gy: cand.gy,
+            wTiles: cand.wTiles,
+            hTiles: cand.hTiles,
             roadX: cand.roadTouch.x,
             roadY: cand.roadTouch.y,
             townId: town.id,
             zoneType, // 'commercial' | 'industrial'
-            subType,  // 'CBD Tower' | 'Arterial Retail' | 'RAW' | 'MFG' | 'LOG'
+            subType,  // 'CBD High-Rise' | 'Arterial Plaza' | 'Corner Market' | 'RAW' | 'MFG' | 'LOG'
             isCircular,
-            hasUrgentPin: this.rng.next() < 0.18,
-            pinsCount: zoneType === 'commercial' ? this.rng.int(4, 6) : this.rng.int(3, 5),
+            hasUrgentPin: this.rng.next() < 0.16,
+            pinsCount: area >= 6 ? this.rng.int(5, 7) : (area === 4 ? this.rng.int(3, 5) : this.rng.int(2, 3)),
             colorIdx,
             palette: PALETTE.districtColors[colorIdx]
           });
@@ -2545,39 +2624,76 @@
           else town.industrialCount++;
         };
 
-        // 1. Place Commercial (`C`) Sinks in the CBD Core & Along Arterials
-        const comSorted = [...candidates].sort((a, b) => b.cbdScore - a.cbdScore);
+        // 1. Place Commercial (`C`) Sinks with Dimensional Mix:
+        //    - Flagship 2×2 CBD Rotundas + 3×2/2×3 Arterial Plazas + 2×1/1×2 Corner Markets!
+        const comLargePool = [
+          ...slots2x2,
+          ...slotsRect.map(s => ({ ...s, cbdScore: s.cbdScore + (s.touchesArterial ? 4.5 : -1.5) }))
+        ].sort((a, b) => b.cbdScore - a.cbdScore);
+        const comCompactPool = [...slotsCompact].sort((a, b) => b.cbdScore - a.cbdScore);
+
         let placedCom = 0;
-        for (const cand of comSorted) {
-          if (placedCom >= targetCom) break;
-          if (!isSlotFree(cand.gx, cand.gy, 2.6)) continue;
-          const isCBDLandmark = placedCom === 0 || (cand.minBrDist < 4.5 && this.rng.next() < 0.45);
-          const subType = cand.minBrDist < 5.5 ? 'CBD High-Rise' : 'Arterial Retail Plaza';
-          commit2x2Lot(cand, 'commercial', subType, isCBDLandmark);
+        const largeTarget = Math.max(1, Math.round(targetCom * 0.64));
+        for (const cand of comLargePool) {
+          if (placedCom >= largeTarget) break;
+          // Give 2×2/3×2 buildings breathing room (`minSpacing = 3.6`) so they don't tile into a solid grid
+          if (!isLotFree(cand, 3.6)) continue;
+          const is2x2 = cand.wTiles === 2 && cand.hTiles === 2;
+          const isCBDLandmark = is2x2 && (placedCom === 0 || (cand.minBrDist < 4.5 && this.rng.next() < 0.45));
+          const subType = isCBDLandmark ? 'CBD High-Rise' : 'Arterial Retail Plaza';
+          commitLot(cand, 'commercial', subType, isCBDLandmark);
           placedCom++;
         }
 
-        // 2. Place Industrial (`I`) Sinks & Producers on the Peripheral Ring (`RAW`, `MFG`, `LOG`)
-        const indSorted = [...candidates].sort((a, b) => b.indScore - a.indScore);
-        let placedInd = 0;
+        // Fill remaining Commercial quota with compact 2×1 / 1×2 Corner Markets in tight central & arterial blocks!
+        for (const cand of comCompactPool) {
+          if (placedCom >= targetCom) break;
+          if (!isLotFree(cand, 2.5)) continue;
+          commitLot(cand, 'commercial', 'Corner Market', false);
+          placedCom++;
+        }
+
+        // 2. Place Industrial (`I`) Sinks & Producers (`3×2`/`2×3` MFG Factories & LOG Hubs + `2×2` RAW Silo Yards)
+        const indRectSorted = [...slotsRect].sort((a, b) => b.indScore - a.indScore);
+        const ind2x2Sorted = [...slots2x2].sort((a, b) => b.indScore - a.indScore);
         const tier1Roles = ['MFG', 'LOG', 'RAW', 'MFG', 'LOG', 'RAW'];
         const tier2Roles = ['MFG', 'RAW', 'LOG', 'MFG', 'RAW'];
         const tier3Roles = ['RAW', 'MFG', 'RAW'];
-        for (const cand of indSorted) {
-          if (placedInd >= targetInd) break;
-          if (!isSlotFree(cand.gx, cand.gy, 3.2)) continue;
-          // Assign balanced role in the 3-stage industrial cargo chain (`RAW -> MFG -> LOG -> COM`):
-          // - Tier 1 Metropolises & Tier 2 Regional Cities always host `MFG` factories & `LOG` hubs
-          // - Tier 3/4 towns specialize in `RAW` extraction feeding into nearby `MFG` plants
+
+        let placedInd = 0;
+        let rectIdx = 0;
+        let sqIdx = 0;
+        while (placedInd < targetInd && (rectIdx < indRectSorted.length || sqIdx < ind2x2Sorted.length)) {
           let indRole = 'RAW';
-          if (town.tier === 1) {
-            indRole = tier1Roles[placedInd % tier1Roles.length];
-          } else if (town.tier === 2) {
-            indRole = tier2Roles[placedInd % tier2Roles.length];
-          } else {
-            indRole = tier3Roles[placedInd % tier3Roles.length];
+          if (town.tier === 1) indRole = tier1Roles[placedInd % tier1Roles.length];
+          else if (town.tier === 2) indRole = tier2Roles[placedInd % tier2Roles.length];
+          else indRole = tier3Roles[placedInd % tier3Roles.length];
+
+          // `MFG` and `LOG` strongly prefer elongated `3×2` or `2×3` rectangular halls when available!
+          const preferRect = (indRole === 'MFG' || indRole === 'LOG') && this.rng.next() < 0.75;
+          let chosen = null;
+
+          if (preferRect) {
+            while (rectIdx < indRectSorted.length) {
+              const c = indRectSorted[rectIdx++];
+              if (isLotFree(c, 4.1)) {
+                chosen = c;
+                break;
+              }
+            }
           }
-          commit2x2Lot(cand, 'industrial', indRole, false);
+          if (!chosen) {
+            while (sqIdx < ind2x2Sorted.length) {
+              const c = ind2x2Sorted[sqIdx++];
+              if (isLotFree(c, 3.8)) {
+                chosen = c;
+                break;
+              }
+            }
+          }
+          if (!chosen) break;
+
+          commitLot(chosen, 'industrial', indRole, false);
           placedInd++;
         }
       }
@@ -2592,8 +2708,6 @@
           y: town.y + this.rng.range(-8, 8)
         };
 
-        // Collect all valid street-fronting 1×1 residential lots across the town's boroughs
-        // and sort from inner core outward (with gentle noise) so central blocks pack densely!
         const scanR = (customRadius || town.urbanRadius) + 3;
         const houseSlots = [];
         const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -2622,25 +2736,54 @@
               const d = Math.hypot(gx - br.x, gy - br.y);
               if (d < minBrDist) minBrDist = d;
             }
-            // Core-first ordering with slight organic jitter so central blocks fill 100% solid!
-            const priority = minBrDist + this.rng.range(0, 3.8);
-            houseSlots.push({ gx, gy, id, driveway, priority });
+            // Add spatial noise & wide random jitter to transition points so density feathers organically!
+            const patchNoise = this.noise.fbm(gx * 0.14 + 5.2, gy * 0.14 + 2.9, 2) * 5.5;
+            const priority = minBrDist + patchNoise + this.rng.range(0, 6.5);
+            houseSlots.push({ gx, gy, id, driveway, minBrDist, priority });
           }
         }
 
         houseSlots.sort((a, b) => a.priority - b.priority);
 
+        const countAdjacentHouses = (gx, gy) => {
+          let count = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              if (this.buildingMask[this.idx(gx + dx, gy + dy)] === 1) count++;
+            }
+          }
+          return count;
+        };
+
         for (const slot of houseSlots) {
           if (town.housesCount >= targetHouses) break;
           if (this.buildingMask[slot.id] > 0 || this.roadGrid[slot.id] > 0) continue;
+
+          // Prevent 4-house "waffle blocks": leave yard/courtyard breathing room inside blocks!
+          const adj = countAdjacentHouses(slot.gx, slot.gy);
+          const radialFrac = Math.min(1, slot.minBrDist / Math.max(6, scanR));
+          if (adj >= 3) continue;
+          if (adj === 2 && this.rng.next() < 0.72) continue;
+          if (adj === 1 && this.rng.next() < 0.25 + radialFrac * 0.35) continue;
 
           this.buildingMask[slot.id] = 1;
           const useSecondary = Math.hypot(slot.gx - clusterOffset.x, slot.gy - clusterOffset.y) < scanR * 0.36;
           const colorIdx = useSecondary ? secondaryColorIdx : town.colorIdx;
 
+          // Dimensional variation for individual houses (cottages, L-townhouses, varied setbacks)
+          const wScale = this.rng.range(0.60, 0.84);
+          const hScale = this.rng.range(0.60, 0.84);
+          const offX = this.rng.range(-0.08, 0.08);
+          const offY = this.rng.range(-0.08, 0.08);
+
           this.houses.push({
             x: slot.gx,
             y: slot.gy,
+            wScale,
+            hScale,
+            offX,
+            offY,
             roadX: slot.driveway.x,
             roadY: slot.driveway.y,
             townId: town.id,
@@ -5114,36 +5257,41 @@
       drawBuildings(ctx, world, ts) {
         const isRCI = this.activeLayer === 'rci';
 
-        // 1. Residential Houses (with 45° drop shadow & 2-tone pitched roof)
-        const hs = ts * 0.74;
+        // 1. Residential Houses (with per-house dimensional & setback variation)
         for (const h of world.houses) {
-          const cx = h.x * ts + ts * 0.5;
-          const cy = h.y * ts + ts * 0.5;
+          const cx = (h.x + (h.offX || 0)) * ts + ts * 0.5;
+          const cy = (h.y + (h.offY || 0)) * ts + ts * 0.5;
+          const hw = ts * (h.wScale || 0.72);
+          const hh = ts * (h.hScale || 0.72);
           const baseCol = isRCI ? '#15803d' : h.palette.base;
           const roofCol = isRCI ? '#22c55e' : h.palette.roof;
 
           ctx.fillStyle = PALETTE.shadowColor;
           ctx.beginPath();
-          ctx.roundRect(cx - hs * 0.5 + 3.2, cy - hs * 0.5 + 3.2, hs, hs, 2.5);
+          ctx.roundRect(cx - hw * 0.5 + 3.0, cy - hh * 0.5 + 3.0, hw, hh, 2.5);
           ctx.fill();
 
           ctx.fillStyle = baseCol;
           ctx.beginPath();
-          ctx.roundRect(cx - hs * 0.5, cy - hs * 0.5, hs, hs, 2.5);
+          ctx.roundRect(cx - hw * 0.5, cy - hh * 0.5, hw, hh, 2.5);
           ctx.fill();
 
           ctx.fillStyle = roofCol;
           ctx.beginPath();
-          ctx.roundRect(cx - hs * 0.5, cy - hs * 0.5, hs, hs * 0.68, 2.5);
+          ctx.roundRect(cx - hw * 0.5, cy - hh * 0.5, hw, hh * 0.68, 2.5);
           ctx.fill();
         }
 
-        // 2. Differentiated Commercial (CBD/Arterial) vs. Industrial (RAW/MFG/LOG) 2×2 Sinks
+        // 2. Differentiated Commercial (CBD/Arterial/Corner) & Industrial (RAW/MFG/LOG) Multi-Dimension Sinks
         for (const d of world.destinations) {
           const cx = d.x * ts + ts * 0.5;
           const cy = d.y * ts + ts * 0.5;
-          const lotW = ts * 2.08;
-          const bldW = ts * 1.56;
+          const wT = d.wTiles || 2;
+          const hT = d.hTiles || 2;
+          const lotW = (wT + 0.06) * ts;
+          const lotH = (hT + 0.06) * ts;
+          const bldW = (wT - 0.34) * ts;
+          const bldH = (hT - 0.34) * ts;
           const isInd = d.zoneType === 'industrial';
 
           let baseCol = d.palette.base;
@@ -5171,150 +5319,160 @@
 
           if (!isInd) {
             // =================================================================
-            // COMMERCIAL SINK (CBD Rotunda High-Rise or Stepped Arterial Plaza)
+            // COMMERCIAL SINK (2×2 Rotunda, 3×2/2×3 Arterial Hall, or 2×1/1×2 Corner Market)
             // =================================================================
             ctx.fillStyle = isRCI ? '#dbeafe' : '#eceae4';
             ctx.strokeStyle = isRCI ? '#60a5fa' : '#b8b5ad';
-            ctx.lineWidth = 1.3;
+            ctx.lineWidth = 1.25;
             ctx.beginPath();
-            ctx.roundRect(cx - lotW * 0.5, cy - lotW * 0.5, lotW, lotW, 5);
+            ctx.roundRect(cx - lotW * 0.5, cy - lotH * 0.5, lotW, lotH, 4.5);
             ctx.fill();
             ctx.stroke();
 
-            // 45° High-Rise Drop Shadow
+            // 45° Building Drop Shadow
+            const minDim = Math.min(bldW, bldH);
             ctx.fillStyle = PALETTE.shadowColor;
             ctx.beginPath();
             if (d.isCircular) {
-              ctx.arc(cx + 5.5, cy + 5.5, bldW * 0.52, 0, Math.PI * 2);
+              ctx.arc(cx + 5.2, cy + 5.2, minDim * 0.52, 0, Math.PI * 2);
             } else {
-              ctx.roundRect(cx - bldW * 0.5 + 5.5, cy - bldW * 0.5 + 5.5, bldW, bldW, 4.5);
+              ctx.roundRect(cx - bldW * 0.5 + 4.8, cy - bldH * 0.5 + 4.8, bldW, bldH, 4);
             }
             ctx.fill();
 
-            // Main Commercial Tower Base & Stepped Roof
+            // Main Commercial Base & Stepped Roof
             ctx.fillStyle = baseCol;
             ctx.beginPath();
             if (d.isCircular) {
-              ctx.arc(cx, cy, bldW * 0.52, 0, Math.PI * 2);
+              ctx.arc(cx, cy, minDim * 0.52, 0, Math.PI * 2);
             } else {
-              ctx.roundRect(cx - bldW * 0.5, cy - bldW * 0.5, bldW, bldW, 4.5);
+              ctx.roundRect(cx - bldW * 0.5, cy - bldH * 0.5, bldW, bldH, 4);
             }
             ctx.fill();
 
             ctx.fillStyle = roofCol;
             ctx.beginPath();
             if (d.isCircular) {
-              ctx.arc(cx, cy - 1.8, bldW * 0.45, 0, Math.PI * 2);
+              ctx.arc(cx, cy - 1.6, minDim * 0.45, 0, Math.PI * 2);
             } else {
-              ctx.roundRect(cx - bldW * 0.5 + 1.5, cy - bldW * 0.5 + 1.5, bldW - 3, bldW * 0.78, 3.5);
+              ctx.roundRect(cx - bldW * 0.5 + 1.4, cy - bldH * 0.5 + 1.4, bldW - 2.8, bldH * 0.78, 3);
             }
             ctx.fill();
 
-            // Bright Glass Atrium Skylight Core (distinguishes Commercial CBD architecture!)
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+            // Bright Glass Atrium Skylight Core
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
             ctx.beginPath();
             if (d.isCircular) {
-              ctx.arc(cx, cy - 1.8, bldW * 0.22, 0, Math.PI * 2);
+              ctx.arc(cx, cy - 1.6, minDim * 0.22, 0, Math.PI * 2);
             } else {
-              ctx.roundRect(cx - bldW * 0.28, cy - bldW * 0.34, bldW * 0.56, bldW * 0.32, 2);
+              ctx.roundRect(cx - bldW * 0.28, cy - bldH * 0.34, bldW * 0.56, bldH * 0.32, 2);
             }
             ctx.fill();
 
-            // Round Consumer Demand Pins
+            // Round Consumer Demand Pins scaled to rectangular or circular roof
             ctx.fillStyle = '#ffffff';
             ctx.strokeStyle = pinCol;
-            ctx.lineWidth = 1.4;
+            ctx.lineWidth = 1.35;
+            const cols = wT >= hT ? Math.min(3, Math.max(2, wT)) : Math.min(2, wT);
+            const rows = Math.ceil(d.pinsCount / cols);
             for (let p = 0; p < d.pinsCount; p++) {
               let px, py;
               if (d.isCircular) {
                 const ang = (p / d.pinsCount) * Math.PI * 2;
-                px = cx + Math.cos(ang) * (bldW * 0.30);
-                py = cy - 1.8 + Math.sin(ang) * (bldW * 0.30);
+                px = cx + Math.cos(ang) * (minDim * 0.30);
+                py = cy - 1.6 + Math.sin(ang) * (minDim * 0.30);
               } else {
-                const col = p % 3;
-                const row = Math.floor(p / 3);
-                px = cx - bldW * 0.26 + col * (bldW * 0.26);
-                py = cy - bldW * 0.20 + row * (bldW * 0.28);
+                const col = p % cols;
+                const row = Math.floor(p / cols);
+                const spanX = bldW * 0.54;
+                const spanY = bldH * 0.44;
+                px = cols === 1 ? cx : cx - spanX * 0.5 + (col / (cols - 1)) * spanX;
+                py = rows <= 1 ? cy - bldH * 0.12 : cy - spanY * 0.55 + (row / (rows - 1)) * spanY;
               }
               ctx.beginPath();
-              ctx.arc(px, py, 2.4, 0, Math.PI * 2);
+              ctx.arc(px, py, 2.2, 0, Math.PI * 2);
               ctx.fill();
               ctx.stroke();
             }
           } else {
             // =================================================================
-            // INDUSTRIAL FACILITY (`RAW` Silos, `MFG` Sawtooth Factory, `LOG` Warehouse)
+            // INDUSTRIAL FACILITY (`RAW` Silos, `MFG` Sawtooth Hall, `LOG` Cross-Dock)
             // =================================================================
             ctx.fillStyle = isRCI ? '#fef3c7' : '#d5d2ca';
             ctx.strokeStyle = isRCI ? '#f59e0b' : '#8c8980';
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 1.45;
             ctx.beginPath();
-            ctx.roundRect(cx - lotW * 0.5, cy - lotW * 0.5, lotW, lotW, 3);
+            ctx.roundRect(cx - lotW * 0.5, cy - lotH * 0.5, lotW, lotH, 3);
             ctx.fill();
             ctx.stroke();
 
             // Yellow-amber freight loading apron stripes along bottom edge of industrial yard
-            ctx.fillStyle = 'rgba(217, 119, 6, 0.45)';
-            for (let s = -2; s <= 2; s++) {
-              ctx.fillRect(cx + s * (ts * 0.32) - 2, cy + lotW * 0.34, 4, 3);
+            ctx.fillStyle = 'rgba(217, 119, 6, 0.48)';
+            const stripeCount = Math.max(3, wT * 2);
+            for (let s = 0; s < stripeCount; s++) {
+              const sx = cx - lotW * 0.36 + (s / (stripeCount - 1)) * (lotW * 0.72);
+              ctx.fillRect(sx - 2, cy + lotH * 0.36, 4, 2.8);
             }
 
             // 45° Industrial Shadow
             ctx.fillStyle = PALETTE.shadowColor;
             ctx.beginPath();
-            ctx.roundRect(cx - bldW * 0.5 + 5, cy - bldW * 0.5 + 5, bldW, bldW * 0.88, 3);
+            ctx.roundRect(cx - bldW * 0.5 + 4.8, cy - bldH * 0.5 + 4.8, bldW, bldH * 0.90, 3);
             ctx.fill();
 
             if (d.subType === 'RAW') {
               // Primary Extraction (`RAW`): Hopper Headhouse + Twin Cylindrical Storage Silos
               ctx.fillStyle = baseCol;
               ctx.beginPath();
-              ctx.roundRect(cx - bldW * 0.48, cy - bldW * 0.44, bldW * 0.52, bldW * 0.84, 2.5);
+              ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.52, bldH * 0.84, 2.5);
               ctx.fill();
 
               ctx.fillStyle = roofCol;
               ctx.beginPath();
-              ctx.roundRect(cx - bldW * 0.44, cy - bldW * 0.40, bldW * 0.44, bldW * 0.65, 2);
+              ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.44, bldH * 0.65, 2);
               ctx.fill();
 
-              // Twin Silo Cylinders on right side of lot
-              for (const syOff of [-bldW * 0.22, bldW * 0.18]) {
+              const siloR = Math.min(bldW, bldH) * 0.20;
+              for (const syOff of [-bldH * 0.22, bldH * 0.18]) {
                 ctx.fillStyle = '#6b7078';
                 ctx.beginPath();
-                ctx.arc(cx + bldW * 0.25, cy + syOff, bldW * 0.20, 0, Math.PI * 2);
+                ctx.arc(cx + bldW * 0.25, cy + syOff, siloR, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.fillStyle = '#e5e2dc';
                 ctx.beginPath();
-                ctx.arc(cx + bldW * 0.25, cy + syOff - 1, bldW * 0.15, 0, Math.PI * 2);
+                ctx.arc(cx + bldW * 0.25, cy + syOff - 1, siloR * 0.75, 0, Math.PI * 2);
                 ctx.fill();
               }
             } else if (d.subType === 'LOG') {
-              // Logistics Distribution Center (`LOG`): Cross-Dock Freight Terminal with Loading Bays
+              // Logistics Distribution Center (`LOG`): Elongated Cross-Dock Freight Terminal
               ctx.fillStyle = baseCol;
               ctx.beginPath();
-              ctx.roundRect(cx - bldW * 0.52, cy - bldW * 0.40, bldW * 1.04, bldW * 0.78, 3);
+              ctx.roundRect(cx - bldW * 0.50, cy - bldH * 0.42, bldW, bldH * 0.82, 3);
               ctx.fill();
 
               ctx.fillStyle = roofCol;
               ctx.beginPath();
-              ctx.roundRect(cx - bldW * 0.48, cy - bldW * 0.36, bldW * 0.96, bldW * 0.62, 2);
+              ctx.roundRect(cx - bldW * 0.46, cy - bldH * 0.38, bldW * 0.92, bldH * 0.66, 2);
               ctx.fill();
 
-              // White roof cross-dock bay dividers
+              // White roof cross-dock bay dividers along the long axis
               ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-              for (let b = -1; b <= 1; b++) {
-                ctx.fillRect(cx + b * (bldW * 0.28) - 1, cy - bldW * 0.32, 2, bldW * 0.52);
+              const bays = Math.max(3, wT + 1);
+              for (let b = 0; b < bays; b++) {
+                const bx = cx - bldW * 0.32 + (b / (bays - 1)) * (bldW * 0.64);
+                ctx.fillRect(bx - 1, cy - bldH * 0.34, 2, bldH * 0.56);
               }
             } else {
-              // Secondary Manufacturing (`MFG`): 3-Bay Sawtooth Factory Roof + Smokestack
+              // Secondary Manufacturing (`MFG`): Multi-Bay Sawtooth Factory Roof + Smokestack
               ctx.fillStyle = baseCol;
               ctx.beginPath();
-              ctx.roundRect(cx - bldW * 0.50, cy - bldW * 0.46, bldW, bldW * 0.90, 2.5);
+              ctx.roundRect(cx - bldW * 0.50, cy - bldH * 0.46, bldW, bldH * 0.90, 2.5);
               ctx.fill();
 
-              const bayH = (bldW * 0.82) / 3;
-              for (let bay = 0; bay < 3; bay++) {
-                const by = cy - bldW * 0.42 + bay * bayH;
+              const numBays = hT >= 3 ? 4 : 3;
+              const bayH = (bldH * 0.82) / numBays;
+              for (let bay = 0; bay < numBays; bay++) {
+                const by = cy - bldH * 0.42 + bay * bayH;
                 ctx.fillStyle = roofCol;
                 ctx.fillRect(cx - bldW * 0.46, by, bldW * 0.92, bayH * 0.72);
                 ctx.fillStyle = 'rgba(54, 56, 62, 0.25)';
@@ -5324,36 +5482,38 @@
               // Corner industrial smokestack cylinder
               ctx.fillStyle = '#36383e';
               ctx.beginPath();
-              ctx.arc(cx + bldW * 0.34, cy - bldW * 0.30, ts * 0.24, 0, Math.PI * 2);
+              ctx.arc(cx + bldW * 0.34, cy - bldH * 0.30, ts * 0.24, 0, Math.PI * 2);
               ctx.fill();
               ctx.fillStyle = '#ffffff';
               ctx.beginPath();
-              ctx.arc(cx + bldW * 0.34, cy - bldW * 0.30, ts * 0.10, 0, Math.PI * 2);
+              ctx.arc(cx + bldW * 0.34, cy - bldH * 0.30, ts * 0.10, 0, Math.PI * 2);
               ctx.fill();
             }
 
             // Square Cargo Crate Pins on Industrial Roof
             ctx.fillStyle = '#ffffff';
             ctx.strokeStyle = pinCol;
-            ctx.lineWidth = 1.3;
-            for (let p = 0; p < Math.min(4, d.pinsCount); p++) {
-              const px = cx - bldW * 0.30 + (p % 2) * (bldW * 0.26);
-              const py = cy - bldW * 0.18 + Math.floor(p / 2) * (bldW * 0.26);
-              ctx.fillRect(px - 2.2, py - 2.2, 4.4, 4.4);
-              ctx.strokeRect(px - 2.2, py - 2.2, 4.4, 4.4);
+            ctx.lineWidth = 1.25;
+            const maxCrates = Math.min(wT * hT >= 6 ? 5 : 4, d.pinsCount);
+            const crateCols = wT >= 3 ? 3 : 2;
+            for (let p = 0; p < maxCrates; p++) {
+              const px = cx - bldW * 0.32 + (p % crateCols) * (bldW * 0.24);
+              const py = cy - bldH * 0.18 + Math.floor(p / crateCols) * (bldH * 0.26);
+              ctx.fillRect(px - 2.1, py - 2.1, 4.2, 4.2);
+              ctx.strokeRect(px - 2.1, py - 2.1, 4.2, 4.2);
             }
           }
 
           if (d.hasUrgentPin) {
             const bx = cx - bldW * 0.38;
-            const by = cy - bldW * 0.52;
+            const by = cy - bldH * 0.52;
             ctx.fillStyle = '#d9383a';
             ctx.beginPath();
-            ctx.arc(bx, by, 6.8, 0, Math.PI * 2);
+            ctx.arc(bx, by, 6.5, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = '#ffffff';
             ctx.beginPath();
-            ctx.arc(bx, by, 2.8, 0, Math.PI * 2);
+            ctx.arc(bx, by, 2.6, 0, Math.PI * 2);
             ctx.fill();
           }
         }
@@ -6308,11 +6468,15 @@
         ctx.fill();
 
         for (const d of world.destinations) {
+          const wT = d.wTiles || 2;
+          const hT = d.hTiles || 2;
+          const zw = (wT + 1.2) * ts;
+          const zh = (hT + 1.2) * ts;
           ctx.fillStyle = d.zoneType === 'commercial'
             ? 'rgba(59, 130, 246, 0.28)'
             : 'rgba(245, 158, 11, 0.28)';
           ctx.beginPath();
-          ctx.roundRect((d.x - 1.3) * ts, (d.y - 1.3) * ts, ts * 3.6, ts * 3.6, 8);
+          ctx.roundRect((d.x + 0.5) * ts - zw * 0.5, (d.y + 0.5) * ts - zh * 0.5, zw, zh, 8);
           ctx.fill();
         }
         ctx.restore();
