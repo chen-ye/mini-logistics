@@ -2670,10 +2670,10 @@
             penalty += segLen * (this.waterMask[id] === 2 ? 4.8 : 2.8);
           } else {
             waterArc = 0;
-            if (this.distToWater[id] < 1.8) penalty += 1.2;
-            // Topographic valley preference: penalize routing expressways over steep mountain ridges
-            const ridgeElev = Math.max(0, this.elevationField[id] - this.seaLevel - 0.16);
-            penalty += ridgeElev * 4.5 + this.slopeField[id] * 1.8;
+            if (this.distToWater[id] < 1.8) penalty += segLen * 0.6;
+            // Topographic valley preference (weighted by segLen so sample density never biases the score!)
+            const ridgeElev = Math.max(0, this.elevationField[id] - this.seaLevel - 0.14);
+            penalty += segLen * (ridgeElev * 6.5 + this.slopeField[id] * 2.5);
           }
 
           // Hard reject passing near an existing motorway's endpoints or running parallel nearby
@@ -2798,13 +2798,13 @@
             // so the B-spline curves gracefully through valley passes without flattening into a straight ruler!
             let outWps = [{ x: sx, y: sy }];
             const numCtrl = Math.min(9, Math.max(4, Math.floor(rawPts.length / 4)));
-            const waveAmp = Math.min(11.0, chordLen * 0.075) * (lateralBias >= 0 ? 1 : -1);
+            const waveAmp = Math.min(16.0, chordLen * 0.11) * (lateralBias >= 0 ? 1 : -1);
             for (let k = 1; k <= numCtrl; k++) {
               const frac = k / (numCtrl + 1);
               const idx = Math.floor(frac * (rawPts.length - 1));
-              const wave = Math.sin(frac * Math.PI) * waveAmp;
-              const wx = rawPts[idx].x + chordNx * wave * 0.45;
-              const wy = rawPts[idx].y + chordNy * wave * 0.45;
+              const wave = (Math.sin(frac * Math.PI) * 0.65 + Math.sin(frac * Math.PI * 2) * 0.35) * waveAmp;
+              const wx = rawPts[idx].x + chordNx * wave * 0.82;
+              const wy = rawPts[idx].y + chordNy * wave * 0.82;
               if (this.inBounds(Math.round(wx), Math.round(wy), 5) && !this.isPointInAirportPad(wx, wy, 2.2, airportId)) {
                 outWps.push({ x: wx, y: wy });
               } else {
@@ -2865,12 +2865,12 @@
             } else if (wm === 1) {
               cost += 5.5; // Cross rivers economically at narrow points
             } else {
-              cost += hAbove * 26.0 + slope * 20.0;
+              cost += hAbove * 45.0 + slope * 26.0;
               // Attract highway corridor to pass tangent (7..16 tiles) to intermediate towns along the valley
               for (const t of this.towns) {
                 const dt = Math.hypot(gx - t.x, gy - t.y);
                 if (dt >= 7 && dt <= 16) {
-                  cost -= 2.2;
+                  cost -= 2.8;
                   break;
                 }
               }
@@ -2936,13 +2936,16 @@
           : (algo === 'terrain-parkway' ? Math.min(10, len * 0.10) : Math.min(7.5, len * 0.09));
         const preferOff = defaultSign * preferMag;
 
-        // 1. Terrain-Guided A* Valley Corridor B-Spline Candidates (follows river valleys & passes, zero giant bowstrings!)
-        if (!ap && len >= 32) {
-          for (const bias of [0, defaultSign * 14, -defaultSign * 14]) {
-            const valleyWps = this.findValleyMotorwayWaypoints(sx, sy, ex, ey, airportId, bias);
+        // 1. Terrain-Guided A* Valley Corridor B-Spline Candidates (enabled for both airport & city trunks!)
+        if (len >= 32) {
+          const vStartX = ap ? sx + ap.landNx * Math.min(10, len * 0.14) : sx;
+          const vStartY = ap ? sy + ap.landNy * Math.min(10, len * 0.14) : sy;
+          for (const bias of [defaultSign * 14, -defaultSign * 14, 0]) {
+            const valleyWps = this.findValleyMotorwayWaypoints(vStartX, vStartY, ex, ey, airportId, bias);
             if (valleyWps && valleyWps.length >= 4) {
+              const fullWps = ap ? [{ x: sx, y: sy }, ...valleyWps] : valleyWps;
               candidateCurves.push({
-                waypoints: valleyWps,
+                waypoints: fullWps,
                 isOctilinear: false,
                 isValleyCorridor: true,
                 off: preferOff,
@@ -2952,27 +2955,47 @@
           }
         }
 
-        // 2. Graceful Topographic Arc Bezier Candidates (no dead-straight rulers; capped at ±26 tiles)
+        // 2. Graceful Topographic C-Curve & S-Curve Bezier Candidates (no dead-straight rulers!)
         const offsetFracs = [
-          defaultSign * 0.13,
-          -defaultSign * 0.13,
-          defaultSign * 0.19,
-          -defaultSign * 0.19,
-          defaultSign * 0.25,
-          -defaultSign * 0.25
+          defaultSign * 0.16,
+          -defaultSign * 0.16,
+          defaultSign * 0.22,
+          -defaultSign * 0.22,
+          defaultSign * 0.28,
+          -defaultSign * 0.28
         ];
 
         for (const frac of offsetFracs) {
-          const off = Math.max(-26, Math.min(26, len * frac));
+          const off = Math.max(-32, Math.min(32, len * frac));
           if (ap) {
-            for (const pullScale of [1.0, 0.68, 0.42]) {
+            for (const pullScale of [1.0, 0.68, 0.45]) {
               const p1 = {
-                x: sx + ap.landNx * (departPull * pullScale),
-                y: sy + ap.landNy * (departPull * pullScale)
+                x: sx + ap.landNx * (departPull * pullScale) + nx * (off * 0.45),
+                y: sy + ap.landNy * (departPull * pullScale) + ny * (off * 0.45)
+              };
+              // C-curve & gentle S-curve p2 options
+              for (const sSign of [1.0, -0.75]) {
+                const p2 = {
+                  x: sx + dx * 0.66 + nx * (off * sSign),
+                  y: sy + dy * 0.66 + ny * (off * sSign)
+                };
+                candidateCurves.push({
+                  waypoints: [{ x: sx, y: sy }, p1, p2, { x: ex, y: ey }],
+                  isOctilinear: false,
+                  off,
+                  preferOff
+                });
+              }
+            }
+          } else {
+            for (const sSign of [1.0, -0.80]) {
+              const p1 = {
+                x: sx + dx * 0.33 + nx * off,
+                y: sy + dy * 0.33 + ny * off
               };
               const p2 = {
-                x: sx + dx * 0.66 + nx * off,
-                y: sy + dy * 0.66 + ny * off
+                x: sx + dx * 0.67 + nx * (off * sSign),
+                y: sy + dy * 0.67 + ny * (off * sSign)
               };
               candidateCurves.push({
                 waypoints: [{ x: sx, y: sy }, p1, p2, { x: ex, y: ey }],
@@ -2981,21 +3004,6 @@
                 preferOff
               });
             }
-          } else {
-            const p1 = {
-              x: sx + dx * 0.33 + nx * off,
-              y: sy + dy * 0.33 + ny * off
-            };
-            const p2 = {
-              x: sx + dx * 0.67 + nx * off,
-              y: sy + dy * 0.67 + ny * off
-            };
-            candidateCurves.push({
-              waypoints: [{ x: sx, y: sy }, p1, p2, { x: ex, y: ey }],
-              isOctilinear: false,
-              off,
-              preferOff
-            });
           }
         }
 
