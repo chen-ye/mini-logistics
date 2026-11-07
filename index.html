@@ -1,0 +1,3940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mini Logistics — Procedural World & Airport Generator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #f2efe9;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #36383e;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+    canvas:active {
+      cursor: grabbing;
+    }
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    /* Custom minimalist scrollbars for inspector drawer */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(54, 56, 62, 0.2);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(54, 56, 62, 0.4);
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      background: #e2dfd7;
+      height: 6px;
+      border-radius: 999px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #36383e;
+      cursor: pointer;
+      border: 2px solid #f2efe9;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+      transition: transform 0.15s ease;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.15);
+    }
+    .glass-panel {
+      background: rgba(247, 245, 240, 0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(54, 56, 62, 0.1);
+      box-shadow: 0 10px 30px -5px rgba(45, 47, 52, 0.12), 0 4px 10px -2px rgba(45, 47, 52, 0.06);
+    }
+    .layer-btn.active {
+      background-color: #36383e;
+      color: #f2efe9;
+      border-color: #36383e;
+    }
+  </style>
+</head>
+<body class="relative w-screen h-screen overflow-hidden">
+
+  <!-- MAIN WORLD CANVAS -->
+  <canvas id="worldCanvas"></canvas>
+
+  <!-- TOP-LEFT BUTTON & GENERATOR LAB DRAWER -->
+  <div class="fixed top-4 left-4 z-30 flex flex-col gap-2 max-h-[calc(100vh-2rem)] pointer-events-none">
+    <!-- Top Bar Toggle & Quick Seed -->
+    <div class="flex items-center gap-2 pointer-events-auto">
+      <button id="toggleDrawerBtn" title="Toggle Procedural Algorithm Panel"
+        class="w-11 h-11 rounded-full glass-panel flex items-center justify-center text-[#36383e] hover:bg-[#36383e] hover:text-[#f2efe9] transition-all shadow-sm">
+        <svg id="drawerIconOpen" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
+        </svg>
+      </button>
+
+      <div class="glass-panel rounded-full px-3.5 py-1.5 flex items-center gap-2.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-stone-500">Seed</span>
+        <input id="seedInput" type="text" value="OTTD-METRO-84"
+          class="mono text-xs font-bold bg-stone-200/70 text-[#36383e] px-2.5 py-1 rounded-full w-32 focus:outline-none focus:ring-2 focus:ring-stone-700" />
+        <button id="randomSeedBtn" title="Generate New Random World"
+          class="bg-[#e85c90] hover:bg-[#d6487c] text-white text-xs font-bold px-3 py-1 rounded-full transition shadow-sm flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+          </svg>
+          <span>New World</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Collapsible Procedural Generation Controls Drawer -->
+    <div id="generatorDrawer" class="glass-panel rounded-2xl w-80 sm:w-96 p-4 flex flex-col gap-3.5 overflow-y-auto pointer-events-auto transition-all duration-200 max-h-[calc(100vh-5.5rem)]">
+      <div class="flex items-center justify-between border-b border-stone-300/60 pb-2.5">
+        <div>
+          <h1 class="text-sm font-extrabold tracking-tight text-[#36383e]">PROCEDURAL WORLD ENGINE</h1>
+          <p class="text-[11px] text-stone-500 font-medium">Hydrology, Central Place Theory & Airport Solver</p>
+        </div>
+        <button id="resetViewBtn" class="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-stone-200/80 hover:bg-stone-300 text-stone-700 transition">
+          Fit Camera
+        </button>
+      </div>
+
+      <!-- Algorithmic Inspection Overlays -->
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-stone-500">Algorithm Inspector Layer</span>
+          <span id="activeLayerBadge" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-pink-100 text-pink-700">Mini Motorways View</span>
+        </div>
+        <div class="grid grid-cols-2 gap-1.5">
+          <button data-layer="aesthetic" class="layer-btn active text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
+            <span class="w-2 h-2 rounded-full bg-[#e85c90]"></span>
+            <span>Mini Motorways</span>
+          </button>
+          <button data-layer="airport" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>Airport Solver & Wind</span>
+          </button>
+          <button data-layer="hierarchy" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
+            <span class="w-2 h-2 rounded-full bg-indigo-500"></span>
+            <span>Central Place Graph</span>
+          </button>
+          <button data-layer="hydrology" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
+            <span class="w-2 h-2 rounded-full bg-cyan-500"></span>
+            <span>Hydrology & Fertility</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Geography Archetype -->
+      <div>
+        <label class="block text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-1">Geography Archetype</label>
+        <select id="archetypeSelect" class="w-full text-xs font-semibold bg-white/80 border border-stone-300/80 rounded-xl px-3 py-2 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
+          <option value="confluence">Confluence River Basin (Classic Mini Motorways)</option>
+          <option value="estuary">Coastal Estuary & Bay Harbor</option>
+          <option value="archipelago">Twin-Channel Delta & Islands</option>
+          <option value="inland">Inland Lakes & Meandering Valley</option>
+        </select>
+      </div>
+
+      <!-- Expressway Generation Algorithm Selector -->
+      <div>
+        <label class="block text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-1">Expressway Realism Algorithm</label>
+        <select id="expresswayAlgoSelect" class="w-full text-xs font-semibold bg-white/80 border border-stone-300/80 rounded-xl px-3 py-2 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
+          <option value="gravity-ring">1. Gravity Spine + Cloverleafs & Beltway Stubs</option>
+          <option value="vignelli-octilinear">2. Vignelli 45°/90° Octilinear Transit Corridors</option>
+          <option value="terrain-parkway">3. Terrain & River-Narrowing Parkway Splines</option>
+          <option value="classic-bezier">4. Classic Mini Motorways Point-to-Point Arcs</option>
+        </select>
+      </div>
+
+      <!-- Airport Hierarchy Mix Selector & Intermediate Ramp Toggle -->
+      <div class="grid grid-cols-1 gap-2 bg-white/60 p-2.5 rounded-xl border border-stone-300/60">
+        <div>
+          <label class="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">Airport Hierarchy Mix</label>
+          <select id="airportMixSelect" class="w-full text-xs font-semibold bg-white border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
+            <option value="hub-regional">1 Intl Dual-Rwy Hub + Regional Airports</option>
+            <option value="hub-reg-cargo">1 Intl Hub + Regional + Air Cargo Hub</option>
+            <option value="dual-hub">2 Intl Dual-Rwy Hubs + Regional Spokes</option>
+          </select>
+        </div>
+
+        <label class="flex items-center justify-between cursor-pointer pt-1 border-t border-stone-200/80">
+          <div>
+            <div class="text-xs font-bold text-[#36383e]">Intermediate Expressway Ramps</div>
+            <div class="text-[10px] text-stone-500">Mid-corridor diamond slip-ramps & surface stubs</div>
+          </div>
+          <input id="toggleInterRamps" type="checkbox" checked class="w-4 h-4 accent-[#e85c90] rounded cursor-pointer" />
+        </label>
+      </div>
+
+      <!-- Sliders for Generation Parameters -->
+      <div class="space-y-2.5 bg-stone-200/40 p-3 rounded-xl border border-stone-300/40">
+        <div>
+          <div class="flex justify-between text-xs font-semibold mb-1">
+            <span>Water & River Coverage</span>
+            <span id="valWater" class="mono text-[11px] text-stone-600">48%</span>
+          </div>
+          <input id="sliderWater" type="range" min="20" max="80" value="48" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-xs font-semibold mb-1">
+            <span>Town & Settlement Count</span>
+            <span id="valTowns" class="mono text-[11px] text-stone-600">8 Towns</span>
+          </div>
+          <input id="sliderTowns" type="range" min="4" max="12" value="8" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-xs font-semibold mb-1">
+            <span>Building & Urban Density</span>
+            <span id="valDensity" class="mono text-[11px] text-stone-600">100%</span>
+          </div>
+          <input id="sliderDensity" type="range" min="25" max="250" value="100" step="5" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-xs font-semibold mb-1">
+            <span>Target Airports (1 Hub + Regional)</span>
+            <span id="valAirports" class="mono text-[11px] text-stone-600">3 (1 Hub, 2 Reg)</span>
+          </div>
+          <input id="sliderAirports" type="range" min="1" max="5" value="3" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-xs font-semibold mb-1">
+            <span>Prevailing Wind Runway Axis</span>
+            <span id="valWind" class="mono text-[11px] text-stone-600">Auto (Seed)</span>
+          </div>
+          <input id="sliderWind" type="range" min="-1" max="3" value="-1" step="1" class="w-full" />
+        </div>
+      </div>
+
+      <!-- Generation Pipeline Telemetry Summary -->
+      <div class="bg-white/70 rounded-xl p-3 border border-stone-200/80 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-stone-500">Generation Telemetry (192×120 Grid)</span>
+          <span id="genTimeBadge" class="mono text-[10px] font-bold text-stone-500">42 ms</span>
+        </div>
+        <div class="grid grid-cols-3 gap-1.5 text-center">
+          <div class="bg-stone-100/90 rounded-lg p-1.5">
+            <div id="statPop" class="mono text-xs font-extrabold text-[#36383e]">0</div>
+            <div class="text-[10px] text-stone-500 font-medium">Buildings</div>
+          </div>
+          <div class="bg-stone-100/90 rounded-lg p-1.5">
+            <div id="statAirports" class="mono text-xs font-extrabold text-[#e85c90]">0</div>
+            <div class="text-[10px] text-stone-500 font-medium">Hub / Reg AP</div>
+          </div>
+          <div class="bg-stone-100/90 rounded-lg p-1.5">
+            <div id="statBridges" class="mono text-xs font-extrabold text-[#526fa3]">0</div>
+            <div class="text-[10px] text-stone-500 font-medium">Cloverleafs/Ramps</div>
+          </div>
+        </div>
+        <div id="pipelineLog" class="text-[11px] text-stone-600 leading-relaxed max-h-28 overflow-y-auto space-y-1 pr-1"></div>
+      </div>
+
+      <!-- District Color & Building Type Legend -->
+      <div class="bg-stone-200/40 rounded-xl p-2.5 border border-stone-300/40 space-y-2">
+        <div class="text-[10px] font-bold uppercase tracking-wider text-stone-500">1. Building Colors (Demand Channels)</div>
+        <p class="text-[11px] text-stone-600 leading-snug">
+          Each color is a distinct <b>Supply &rarr; Demand Logistics Channel</b>. Small blocks are <b>Houses (Origins)</b>; large blocks on grey pads are <b>Commercial Hubs (Destinations)</b>. Vehicles only travel between buildings of the <b>same color</b>.
+        </p>
+        <div id="colorSwatches" class="flex flex-wrap items-center gap-1 pt-0.5"></div>
+
+        <div class="border-t border-stone-300/60 pt-1.5 text-[10px] font-bold uppercase tracking-wider text-stone-500">2. Map Circles & Symbols Legend</div>
+        <div class="grid grid-cols-1 gap-1 text-[10px] text-stone-600">
+          <div class="flex items-center gap-2">
+            <span class="w-3.5 h-3.5 rounded-full bg-[#987ad6] border-2 border-[#7558b3] inline-block shrink-0"></span>
+            <span><b>Large 3D Circle on Grey Pad:</b> High-Capacity Tier-2 Commercial Hub</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-3.5 h-3.5 rounded-full bg-white border-2 border-[#36383e] inline-block shrink-0"></span>
+            <span><b>White Ring on Road:</b> Motorway Roundabout / Ramp Interchange</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-3.5 h-3.5 rounded-full bg-[#d9383a] flex items-center justify-center shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-white"></span></span>
+            <span><b>Red Circle Badge:</b> Urgent / Peak-Demand Logistics Timer</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-3.5 h-3.5 rounded-full bg-white border-2 border-[#36383e] flex items-center justify-center shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-[#5bc0e4]"></span></span>
+            <span><b>White Circle by Runway:</b> Airport ATC Radar Control Tower</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-3.5 h-3.5 rounded-full bg-[#bad6b5] inline-block shrink-0"></span>
+            <span><b>Pastel Dots (Green/Pink/Lavender):</b> Parkland & Foliage Trees</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="text-[11px] text-stone-500 flex items-center justify-between pt-0.5">
+        <span>Click any <b>Airport</b> or <b>Town</b> to inspect</span>
+        <span>Drag to pan • Scroll to zoom</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOP-RIGHT MINI MOTORWAYS HUD (Trip Counter, Clock, Simulation Speed) -->
+  <div class="fixed top-4 right-4 z-30 flex flex-col items-end gap-2 pointer-events-none">
+    <div class="flex items-center gap-3 glass-panel px-4 py-2 rounded-full pointer-events-auto">
+      <!-- Delivered Passengers / Cargo Counter -->
+      <div class="flex items-center gap-1.5 pr-2 border-r border-stone-300/70">
+        <span id="tripCounter" class="mono text-lg font-extrabold text-[#36383e] tracking-tight">1,372</span>
+        <svg class="w-5 h-5 text-[#36383e]" viewBox="0 0 24 24" fill="currentColor">
+          <path fill-rule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+        </svg>
+      </div>
+
+      <!-- Day & Minimalist Analog Clock -->
+      <div class="flex items-center gap-2">
+        <span id="dayLabel" class="text-xs font-extrabold tracking-widest uppercase text-[#36383e]">TUE</span>
+        <div class="relative w-7 h-7 rounded-full bg-[#36383e] flex items-center justify-center shadow-inner">
+          <!-- Clock tick marks -->
+          <div class="w-5 h-5 rounded-full border border-dashed border-stone-400/50"></div>
+          <div id="clockHand" class="absolute w-0.5 h-2.5 bg-[#f2efe9] rounded-full origin-bottom" style="bottom: 50%; transform: rotate(45deg);"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Simulation Speed Controls (Pause, Play, Fast Forward) -->
+    <div class="flex flex-col gap-1.5 glass-panel p-1.5 rounded-2xl pointer-events-auto">
+      <button data-speed="0" class="speed-btn w-8 h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] transition" title="Pause Traffic & Flights">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
+      </button>
+      <button data-speed="1" class="speed-btn w-8 h-8 rounded-xl flex items-center justify-center bg-[#36383e] text-[#f2efe9] transition" title="Normal Speed">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button data-speed="2.5" class="speed-btn w-8 h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] transition" title="Fast Forward">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- BOTTOM-RIGHT ENTITY INSPECTOR CARD (Shows when clicking an Airport or Town) -->
+  <div id="inspectorCard" class="fixed bottom-4 right-4 z-30 w-80 sm:w-96 glass-panel rounded-2xl p-4 hidden pointer-events-auto transition-all">
+    <div class="flex items-start justify-between gap-2 border-b border-stone-300/70 pb-2.5 mb-2.5">
+      <div>
+        <div class="flex items-center gap-2">
+          <span id="inspBadge" class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-pink-600 text-white">AIRPORT</span>
+          <span id="inspCode" class="mono text-xs font-bold text-stone-500">IATA: KMT</span>
+        </div>
+        <h2 id="inspTitle" class="text-base font-extrabold text-[#36383e] mt-0.5">Metro International Airport</h2>
+      </div>
+      <button id="closeInspectorBtn" class="text-stone-400 hover:text-stone-700 p-1">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+    <div id="inspBody" class="text-xs text-stone-600 space-y-2"></div>
+  </div>
+
+  <script>
+    /***************************************************************************
+     * 1. DETERMINISTIC PRNG & 2D SIMPLEX/GRADIENT NOISE ENGINE
+     ***************************************************************************/
+    class SeededRNG {
+      constructor(seedStr) {
+        let h = 2166136261 >>> 0;
+        for (let i = 0; i < seedStr.length; i++) {
+          h = Math.imul(h ^ seedStr.charCodeAt(i), 16777619);
+        }
+        this.state = h >>> 0 || 123456789;
+      }
+      next() {
+        // Mulberry32
+        let t = (this.state += 0x6d2b79f5);
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      }
+      range(min, max) {
+        return min + this.next() * (max - min);
+      }
+      int(min, max) {
+        return Math.floor(this.range(min, max + 1));
+      }
+      pick(arr) {
+        return arr[Math.floor(this.next() * arr.length)];
+      }
+    }
+
+    class FastNoise2D {
+      constructor(rng) {
+        this.perm = new Uint8Array(512);
+        const p = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) p[i] = i;
+        for (let i = 255; i > 0; i--) {
+          const j = Math.floor(rng.next() * (i + 1));
+          const tmp = p[i];
+          p[i] = p[j];
+          p[j] = tmp;
+        }
+        for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
+      }
+      fade(t) {
+        return t * t * t * (t * (t * 6 - 15) + 10);
+      }
+      lerp(a, b, t) {
+        return a + t * (b - a);
+      }
+      grad(hash, x, y) {
+        const h = hash & 7;
+        const u = h < 4 ? x : y;
+        const v = h < 4 ? y : x;
+        return ((h & 1) !== 0 ? -u : u) + ((h & 2) !== 0 ? -2.0 * v : 2.0 * v);
+      }
+      noise(x, y) {
+        const X = Math.floor(x) & 255;
+        const Y = Math.floor(y) & 255;
+        x -= Math.floor(x);
+        y -= Math.floor(y);
+        const u = this.fade(x);
+        const v = this.fade(y);
+        const A = this.perm[X] + Y;
+        const B = this.perm[X + 1] + Y;
+        const res = this.lerp(
+          this.lerp(this.grad(this.perm[A], x, y), this.grad(this.perm[B], x - 1, y), u),
+          this.lerp(this.grad(this.perm[A + 1], x, y - 1), this.grad(this.perm[B + 1], x - 1, y - 1), u),
+          v
+        );
+        return res * 0.5 + 0.5; // normalized [0, 1]
+      }
+      fbm(x, y, octaves = 4, persistence = 0.5, lacunarity = 2.0) {
+        let total = 0;
+        let frequency = 1;
+        let amplitude = 1;
+        let maxValue = 0;
+        for (let i = 0; i < octaves; i++) {
+          total += this.noise(x * frequency, y * frequency) * amplitude;
+          maxValue += amplitude;
+          amplitude *= persistence;
+          frequency *= lacunarity;
+        }
+        return total / maxValue;
+      }
+    }
+
+    /***************************************************************************
+     * 2. MINI MOTORWAYS COLOR PALETTE & TOWN ARCHETYPES
+     ***************************************************************************/
+    const PALETTE = {
+      bgPaper: '#f2efe9',
+      gridLine: 'rgba(54, 56, 62, 0.045)',
+      waterCyan: '#85d4de',
+      waterDeep: '#6ec4d0',
+      waterBankCream: '#f7f5f0',
+      urbanBlushPink: '#f9cde0',
+      urbanLavenderZone: '#e7dff2',
+      parkSageGreen: '#dfeadc',
+      treeDots: ['#f4a4b8', '#f7b99e', '#bad6b5', '#c8b8db'],
+      roadAsphalt: '#ffffff',
+      roadCasing: '#b6b4ae',
+      bridgeRail: '#36383e',
+      motorwayFill: 'rgba(236, 91, 139, 0.78)',
+      motorwayBorder: '#d94376',
+      motorwayCore: '#ffdbe7',
+      shadowColor: 'rgba(54, 56, 62, 0.16)',
+      districtColors: [
+        { name: 'Cerulean', roof: '#5bc0e4', base: '#3e99bd', pin: '#24586e', zone: '#dff2f8' },
+        { name: 'Magenta',  roof: '#ea5b91', base: '#c43c70', pin: '#691b39', zone: '#fce2ec' },
+        { name: 'Amethyst', roof: '#987ad6', base: '#7558b3', pin: '#3e2c63', zone: '#ede7f9' },
+        { name: 'Saffron',  roof: '#f4c24f', base: '#d49d26', pin: '#6e4e08', zone: '#fdf4dc' },
+        { name: 'Cobalt',   roof: '#5572a6', base: '#3b5482', pin: '#1f2e4a', zone: '#e3e9f4' },
+        { name: 'Coral',    roof: '#ee6c6c', base: '#c94a4a', pin: '#6b2020', zone: '#fce4e4' },
+        { name: 'Rosewood', roof: '#c496a5', base: '#9e7180', pin: '#4f353e', zone: '#f4eaed' }
+      ]
+    };
+
+    const SYLLABLES_START = ['New ', 'Port ', 'San ', 'Mount ', 'Saint ', 'Lake ', 'East ', 'West ', 'North ', ''];
+    const SYLLABLES_ROOT = ['haven', 'brook', 'field', 'ford', 'bridge', 'vale', 'crest', 'wick', 'shore', 'grad', 'burgh', 'ton', 'bay', 'minster'];
+    const SYLLABLES_PRE = ['Oak', 'Clear', 'Fair', 'Mill', 'acorn', 'Silver', 'Rose', 'Pine', 'Cinder', 'bel', 'Mar', 'Ver', 'Sol', 'hal'];
+
+    /***************************************************************************
+     * 3. PROCEDURAL WORLD GENERATOR CLASS
+     ***************************************************************************/
+    class ProceduralLogisticsWorld {
+      constructor(config) {
+        this.config = config;
+        this.W = 192; // Expanded grid width in tiles to accommodate hubs & cloverleafs
+        this.H = 120; // Expanded grid height in tiles
+        this.tileSize = 18; // Base world pixel size per tile
+
+        // Flat TypedArrays for fast spatial fields
+        const size = this.W * this.H;
+        this.waterMask = new Uint8Array(size);        // 0 = Land, 1 = River, 2 = Sea/Lake
+        this.fertilityField = new Float32Array(size); // [0..1] Alluvial & resource score
+        this.distToWater = new Float32Array(size);    // Euclidean distance to nearest water tile
+        this.urbanSuitability = new Float32Array(size); // Central Place Theory suitability
+        this.airportHeatmap = new Float32Array(size);   // Multi-criteria airport suitability score
+        this.roadGrid = new Uint8Array(size);         // 0 = none, 1 = street, 2 = arterial, 3 = bridge, 4 = airport-loop
+        this.buildingMask = new Uint8Array(size);     // 0 = free, 1 = house, 2 = destination, 3 = airport, 4 = interchange/ramp reserve
+        this.zoneColorIdx = new Int8Array(size).fill(-1);
+
+        // High-level generated entities
+        this.rivers = [];
+        this.towns = [];
+        this.airports = [];
+        this.roads = [];        // Graph edges for vector rendering & pathfinding
+        this.motorways = [];    // Numbered expressways
+        this.interchanges = []; // Cloverleafs, Street-Stub Terminations & Intermediate Diamond Ramps
+        this.houses = [];
+        this.destinations = [];
+        this.trees = [];
+        this.logs = [];
+        this.displacedBuildingsCount = 0;
+        this.windAngleIndex = 0; // 0: E-W (0°), 1: NE-SW (45°), 2: N-S (90°), 3: NW-SE (135°)
+        this.windVector = { x: 1, y: 0, angleDeg: 0, label: '09/27 (E-W)' };
+      }
+
+      idx(x, y) {
+        return y * this.W + x;
+      }
+
+      inBounds(x, y, margin = 0) {
+        return x >= margin && x < this.W - margin && y >= margin && y < this.H - margin;
+      }
+
+      generate() {
+        const t0 = performance.now();
+        this.rng = new SeededRNG(this.config.seed);
+        this.noise = new FastNoise2D(this.rng);
+        this.logs = [];
+
+        // Step 1: Prevailing Wind Vector (governs airport runway orientation & approach cones)
+        this.initPrevailingWind();
+
+        // Step 2: Hydrology (Oceans, Bays, Meandering Rivers & Confluences + Morphological Smoothing)
+        this.generateHydrology();
+
+        // Step 3: Distance Transforms, Alluvial Fertility & Central Place Suitability
+        this.computeSpatialFields();
+
+        // Step 4: Central Place Theory Settlement Seeding (Metropolis -> Regional Towns -> Villages)
+        this.seedSettlements();
+
+        // Step 5: Multi-Tier Airport Solver (1 Intl Dual-Rwy Hub + Regional + Cargo) & Landside Terminal Loops
+        this.solveAndPlaceAirports();
+
+        // Step 6: Regional A* Road & Perpendicular Bridge Network
+        this.buildRegionalRoadNetwork();
+
+        // Step 7: Local Urban Street Grids, Color-Coded Houses & Destination Lots
+        this.growUrbanFabric();
+
+        // Step 8: Expressways, Cloverleaf Interchanges, Street-Stub Terminations & Intermediate Ramps (Displaces Buildings!)
+        this.buildNumberedMotorways();
+
+        // Step 9: Landscape Trees & Park Belts
+        this.populateLandscapeTrees();
+
+        this.genTimeMs = Math.round(performance.now() - t0);
+        return this;
+      }
+
+      initPrevailingWind() {
+        const axisLabels = [
+          { angleDeg: 0,   rad: 0,             label: 'RWY 09/27 (E–W)' },
+          { angleDeg: 45,  rad: Math.PI / 4,   label: 'RWY 04/22 (NE–SW)' },
+          { angleDeg: 90,  rad: Math.PI / 2,   label: 'RWY 18/36 (N–S)' },
+          { angleDeg: 135, rad: 3 * Math.PI/4, label: 'RWY 13/31 (NW–SE)' }
+        ];
+        if (this.config.windAxis >= 0 && this.config.windAxis <= 3) {
+          this.windAngleIndex = this.config.windAxis;
+        } else {
+          this.windAngleIndex = this.rng.int(0, 3);
+        }
+        const chosen = axisLabels[this.windAngleIndex];
+        this.windVector = {
+          x: Math.cos(chosen.rad),
+          y: Math.sin(chosen.rad),
+          angleDeg: chosen.angleDeg,
+          rad: chosen.rad,
+          label: chosen.label
+        };
+        this.logs.push(`Prevailing wind locked to <b>${chosen.label}</b>.`);
+      }
+
+      generateHydrology() {
+        const { W, H } = this;
+        const waterRatio = this.config.waterCoverage / 100; // 0.20 .. 0.80
+        const arch = this.config.archetype;
+
+        // 2A. Base Coastal / Lake Water Bodies via Domain-Warped FBM
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const nx = x / W;
+            const ny = y / H;
+            const warpX = this.noise.fbm(nx * 2.0 + 4.1, ny * 2.0 + 1.7, 2) * 0.14;
+            const warpY = this.noise.fbm(nx * 2.0 + 8.3, ny * 2.0 + 6.2, 2) * 0.14;
+            // Lower octave count (2 octaves) prevents high-frequency pixel stippling on coastlines
+            const n = this.noise.fbm((nx + warpX) * 2.4, (ny + warpY) * 2.4, 2);
+
+            let seaScore = 0;
+            if (arch === 'estuary') {
+              // Major ocean bay on one side
+              const edgeBias = Math.pow(Math.max(0, (nx - 0.62) / 0.38), 1.4) * 0.75 +
+                               Math.pow(Math.max(0, (ny - 0.68) / 0.32), 1.5) * 0.55;
+              seaScore = n * 0.55 + edgeBias;
+              if (seaScore > 0.78 - waterRatio * 0.32) this.waterMask[this.idx(x, y)] = 2;
+            } else if (arch === 'archipelago') {
+              const distCenter = Math.hypot(nx - 0.5, ny - 0.5);
+              seaScore = n * 0.75 + distCenter * 0.35;
+              if (seaScore > 0.74 - waterRatio * 0.3) this.waterMask[this.idx(x, y)] = 2;
+            } else if (arch === 'inland') {
+              // Scattered smooth lakes
+              if (n > 0.78 - waterRatio * 0.22) this.waterMask[this.idx(x, y)] = 2;
+            }
+          }
+        }
+
+        // 2B. Carve Meandering Rivers & Y-Confluences (Like the Mini Motorways reference image!)
+        const mainRiverX = W * this.rng.range(0.45, 0.68);
+        const phase1 = this.rng.range(0, Math.PI * 2);
+        const phase2 = this.rng.range(0, Math.PI * 2);
+        const amp = W * (0.06 + waterRatio * 0.08);
+        const baseRadius = 2.8 + waterRatio * 3.8;
+
+        const spinePoints = [];
+        for (let y = 0; y < H; y++) {
+          const t = y / (H - 1);
+          const wave = Math.sin(t * Math.PI * 2.1 + phase1) * amp +
+                       Math.cos(t * Math.PI * 4.2 + phase2) * (amp * 0.35);
+          const rx = Math.max(18, Math.min(W - 18, mainRiverX + wave));
+          const rad = baseRadius * (0.85 + 0.45 * t); // Widens downstream toward bottom
+          spinePoints.push({ x: rx, y, rad });
+          this.carveDisk(rx, y, rad, 1);
+        }
+
+        // Carve a Y-shaped Confluence Branch / Delta Fork (Signature Mini Motorways look!)
+        const forkIdx = Math.floor(H * this.rng.range(0.28, 0.52));
+        const forkOrigin = spinePoints[forkIdx];
+        const forkDir = this.rng.next() > 0.5 ? 1 : -1;
+        let bx = forkOrigin.x;
+        let by = forkOrigin.y;
+        const branchAngle = (forkDir > 0 ? 0.65 : 2.45) + this.rng.range(-0.18, 0.18);
+        for (let step = 0; step < 95; step++) {
+          bx += Math.cos(branchAngle + Math.sin(step * 0.08) * 0.28) * 1.1;
+          by += Math.sin(branchAngle + Math.cos(step * 0.08) * 0.22) * 1.1;
+          if (!this.inBounds( Math.round(bx), Math.round(by), 1)) break;
+          this.carveDisk(bx, by, baseRadius * 0.82, 1);
+        }
+
+        // Optional second tributary or island split (like the lower river split in the screenshot)
+        const splitIdx = Math.floor(H * this.rng.range(0.55, 0.72));
+        const splitOrigin = spinePoints[splitIdx];
+        if (splitOrigin) {
+          let sx = splitOrigin.x - forkDir * 2;
+          let sy = splitOrigin.y;
+          for (let step = 0; step < 50; step++) {
+            sx -= forkDir * 0.48 + Math.sin(step * 0.11) * 0.25;
+            sy += 0.95;
+            if (!this.inBounds(Math.round(sx), Math.round(sy), 1)) break;
+            this.carveDisk(sx, sy, baseRadius * 0.72, 1);
+          }
+        }
+
+        this.confluencePoint = { x: Math.round(forkOrigin.x), y: Math.round(forkOrigin.y) };
+
+        // 2C. Morphological Cellular Automata Majority-Smoothing (5 passes for ultra-clean vector coastlines)
+        for (let pass = 0; pass < 5; pass++) {
+          const nextMask = new Uint8Array(this.waterMask);
+          for (let y = 1; y < H - 1; y++) {
+            for (let x = 1; x < W - 1; x++) {
+              let waterNeighbors = 0;
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  if (dx === 0 && dy === 0) continue;
+                  if (this.waterMask[this.idx(x + dx, y + dy)] > 0) waterNeighbors++;
+                }
+              }
+              const curr = this.waterMask[this.idx(x, y)];
+              if (curr > 0 && waterNeighbors <= 3) nextMask[this.idx(x, y)] = 0;
+              else if (curr === 0 && waterNeighbors >= 5) nextMask[this.idx(x, y)] = 1;
+            }
+          }
+          this.waterMask = nextMask;
+        }
+      }
+
+      carveDisk(cx, cy, radius, type = 1) {
+        const rCeil = Math.ceil(radius);
+        const r2 = radius * radius;
+        const ix0 = Math.max(0, Math.floor(cx - rCeil));
+        const ix1 = Math.min(this.W - 1, Math.ceil(cx + rCeil));
+        const iy0 = Math.max(0, Math.floor(cy - rCeil));
+        const iy1 = Math.min(this.H - 1, Math.ceil(cy + rCeil));
+        for (let y = iy0; y <= iy1; y++) {
+          for (let x = ix0; x <= ix1; x++) {
+            if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
+              this.waterMask[this.idx(x, y)] = type;
+            }
+          }
+        }
+      }
+
+      computeSpatialFields() {
+        const { W, H } = this;
+        // BFS Distance Transform from water tiles
+        const queue = [];
+        this.distToWater.fill(999);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const id = this.idx(x, y);
+            if (this.waterMask[id] > 0) {
+              this.distToWater[id] = 0;
+              queue.push(x, y);
+            }
+          }
+        }
+
+        let head = 0;
+        const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+        while (head < queue.length) {
+          const x = queue[head++];
+          const y = queue[head++];
+          const d0 = this.distToWater[this.idx(x, y)];
+          for (let i = 0; i < dirs.length; i++) {
+            const nx = x + dirs[i][0];
+            const ny = y + dirs[i][1];
+            if (this.inBounds(nx, ny)) {
+              const step = i < 4 ? 1.0 : 1.414;
+              const nid = this.idx(nx, ny);
+              if (d0 + step < this.distToWater[nid]) {
+                this.distToWater[nid] = d0 + step;
+                queue.push(nx, ny);
+              }
+            }
+          }
+        }
+
+        // Compute Alluvial Fertility & Central Place Urban Suitability Field
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const id = this.idx(x, y);
+            if (this.waterMask[id] > 0) {
+              this.fertilityField[id] = 0;
+              this.urbanSuitability[id] = 0;
+              continue;
+            }
+            const dWater = this.distToWater[id];
+            const baseFert = this.noise.fbm(x * 0.035 + 10, y * 0.035 + 20, 3);
+            // Alluvial bonus near rivers (ideal 3..14 tiles from water)
+            const riverBonus = Math.exp(-Math.pow((dWater - 6.5) / 8.0, 2));
+            const confluenceDist = Math.hypot(x - this.confluencePoint.x, y - this.confluencePoint.y);
+            const confluenceBonus = Math.exp(-confluenceDist / 28.0) * 0.45;
+
+            // Edge penalty so towns don't spawn clipped at canvas border
+            const borderDist = Math.min(x, W - 1 - x, y, H - 1 - y);
+            const borderFactor = Math.min(1, Math.max(0, (borderDist - 9) / 10));
+
+            this.fertilityField[id] = Math.min(1, baseFert * 0.55 + riverBonus * 0.45);
+            this.urbanSuitability[id] = Math.min(
+              1,
+              (riverBonus * 0.48 + confluenceBonus * 0.32 + baseFert * 0.20) * borderFactor
+            );
+          }
+        }
+      }
+
+      seedSettlements() {
+        const targetCount = this.config.townCount;
+        const usedNames = new Set();
+        const generateTownName = () => {
+          for (let attempt = 0; attempt < 30; attempt++) {
+            const prefix = this.rng.next() < 0.25 ? this.rng.pick(SYLLABLES_START) : '';
+            const rootA = this.rng.pick(SYLLABLES_PRE);
+            const rootB = this.rng.pick(SYLLABLES_ROOT);
+            const name = (prefix + rootA + rootB).replace(/\b\w/g, c => c.toUpperCase());
+            if (!usedNames.has(name)) {
+              usedNames.add(name);
+              return name;
+            }
+          }
+          return 'Metro ' + (usedNames.size + 1);
+        };
+
+        // Central Place Theory Hierarchy:
+        // Tier 1: Metropolis (1-2), Tier 2: Regional Town (2-5), Tier 3: Satellite / Industrial Hub
+        for (let i = 0; i < targetCount; i++) {
+          const tier = i < 2 ? 1 : (i < 5 ? 2 : 3);
+          const minSpacing = tier === 1 ? 44 : (tier === 2 ? 31 : 23);
+
+          let bestScore = -1;
+          let bestPt = null;
+
+          // Sample candidate locations across the suitability field
+          for (let y = 14; y < this.H - 14; y += 2) {
+            for (let x = 14; x < this.W - 14; x += 2) {
+              const id = this.idx(x, y);
+              if (this.waterMask[id] > 0 || this.distToWater[id] < 4.0) continue;
+
+              // Check inhibition distance to existing towns
+              let tooClose = false;
+              let minDistExisting = 999;
+              for (const t of this.towns) {
+                const d = Math.hypot(x - t.x, y - t.y);
+                if (d < minSpacing) {
+                  tooClose = true;
+                  break;
+                }
+                if (d < minDistExisting) minDistExisting = d;
+              }
+              if (tooClose) continue;
+
+              // Encourage towns on BOTH sides of the river system for rich bridge/logistics networks
+              let score = this.urbanSuitability[id] + this.rng.range(-0.04, 0.04);
+              if (this.towns.length > 0 && i === 1) {
+                // Second metropolis prefers opposite bank of river if possible
+                if (Math.sign(x - this.confluencePoint.x) !== Math.sign(this.towns[0].x - this.confluencePoint.x)) {
+                  score += 0.25;
+                }
+              }
+
+              if (score > bestScore) {
+                bestScore = score;
+                bestPt = { x, y, score };
+              }
+            }
+          }
+
+          if (bestPt) {
+            const colorIdx = i % PALETTE.districtColors.length;
+            const tierTitle = tier === 1 ? 'Metropolis' : (tier === 2 ? 'Regional Town' : 'Industrial Hub');
+            const urbanRadius = tier === 1 ? 17 : (tier === 2 ? 13 : 9);
+            const name = generateTownName();
+            const iata = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
+
+            this.towns.push({
+              id: i,
+              name,
+              iata,
+              tier,
+              tierTitle,
+              x: bestPt.x,
+              y: bestPt.y,
+              urbanRadius,
+              colorIdx,
+              palette: PALETTE.districtColors[colorIdx],
+              suitabilityScore: Math.round(bestPt.score * 100),
+              housesCount: 0,
+              destinationsCount: 0,
+              airportId: null
+            });
+          }
+        }
+        this.logs.push(`Seeded <b>${this.towns.length} settlements</b> via Central Place Hierarchy.`);
+      }
+
+      /*************************************************************************
+       * STAGE 5: MULTI-TIER AIRPORT SITE-SELECTION & LANDSIDE TERMINAL ROAD NETWORK
+       *************************************************************************/
+      getAirportTierSpec(aIdx) {
+        const mix = this.config.airportMix || 'hub-regional';
+        if (aIdx === 0 || (mix === 'dual-hub' && aIdx === 1)) {
+          return {
+            airportClass: 'HUB',
+            classLabel: 'International Hub (Dual-Runway)',
+            isHub: true,
+            runwayCount: 2,
+            halfLen: 11.0,
+            halfWid: 5.8,
+            approachLen: 22,
+            demandPins: 7
+          };
+        }
+        if (mix === 'hub-reg-cargo' && aIdx >= 2) {
+          return {
+            airportClass: 'CRG',
+            classLabel: 'Air Cargo & Logistics Airfield',
+            isHub: false,
+            runwayCount: 1,
+            halfLen: 7.2,
+            halfWid: 3.8,
+            approachLen: 14,
+            demandPins: 5
+          };
+        }
+        return {
+          airportClass: 'REG',
+          classLabel: 'Regional Commercial Airport',
+          isHub: false,
+          runwayCount: 1,
+          halfLen: 8.2,
+          halfWid: 4.0,
+          approachLen: 16,
+          demandPins: 4
+        };
+      }
+
+      solveAndPlaceAirports() {
+        const targetAirports = Math.min(this.config.airportCount, this.towns.length);
+        const rad = this.windVector.rad;
+        const cosA = Math.cos(rad);
+        const sinA = Math.sin(rad);
+
+        this.airportHeatmap.fill(0);
+
+        // Sort candidate host cities by tier & population priority
+        const candidateTowns = [...this.towns].sort((a, b) => a.tier - b.tier || b.suitabilityScore - a.suitabilityScore);
+
+        for (let aIdx = 0; aIdx < targetAirports; aIdx++) {
+          const hostTown = candidateTowns[aIdx];
+          if (!hostTown) break;
+
+          const spec = this.getAirportTierSpec(aIdx);
+          const { halfLen, halfWid, approachLen, isHub, airportClass, classLabel, runwayCount, demandPins } = spec;
+
+          let bestSite = null;
+          let bestScore = -1;
+
+          // Scan map to populate the diagnostic Airport Suitability Heatmap
+          for (let cy = 14; cy < this.H - 14; cy += 2) {
+            for (let cx = 14; cx < this.W - 14; cx += 2) {
+              const id = this.idx(cx, cy);
+              if (this.waterMask[id] > 0) continue;
+
+              // 1. Peri-urban distance bell-curve to host town CBD
+              const distHost = Math.hypot(cx - hostTown.x, cy - hostTown.y);
+              const idealDist = hostTown.urbanRadius + (isHub ? 9.5 : 7.0);
+              if (distHost < hostTown.urbanRadius * 0.82 || distHost > idealDist + 28) continue;
+              const proximityScore = Math.exp(-Math.pow((distHost - idealDist) / 12.5, 2));
+
+              // 2. NIMBY & Urban Core Exclusion against ALL towns
+              let nimbyViolation = false;
+              for (const t of this.towns) {
+                const dTown = Math.hypot(cx - t.x, cy - t.y);
+                if (dTown < t.urbanRadius * 0.85 + (isHub ? 2.5 : 1.0)) {
+                  nimbyViolation = true;
+                  break;
+                }
+              }
+              if (nimbyViolation) continue;
+
+              // 3. Minimum airspace separation from already placed airports
+              let tooCloseToAirport = false;
+              for (const ap of this.airports) {
+                if (Math.hypot(cx - ap.x, cy - ap.y) < 42) {
+                  tooCloseToAirport = true;
+                  break;
+                }
+              }
+              if (tooCloseToAirport) continue;
+
+              // 4. Oriented Bounding Box Footprint Check (Include space for Landside Terminal Loop!)
+              let landOk = true;
+              for (let u = -halfLen - 2.0; u <= halfLen + 2.0; u += 1.5) {
+                for (let v = -halfWid - 3.5; v <= halfWid + 3.5; v += 1.5) {
+                  const gx = Math.round(cx + u * cosA - v * sinA);
+                  const gy = Math.round(cy + u * sinA + v * cosA);
+                  if (!this.inBounds(gx, gy, 4) || this.waterMask[this.idx(gx, gy)] > 0) {
+                    landOk = false;
+                    break;
+                  }
+                }
+                if (!landOk) break;
+              }
+              if (!landOk) continue;
+
+              // 5. Bidirectional Flight Approach Funnel Check (Obstacle Clearance Zone)
+              let approachScore = 1.0;
+              let waterUnderApproach = 0;
+              let sampleCount = 0;
+              for (const sign of [-1, 1]) {
+                for (let d = halfLen + 2; d <= halfLen + approachLen; d += 2.5) {
+                  const fx = Math.round(cx + sign * d * cosA);
+                  const fy = Math.round(cy + sign * d * sinA);
+                  if (!this.inBounds(fx, fy, 1)) continue;
+                  sampleCount++;
+                  if (this.waterMask[this.idx(fx, fy)] > 0) {
+                    waterUnderApproach++;
+                  }
+                  for (const t of this.towns) {
+                    const distCore = Math.hypot(fx - t.x, fy - t.y);
+                    if (distCore < t.urbanRadius * 0.6) {
+                      approachScore -= 0.45;
+                    }
+                  }
+                }
+              }
+              if (approachScore <= 0.2) continue;
+
+              const waterApproachBonus = sampleCount > 0 ? (waterUnderApproach / sampleCount) * 0.22 : 0;
+              const totalScore = Math.min(1.0, proximityScore * 0.62 + approachScore * 0.28 + waterApproachBonus);
+
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  const hid = this.idx(cx + dx, cy + dy);
+                  if (totalScore > this.airportHeatmap[hid]) {
+                    this.airportHeatmap[hid] = totalScore;
+                  }
+                }
+              }
+
+              if (totalScore > bestScore) {
+                bestScore = totalScore;
+                bestSite = {
+                  cx,
+                  cy,
+                  score: totalScore,
+                  proximityScore,
+                  approachClearance: Math.min(100, Math.round((approachScore + waterApproachBonus) * 100)),
+                  distHost: Math.round(distHost)
+                };
+              }
+            }
+          }
+
+          if (bestSite) {
+            // Orient Landside Terminal & Curbside Loop Road toward the Host Town
+            const toTownX = hostTown.x - bestSite.cx;
+            const toTownY = hostTown.y - bestSite.cy;
+            const dotNormal = toTownX * (-sinA) + toTownY * cosA;
+            const apronSide = dotNormal >= 0 ? 1 : -1;
+
+            // Normal vector pointing landside (toward terminal & street access)
+            const landNx = -sinA * apronSide;
+            const landNy = cosA * apronSide;
+
+            // Landside Curbside Loop Center & Outer Street-Stub Gateway
+            const loopDist = isHub ? 3.8 : 2.8;
+            const stubDist = isHub ? 7.8 : 6.2;
+
+            const gateX = Math.max(6, Math.min(this.W - 7, Math.round(bestSite.cx + landNx * stubDist)));
+            const gateY = Math.max(6, Math.min(this.H - 7, Math.round(bestSite.cy + landNy * stubDist)));
+            const curbX = Math.max(6, Math.min(this.W - 7, Math.round(bestSite.cx + landNx * loopDist)));
+            const curbY = Math.max(6, Math.min(this.H - 7, Math.round(bestSite.cy + landNy * loopDist)));
+
+            const nameMap = {
+              HUB: `${hostTown.name} International Hub`,
+              REG: `${hostTown.name} Regional Airport`,
+              CRG: `${hostTown.name} Cargo Airfield`
+            };
+            const suffixMap = { HUB: 'X', REG: 'R', CRG: 'C' };
+
+            const airport = {
+              id: this.airports.length,
+              name: nameMap[airportClass],
+              iata: hostTown.iata + suffixMap[airportClass],
+              airportClass,
+              classLabel,
+              isHub,
+              runwayCount,
+              hostTownId: hostTown.id,
+              hostTownName: hostTown.name,
+              x: bestSite.cx,
+              y: bestSite.cy,
+              curbX,
+              curbY,
+              gateX,
+              gateY,
+              landNx,
+              landNy,
+              halfLen,
+              halfWid,
+              approachLen,
+              apronSide,
+              angleRad: rad,
+              runwayLabel: isHub ? `${this.windVector.label} L/R` : this.windVector.label,
+              suitabilityScore: Math.round(bestSite.score * 100),
+              approachClearance: bestSite.approachClearance,
+              distToCBD: bestSite.distHost,
+              colorIdx: hostTown.colorIdx,
+              palette: hostTown.palette,
+              demandPins,
+              motorwayId: null,
+              landsideLoopPts: [],
+              accessStubPts: []
+            };
+
+            hostTown.airportId = airport.id;
+            this.airports.push(airport);
+
+            // Reserve Airfield + Landside Terminal Plaza in buildingMask
+            for (let u = -halfLen - 2.5; u <= halfLen + 2.5; u += 0.8) {
+              for (let v = -halfWid - 2.5; v <= halfWid + 4.5; v += 0.8) {
+                const gx = Math.round(bestSite.cx + u * cosA - v * sinA);
+                const gy = Math.round(bestSite.cy + u * sinA + v * cosA);
+                if (this.inBounds(gx, gy, 1)) {
+                  this.buildingMask[this.idx(gx, gy)] = 3; // 3 = Airport exclusion zone
+                  this.zoneColorIdx[this.idx(gx, gy)] = hostTown.colorIdx;
+                }
+              }
+            }
+
+            // Construct the realistic Landside Terminal Curbside Loop & Access Street Stub
+            this.buildAirportLandsideNetwork(airport);
+          }
+        }
+
+        const hubCount = this.airports.filter(a => a.airportClass === 'HUB').length;
+        const regCount = this.airports.filter(a => a.airportClass === 'REG').length;
+        const crgCount = this.airports.filter(a => a.airportClass === 'CRG').length;
+        this.logs.push(
+          `Placed <b>${this.airports.length} airports</b> (${hubCount} Intl Hub, ${regCount} Regional${crgCount ? `, ${crgCount} Cargo` : ''}) with terminal loop roads.`
+        );
+      }
+
+      /**
+       * Builds a realistic Landside Terminal Curbside Loop Road (Departures/Arrivals ring)
+       * in front of the airport terminal and an Access Avenue Stub extending out to `gateX, gateY`.
+       */
+      buildAirportLandsideNetwork(ap) {
+        const cosA = Math.cos(ap.angleRad);
+        const sinA = Math.sin(ap.angleRad);
+        const nx = ap.landNx;
+        const ny = ap.landNy;
+
+        const loopHalfSpan = ap.isHub ? 4.2 : 2.8;
+        const innerDist = ap.isHub ? 2.9 : 2.2;
+        const outerDist = ap.isHub ? 4.9 : 3.8;
+        const stubDist = ap.isHub ? 7.8 : 6.2;
+
+        // 6-point oval curbside loop around the terminal parking/transit plaza
+        const loopCoords = [
+          { u: 0, v: outerDist },
+          { u: -loopHalfSpan, v: outerDist },
+          { u: -loopHalfSpan, v: innerDist },
+          { u: 0, v: innerDist },
+          { u: loopHalfSpan, v: innerDist },
+          { u: loopHalfSpan, v: outerDist },
+          { u: 0, v: outerDist }
+        ];
+
+        const loopPts = [];
+        for (const pt of loopCoords) {
+          const rx = Math.max(4, Math.min(this.W - 5, Math.round(ap.x + pt.u * cosA + pt.v * nx)));
+          const ry = Math.max(4, Math.min(this.H - 5, Math.round(ap.y + pt.u * sinA + pt.v * ny)));
+          loopPts.push({ x: rx, y: ry, isBridge: false });
+          this.roadGrid[this.idx(rx, ry)] = 4;
+          this.buildingMask[this.idx(rx, ry)] = 3;
+        }
+        ap.landsideLoopPts = loopPts;
+        this.roads.push({ points: loopPts, type: 'airport-loop' });
+
+        // Dedicated Dual-Carriageway Airport Access Spine Stub from Loop out to `gateX, gateY`
+        const stubPts = [];
+        const steps = 5;
+        for (let s = 0; s <= steps; s++) {
+          const d = outerDist + (stubDist - outerDist) * (s / steps);
+          const sx = Math.max(4, Math.min(this.W - 5, Math.round(ap.x + d * nx)));
+          const sy = Math.max(4, Math.min(this.H - 5, Math.round(ap.y + d * ny)));
+          stubPts.push({ x: sx, y: sy, isBridge: false });
+          this.roadGrid[this.idx(sx, sy)] = 2;
+          this.buildingMask[this.idx(sx, sy)] = 4;
+        }
+        ap.accessStubPts = stubPts;
+        this.roads.push({ points: stubPts, type: 'arterial' });
+      }
+
+      /*************************************************************************
+       * STAGE 6: REGIONAL A* ROAD & PERPENDICULAR BRIDGE NETWORK
+       *************************************************************************/
+      buildRegionalRoadNetwork() {
+        this.bridgeCount = 0;
+        // Connect Towns in a Minimum Spanning Tree + extra regional loop edges
+        const nodes = this.towns.map(t => ({ x: t.x, y: t.y, type: 'town', ref: t }));
+        const connected = new Set([0]);
+        const edges = [];
+
+        while (connected.size < nodes.length) {
+          let bestEdge = null;
+          let bestDist = Infinity;
+          for (const i of connected) {
+            for (let j = 0; j < nodes.length; j++) {
+              if (connected.has(j)) continue;
+              const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
+              if (d < bestDist) {
+                bestDist = d;
+                bestEdge = [i, j];
+              }
+            }
+          }
+          if (!bestEdge) break;
+          connected.add(bestEdge[1]);
+          edges.push(bestEdge);
+        }
+
+        // Add 1 or 2 extra chord connections for realistic logistics redundancy
+        if (nodes.length >= 4) {
+          let bestChord = null;
+          let bestScore = Infinity;
+          for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+              const already = edges.some(e => (e[0] === i && e[1] === j) || (e[0] === j && e[1] === i));
+              if (already) continue;
+              const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
+              if (d < bestScore) {
+                bestScore = d;
+                bestChord = [i, j];
+              }
+            }
+          }
+          if (bestChord) edges.push(bestChord);
+        }
+
+        // Run A* for each inter-town edge and for each Airport Gate -> Host Town
+        for (const [i, j] of edges) {
+          const path = this.findRoadPathAStar(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y, true);
+          if (path) this.commitRoadPath(path, 'arterial');
+        }
+
+        for (const ap of this.airports) {
+          const host = this.towns[ap.hostTownId];
+          if (host) {
+            const path = this.findRoadPathAStar(ap.gateX, ap.gateY, host.x, host.y, false);
+            if (path) this.commitRoadPath(path, 'airport-link');
+          }
+        }
+      }
+
+      findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true) {
+        const { W, H } = this;
+        const startId = this.idx(sx, sy);
+        const endId = this.idx(ex, ey);
+        const gScore = new Float32Array(W * H).fill(Infinity);
+        const parent = new Int32Array(W * H).fill(-1);
+        const closed = new Uint8Array(W * H);
+
+        // Simple binary heap priority queue
+        const open = [{ id: startId, f: 0 }];
+        gScore[startId] = 0;
+
+        // 8-way octilinear movement (Mini Motorways style 45° and 90° geometry)
+        const dirs = [
+          [1, 0, 1.0], [-1, 0, 1.0], [0, 1, 1.0], [0, -1, 1.0],
+          [1, 1, 1.414], [-1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414]
+        ];
+
+        while (open.length > 0) {
+          let bestIdx = 0;
+          for (let i = 1; i < open.length; i++) {
+            if (open[i].f < open[bestIdx].f) bestIdx = i;
+          }
+          const curr = open[bestIdx];
+          open[bestIdx] = open[open.length - 1];
+          open.pop();
+
+          const cid = curr.id;
+          if (cid === endId) {
+            const path = [];
+            let trace = endId;
+            while (trace !== -1) {
+              const py = Math.floor(trace / W);
+              const px = trace % W;
+              path.push({ x: px, y: py, isBridge: this.waterMask[trace] > 0 });
+              trace = parent[trace];
+            }
+            return path.reverse();
+          }
+
+          if (closed[cid]) continue;
+          closed[cid] = 1;
+
+          const cx = cid % W;
+          const cy = Math.floor(cid / W);
+
+          for (const [dx, dy, baseStep] of dirs) {
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (!this.inBounds(nx, ny, 3)) continue;
+            const nid = this.idx(nx, ny);
+            if (closed[nid]) continue;
+
+            // Never tunnel through an airport runway box (unless it's the start/end gate!)
+            if (this.buildingMask[nid] === 3 && nid !== startId && nid !== endId) continue;
+
+            const isWater = this.waterMask[nid] > 0;
+            if (isWater && !allowWaterBridge) continue;
+
+            let stepCost = baseStep;
+            if (this.roadGrid[nid] > 0) {
+              stepCost *= 0.32;
+            } else if (isWater) {
+              stepCost *= (dx !== 0 && dy !== 0) ? 7.5 : 5.2;
+            }
+
+            const tentativeG = gScore[cid] + stepCost;
+            if (tentativeG < gScore[nid]) {
+              gScore[nid] = tentativeG;
+              parent[nid] = cid;
+              const h = Math.hypot(ex - nx, ey - ny) * 0.95;
+              open.push({ id: nid, f: tentativeG + h });
+            }
+          }
+        }
+        return null;
+      }
+
+      commitRoadPath(path, roadType = 'arterial') {
+        let inBridge = false;
+        for (const pt of path) {
+          const id = this.idx(pt.x, pt.y);
+          if (pt.isBridge) {
+            if (!inBridge && this.roadGrid[id] !== 3) {
+              this.bridgeCount++;
+              inBridge = true;
+            }
+            this.roadGrid[id] = 3;
+          } else {
+            inBridge = false;
+            if (this.roadGrid[id] === 0) {
+              this.roadGrid[id] = roadType === 'street' ? 1 : 2;
+            }
+          }
+        }
+        this.roads.push({ points: path, type: roadType });
+      }
+
+      /*************************************************************************
+       * STAGE 7: URBAN STREET GRIDS, DESTINATIONS & COLOR-CODED HOUSES
+       *************************************************************************/
+      growUrbanFabric() {
+        const densityMult = (this.config.buildingDensity || 100) / 100;
+
+        for (const town of this.towns) {
+          const R = Math.round(town.urbanRadius * (0.82 + 0.25 * Math.sqrt(densityMult)));
+          const step = densityMult >= 1.45 ? 3 : 4;
+
+          // 7A. Paint soft pastel urban background zone around the town
+          for (let dy = -R - 3; dy <= R + 3; dy++) {
+            for (let dx = -R - 3; dx <= R + 3; dx++) {
+              const gx = town.x + dx;
+              const gy = town.y + dy;
+              if (!this.inBounds(gx, gy, 2)) continue;
+              const d = Math.hypot(dx, dy) + this.noise.noise(gx * 0.15, gy * 0.15) * 3.5;
+              if (d <= R + 1.5 && this.waterMask[this.idx(gx, gy)] === 0) {
+                this.zoneColorIdx[this.idx(gx, gy)] = town.colorIdx;
+              }
+            }
+          }
+
+          // 7B. Generate organic local street grid segments around town center
+          for (let offset = -R + 3; offset <= R - 3; offset += step) {
+            const yRow = town.y + offset;
+            if (this.inBounds(town.x, yRow, 4)) {
+              const span = Math.floor(Math.sqrt(Math.max(0, R * R - offset * offset)) * this.rng.range(0.65, 0.95));
+              this.carveLocalStreetLine(town.x - span, yRow, town.x + span, yRow);
+            }
+            const xCol = town.x + offset;
+            if (this.inBounds(xCol, town.y, 4)) {
+              const span = Math.floor(Math.sqrt(Math.max(0, R * R - offset * offset)) * this.rng.range(0.65, 0.95));
+              this.carveLocalStreetLine(xCol, town.y - span, xCol, town.y + span);
+            }
+          }
+
+          // 7C. Place Commercial / Industrial Destination Buildings (scaled by Building Density)
+          const baseDestinations = town.tier === 1 ? 4 : (town.tier === 2 ? 3 : 2);
+          const numDestinations = Math.max(1, Math.round(baseDestinations * densityMult));
+          for (let dIdx = 0; dIdx < numDestinations; dIdx++) {
+            this.tryPlaceDestinationBuilding(town, dIdx === 0, R);
+          }
+
+          // 7D. Pack Residential Houses along local streets (scaled by Building Density)
+          const baseHouses = town.tier === 1 ? 26 : (town.tier === 2 ? 18 : 11);
+          const targetHouses = Math.max(2, Math.round(baseHouses * densityMult));
+          this.tryPlaceNeighborhoodHouses(town, targetHouses, R);
+        }
+      }
+
+      carveLocalStreetLine(x0, y0, x1, y1) {
+        const dx = Math.sign(x1 - x0);
+        const dy = Math.sign(y1 - y0);
+        let x = x0;
+        let y = y0;
+        const pts = [];
+        while (true) {
+          if (this.inBounds(x, y, 3)) {
+            const id = this.idx(x, y);
+            if (this.waterMask[id] === 0 && this.buildingMask[id] === 0) {
+              if (this.roadGrid[id] === 0) this.roadGrid[id] = 1;
+              pts.push({ x, y, isBridge: false });
+            } else {
+              if (pts.length > 2) this.roads.push({ points: [...pts], type: 'street' });
+              pts.length = 0;
+            }
+          }
+          if (x === x1 && y === y1) break;
+          x += dx;
+          y += dy;
+        }
+        if (pts.length > 2) this.roads.push({ points: pts, type: 'street' });
+      }
+
+      tryPlaceDestinationBuilding(town, isCircularHub, customRadius = null) {
+        const R = customRadius || town.urbanRadius;
+        for (let attempt = 0; attempt < 85; attempt++) {
+          const gx = town.x + this.rng.int(-R + 2, R - 2);
+          const gy = town.y + this.rng.int(-R + 2, R - 2);
+          if (!this.inBounds(gx, gy, 5)) continue;
+
+          let clear = true;
+          let roadTouch = null;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const id = this.idx(gx + dx, gy + dy);
+              if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) {
+                clear = false;
+                break;
+              }
+            }
+            if (!clear) break;
+          }
+          if (!clear) continue;
+
+          const perim = [[0, -2], [0, 2], [-2, 0], [2, 0]];
+          for (const [px, py] of perim) {
+            const rx = gx + px;
+            const ry = gy + py;
+            if (this.inBounds(rx, ry, 2) && this.roadGrid[this.idx(rx, ry)] > 0) {
+              roadTouch = { x: rx, y: ry };
+              break;
+            }
+          }
+          if (!roadTouch) continue;
+
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              this.buildingMask[this.idx(gx + dx, gy + dy)] = 2;
+            }
+          }
+
+          const colorIdx = this.rng.next() < 0.72
+            ? town.colorIdx
+            : (town.colorIdx + 1) % PALETTE.districtColors.length;
+
+          this.destinations.push({
+            x: gx,
+            y: gy,
+            roadX: roadTouch.x,
+            roadY: roadTouch.y,
+            townId: town.id,
+            isCircular: isCircularHub || this.rng.next() < 0.28,
+            hasUrgentPin: this.rng.next() < 0.22,
+            pinsCount: this.rng.int(3, 6),
+            colorIdx,
+            palette: PALETTE.districtColors[colorIdx]
+          });
+          town.destinationsCount++;
+          return;
+        }
+      }
+
+      tryPlaceNeighborhoodHouses(town, targetHouses, customRadius = null) {
+        const R = (customRadius || town.urbanRadius) + 2;
+        const secondaryColorIdx = (town.colorIdx + 2) % PALETTE.districtColors.length;
+        const clusterOffset = {
+          x: town.x + this.rng.range(-R * 0.5, R * 0.5),
+          y: town.y + this.rng.range(-R * 0.5, R * 0.5)
+        };
+
+        for (let attempt = 0; attempt < targetHouses * 14 && town.housesCount < targetHouses; attempt++) {
+          const gx = town.x + this.rng.int(-R, R);
+          const gy = town.y + this.rng.int(-R, R);
+          if (!this.inBounds(gx, gy, 3)) continue;
+
+          const id = this.idx(gx, gy);
+          if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) continue;
+
+          const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+          let driveway = null;
+          for (const [dx, dy] of dirs) {
+            const rx = gx + dx;
+            const ry = gy + dy;
+            const rid = this.idx(rx, ry);
+            if (this.roadGrid[rid] === 1 || this.roadGrid[rid] === 2) {
+              driveway = { x: rx, y: ry };
+              break;
+            }
+          }
+          if (!driveway) continue;
+
+          this.buildingMask[id] = 1;
+          const useSecondary = Math.hypot(gx - clusterOffset.x, gy - clusterOffset.y) < R * 0.42;
+          const colorIdx = useSecondary ? secondaryColorIdx : town.colorIdx;
+
+          this.houses.push({
+            x: gx,
+            y: gy,
+            roadX: driveway.x,
+            roadY: driveway.y,
+            townId: town.id,
+            colorIdx,
+            palette: PALETTE.districtColors[colorIdx]
+          });
+          town.housesCount++;
+        }
+      }
+
+      /*************************************************************************
+       * STAGE 8: REALISTIC EXPRESSWAYS, CLOVERLEAFS, STREET-STUB TERMINALS & RAMPS
+       *************************************************************************/
+      displaceBuildingsInRadius(cx, cy, radius) {
+        const r2 = radius * radius;
+        const rCeil = Math.ceil(radius);
+        for (let dy = -rCeil; dy <= rCeil; dy++) {
+          for (let dx = -rCeil; dx <= rCeil; dx++) {
+            if (dx * dx + dy * dy > r2) continue;
+            const gx = Math.round(cx + dx);
+            const gy = Math.round(cy + dy);
+            if (this.inBounds(gx, gy, 1) && this.buildingMask[this.idx(gx, gy)] !== 3) {
+              this.buildingMask[this.idx(gx, gy)] = 4;
+            }
+          }
+        }
+
+        const beforeHouses = this.houses.length;
+        this.houses = this.houses.filter(h => {
+          const keep = (h.x - cx) * (h.x - cx) + (h.y - cy) * (h.y - cy) > r2;
+          if (!keep) {
+            const t = this.towns[h.townId];
+            if (t && t.housesCount > 0) t.housesCount--;
+          }
+          return keep;
+        });
+
+        const beforeDest = this.destinations.length;
+        this.destinations = this.destinations.filter(d => {
+          const keep = (d.x - cx) * (d.x - cx) + (d.y - cy) * (d.y - cy) > (radius + 1.2) * (radius + 1.2);
+          if (!keep) {
+            const t = this.towns[d.townId];
+            if (t && t.destinationsCount > 0) t.destinationsCount--;
+          }
+          return keep;
+        });
+
+        this.trees = this.trees.filter(tr => (tr.x - cx) * (tr.x - cx) + (tr.y - cy) * (tr.y - cy) > r2);
+        this.displacedBuildingsCount += (beforeHouses - this.houses.length) + (beforeDest - this.destinations.length);
+      }
+
+      createTerminalStreetStub(townOrAirport, isAirport, towardX, towardY) {
+        if (isAirport) {
+          const ap = townOrAirport;
+          this.displaceBuildingsInRadius(ap.gateX, ap.gateY, 3.2);
+          const stubAngle = Math.atan2(ap.landNy, ap.landNx);
+          this.interchanges.push({
+            type: 'terminal-stub',
+            isAirportStub: true,
+            x: ap.gateX,
+            y: ap.gateY,
+            stubEndX: ap.curbX,
+            stubEndY: ap.curbY,
+            angleRad: stubAngle,
+            label: `${ap.iata} Terminal Interchange`
+          });
+          return { x: ap.gateX, y: ap.gateY };
+        }
+
+        const town = townOrAirport;
+        const dx = towardX - town.x;
+        const dy = towardY - town.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const ux = dx / dist;
+        const uy = dy / dist;
+
+        const anchorDist = Math.min(town.urbanRadius * 0.68, dist * 0.34);
+        let ax = Math.round(town.x + ux * anchorDist);
+        let ay = Math.round(town.y + uy * anchorDist);
+        ax = Math.max(7, Math.min(this.W - 8, ax));
+        ay = Math.max(7, Math.min(this.H - 8, ay));
+
+        if (this.waterMask[this.idx(ax, ay)] > 0) {
+          ax = town.x;
+          ay = town.y;
+        }
+
+        const stubLen = 4.0;
+        let sx = Math.round(ax - ux * stubLen);
+        let sy = Math.round(ay - uy * stubLen);
+        sx = Math.max(6, Math.min(this.W - 7, sx));
+        sy = Math.max(6, Math.min(this.H - 7, sy));
+
+        const stubPts = [
+          { x: ax, y: ay, isBridge: false },
+          { x: sx, y: sy, isBridge: false }
+        ];
+        this.roadGrid[this.idx(ax, ay)] = 2;
+        this.roadGrid[this.idx(sx, sy)] = 2;
+        this.roads.push({ points: stubPts, type: 'arterial' });
+
+        const tiePath = this.findRoadPathAStar(sx, sy, town.x, town.y, false);
+        if (tiePath) this.commitRoadPath(tiePath, 'arterial');
+
+        this.displaceBuildingsInRadius(ax, ay, 3.2);
+        this.displaceBuildingsInRadius((ax + sx) * 0.5, (ay + sy) * 0.5, 2.2);
+
+        this.interchanges.push({
+          type: 'terminal-stub',
+          isAirportStub: false,
+          x: ax,
+          y: ay,
+          stubEndX: sx,
+          stubEndY: sy,
+          angleRad: Math.atan2(uy, ux),
+          label: `${town.name} Beltway Stub`
+        });
+
+        return { x: ax, y: ay };
+      }
+
+      findRingInterchangePoint(town, towardX, towardY) {
+        return this.createTerminalStreetStub(town, false, towardX, towardY);
+      }
+
+      buildVignelliOctilinearWaypoints(sx, sy, ex, ey, bendSign = 1) {
+        const dx = ex - sx;
+        const dy = ey - sy;
+        const adx = Math.abs(dx);
+        const ady = Math.abs(dy);
+        const diag = Math.min(adx, ady);
+
+        let k1x, k1y, k2x, k2y;
+        if (bendSign >= 0) {
+          k1x = sx + Math.sign(dx) * diag * 0.5;
+          k1y = sy + Math.sign(dy) * diag * 0.5;
+          k2x = sx + Math.sign(dx) * diag;
+          k2y = sy + Math.sign(dy) * diag;
+        } else {
+          if (adx > ady) {
+            const straight = adx - diag;
+            k1x = sx + Math.sign(dx) * straight;
+            k1y = sy;
+            k2x = sx + Math.sign(dx) * (straight + diag * 0.5);
+            k2y = sy + Math.sign(dy) * (diag * 0.5);
+          } else {
+            const straight = ady - diag;
+            k1x = sx;
+            k1y = sy + Math.sign(dy) * straight;
+            k2x = sx + Math.sign(dx) * (diag * 0.5);
+            k2y = sy + Math.sign(dy) * (straight + diag * 0.5);
+          }
+        }
+        return [
+          { x: sx, y: sy },
+          { x: k1x, y: k1y },
+          { x: k2x, y: k2y },
+          { x: ex, y: ey }
+        ];
+      }
+
+      buildTerrainParkwayWaypoints(sx, sy, ex, ey, mwayNumber) {
+        const mx = (sx + ex) * 0.5;
+        const my = (sy + ey) * 0.5;
+        const dx = ex - sx;
+        const dy = ey - sy;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len;
+        const ny = dx / len;
+
+        let bestOff = (mwayNumber % 2 === 0 ? 1 : -1) * Math.min(14, len * 0.18);
+        let bestPenalty = Infinity;
+
+        for (let off = -24; off <= 24; off += 4) {
+          const wx = Math.round(mx + nx * off);
+          const wy = Math.round(my + ny * off);
+          if (!this.inBounds(wx, wy, 5)) continue;
+
+          let penalty = Math.abs(off) * 0.35;
+          for (let s = 0.15; s <= 0.85; s += 0.1) {
+            const px = Math.round(s < 0.5 ? sx + (wx - sx) * (s * 2) : wx + (ex - wx) * ((s - 0.5) * 2));
+            const py = Math.round(s < 0.5 ? sy + (wy - sy) * (s * 2) : wy + (ey - wy) * ((s - 0.5) * 2));
+            if (!this.inBounds(px, py, 2)) continue;
+            const id = this.idx(px, py);
+            if (this.waterMask[id] > 0) penalty += 4.5;
+            if (this.buildingMask[id] === 3) penalty += 40;
+          }
+          if (penalty < bestPenalty) {
+            bestPenalty = penalty;
+            bestOff = off;
+          }
+        }
+
+        const q1x = (sx + mx + nx * bestOff) * 0.5;
+        const q1y = (sy + my + ny * bestOff) * 0.5;
+        const q2x = (ex + mx + nx * bestOff) * 0.5;
+        const q2y = (ey + my + ny * bestOff) * 0.5;
+
+        return [
+          { x: sx, y: sy },
+          { x: q1x, y: q1y },
+          { x: mx + nx * bestOff, y: my + ny * bestOff },
+          { x: q2x, y: q2y },
+          { x: ex, y: ey }
+        ];
+      }
+
+      createMotorwayEntity(number, sx, sy, ex, ey, algo, airportId = null, townId = null, forcedViaPt = null) {
+        let waypoints = [];
+        if (forcedViaPt) {
+          const vx = forcedViaPt.x;
+          const vy = forcedViaPt.y;
+          waypoints = [
+            { x: sx, y: sy },
+            { x: (sx + vx) * 0.5, y: (sy + vy) * 0.5 },
+            { x: vx, y: vy },
+            { x: (vx + ex) * 0.5, y: (vy + ey) * 0.5 },
+            { x: ex, y: ey }
+          ];
+        } else if (algo === 'vignelli-octilinear') {
+          waypoints = this.buildVignelliOctilinearWaypoints(sx, sy, ex, ey, number % 2 === 0 ? 1 : -1);
+        } else if (algo === 'terrain-parkway') {
+          waypoints = this.buildTerrainParkwayWaypoints(sx, sy, ex, ey, number);
+        } else if (algo === 'gravity-ring') {
+          const mx = (sx + ex) * 0.5;
+          const my = (sy + ey) * 0.5;
+          const dx = ex - sx;
+          const dy = ey - sy;
+          const len = Math.hypot(dx, dy) || 1;
+          const bend = (number % 2 === 0 ? 1 : -1) * Math.min(9, len * 0.11);
+          const cx = mx - (dy / len) * bend;
+          const cy = my + (dx / len) * bend;
+          waypoints = [
+            { x: sx, y: sy },
+            { x: (sx + cx) * 0.5, y: (sy + cy) * 0.5 },
+            { x: cx, y: cy },
+            { x: (cx + ex) * 0.5, y: (cy + ey) * 0.5 },
+            { x: ex, y: ey }
+          ];
+        } else {
+          const mx = (sx + ex) * 0.5;
+          const my = (sy + ey) * 0.5;
+          const dx = ex - sx;
+          const dy = ey - sy;
+          const len = Math.hypot(dx, dy) || 1;
+          const bend = (number % 2 === 0 ? 1 : -1) * Math.min(18, len * 0.24);
+          const cx = mx - (dy / len) * bend;
+          const cy = my + (dx / len) * bend;
+          waypoints = [
+            { x: sx, y: sy },
+            { x: cx, y: cy },
+            { x: ex, y: ey }
+          ];
+        }
+
+        const samples = this.sampleMotorwayCurve(waypoints, algo === 'vignelli-octilinear' && !forcedViaPt);
+        return {
+          number,
+          sx, sy,
+          ex, ey,
+          waypoints,
+          samples,
+          algo,
+          airportId,
+          townId
+        };
+      }
+
+      sampleMotorwayCurve(waypoints, isOctilinear = false) {
+        if (waypoints.length === 3 && !isOctilinear) {
+          const [p0, p1, p2] = waypoints;
+          const out = [];
+          const steps = 36;
+          for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const mt = 1 - t;
+            out.push({
+              x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+              y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
+            });
+          }
+          return out;
+        }
+
+        if (isOctilinear) {
+          const out = [];
+          const stepsPerSeg = 14;
+          for (let i = 0; i < waypoints.length - 1; i++) {
+            const a = waypoints[i];
+            const b = waypoints[i + 1];
+            for (let s = 0; s < stepsPerSeg; s++) {
+              const t = s / stepsPerSeg;
+              out.push({
+                x: a.x + (b.x - a.x) * t,
+                y: a.y + (b.y - a.y) * t
+              });
+            }
+          }
+          out.push(waypoints[waypoints.length - 1]);
+          return out;
+        }
+
+        let pts = waypoints.map(p => ({ x: p.x, y: p.y }));
+        for (let iter = 0; iter < 3; iter++) {
+          const next = [pts[0]];
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = pts[i];
+            const p1 = pts[i + 1];
+            next.push({ x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y });
+            next.push({ x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y });
+          }
+          next.push(pts[pts.length - 1]);
+          pts = next;
+        }
+        return pts;
+      }
+
+      detectAndBuildCloverleafs() {
+        for (let i = 0; i < this.motorways.length; i++) {
+          for (let j = i + 1; j < this.motorways.length; j++) {
+            const mA = this.motorways[i];
+            const mB = this.motorways[j];
+            const hit = this.findPolylineIntersection(mA.samples, mB.samples);
+            if (hit) {
+              // Ensure the two motorways cross at a non-glancing angle (>= 32 degrees)
+              const crossSin = Math.abs(Math.sin(hit.angleA - hit.angleB));
+              if (crossSin < 0.52) continue;
+
+              const tooClose = this.interchanges.some(
+                ic => ic.type === 'cloverleaf' && Math.hypot(ic.x - hit.x, ic.y - hit.y) < 14
+              );
+              if (!tooClose) {
+                this.displaceBuildingsInRadius(hit.x, hit.y, 5.2);
+                this.interchanges.push({
+                  type: 'cloverleaf',
+                  x: hit.x,
+                  y: hit.y,
+                  angleA: hit.angleA,
+                  angleB: hit.angleB,
+                  mwayA: mA.number,
+                  mwayB: mB.number,
+                  label: `M-${mA.number} × M-${mB.number} Cloverleaf`
+                });
+              }
+            }
+          }
+        }
+      }
+
+      findPolylineIntersection(samplesA, samplesB) {
+        const startA = Math.floor(samplesA.length * 0.12);
+        const endA = Math.ceil(samplesA.length * 0.88);
+        const startB = Math.floor(samplesB.length * 0.12);
+        const endB = Math.ceil(samplesB.length * 0.88);
+
+        for (let i = startA; i < endA - 1; i++) {
+          const a1 = samplesA[i];
+          const a2 = samplesA[i + 1];
+          for (let j = startB; j < endB - 1; j++) {
+            const b1 = samplesB[j];
+            const b2 = samplesB[j + 1];
+            const pt = this.segmentIntersection(a1.x, a1.y, a2.x, a2.y, b1.x, b1.y, b2.x, b2.y);
+            if (pt) {
+              return {
+                x: pt.x,
+                y: pt.y,
+                angleA: Math.atan2(a2.y - a1.y, a2.x - a1.x),
+                angleB: Math.atan2(b2.y - b1.y, b2.x - b1.x)
+              };
+            }
+          }
+        }
+        return null;
+      }
+
+      segmentIntersection(x1, y1, x2, y2, x3, y3, x4, y4) {
+        const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+        if (Math.abs(denom) < 1e-5) return null;
+        const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+        const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+          return {
+            x: x1 + t * (x2 - x1),
+            y: y1 + t * (y2 - y1)
+          };
+        }
+        return null;
+      }
+
+      buildIntermediateExpresswayRamps() {
+        if (!this.config.includeIntermediateRamps) return;
+
+        for (const mw of this.motorways) {
+          const samples = mw.samples;
+          if (!samples || samples.length < 10) continue;
+          const totalChord = Math.hypot(mw.ex - mw.sx, mw.ey - mw.sy);
+          if (totalChord < 30) continue;
+
+          let bestCandidate = null;
+          let bestScore = -Infinity;
+
+          const iStart = Math.floor(samples.length * 0.28);
+          const iEnd = Math.ceil(samples.length * 0.72);
+
+          for (let i = iStart; i <= iEnd; i += 2) {
+            const pt = samples[i];
+            const gx = Math.round(pt.x);
+            const gy = Math.round(pt.y);
+            if (!this.inBounds(gx, gy, 6)) continue;
+            const id = this.idx(gx, gy);
+            if (this.waterMask[id] > 0 || this.distToWater[id] < 2.5) continue;
+            if (this.buildingMask[id] === 3) continue;
+
+            const nearExisting = this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 13);
+            if (nearExisting) continue;
+
+            let nearestTown = null;
+            let minTownDist = Infinity;
+            for (const t of this.towns) {
+              const d = Math.hypot(pt.x - t.x, pt.y - t.y);
+              if (d < minTownDist) {
+                minTownDist = d;
+                nearestTown = t;
+              }
+            }
+            if (!nearestTown || minTownDist > 38) continue;
+
+            const score = 45 - minTownDist;
+            if (score > bestScore) {
+              const pPrev = samples[Math.max(0, i - 1)];
+              const pNext = samples[Math.min(samples.length - 1, i + 1)];
+              bestScore = score;
+              bestCandidate = {
+                x: pt.x,
+                y: pt.y,
+                angleRad: Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x),
+                nearestTown
+              };
+            }
+          }
+
+          if (bestCandidate) {
+            const { x, y, angleRad, nearestTown } = bestCandidate;
+            const nx = -Math.sin(angleRad);
+            const ny = Math.cos(angleRad);
+
+            // Place surface ramp terminal roundabouts on both sides of the expressway
+            const crossHalf = 2.55;
+            const c1x = x + nx * crossHalf;
+            const c1y = y + ny * crossHalf;
+            const c2x = x - nx * crossHalf;
+            const c2y = y - ny * crossHalf;
+
+            this.displaceBuildingsInRadius(x, y, 3.8);
+
+            // Pick the side facing the nearest town for the A* surface arterial link
+            // so the A* path starts at the outer terminal and never zig-zags across the ramp!
+            const d1 = Math.hypot(c1x - nearestTown.x, c1y - nearestTown.y);
+            const d2 = Math.hypot(c2x - nearestTown.x, c2y - nearestTown.y);
+            const startX = Math.max(5, Math.min(this.W - 6, Math.round(d1 <= d2 ? c1x : c2x)));
+            const startY = Math.max(5, Math.min(this.H - 6, Math.round(d1 <= d2 ? c1y : c2y)));
+
+            const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false);
+            if (connectorPath) this.commitRoadPath(connectorPath, 'arterial');
+
+            this.interchanges.push({
+              type: 'diamond-ramp',
+              x,
+              y,
+              c1x, c1y,
+              c2x, c2y,
+              connectX: startX,
+              connectY: startY,
+              angleRad,
+              mwayNumber: mw.number,
+              townName: nearestTown.name,
+              label: `M-${mw.number} / ${nearestTown.name} Slip-Ramp`
+            });
+          }
+        }
+      }
+
+      buildNumberedMotorways() {
+        const algo = this.config.expresswayAlgo || 'gravity-ring';
+        let mwayNumber = 1;
+
+        if (algo === 'gravity-ring' && this.towns.length >= 2) {
+          const pairs = [];
+          for (let i = 0; i < this.towns.length; i++) {
+            for (let j = i + 1; j < this.towns.length; j++) {
+              const tA = this.towns[i];
+              const tB = this.towns[j];
+              const popA = (tA.housesCount + tA.destinationsCount * 3 + 12) * (tA.airportId !== null ? 1.5 : 1);
+              const popB = (tB.housesCount + tB.destinationsCount * 3 + 12) * (tB.airportId !== null ? 1.5 : 1);
+              const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
+              if (d < 24) continue;
+              const gravity = (popA * popB) / Math.pow(d, 1.15);
+              pairs.push({ tA, tB, gravity, d });
+            }
+          }
+          pairs.sort((a, b) => b.gravity - a.gravity);
+
+          let primaryMidPt = null;
+          if (pairs.length > 0) {
+            const { tA, tB } = pairs[0];
+            const rampA = this.createTerminalStreetStub(tA, false, tB.x, tB.y);
+            const rampB = this.createTerminalStreetStub(tB, false, tA.x, tA.y);
+            const mw1 = this.createMotorwayEntity(mwayNumber++, rampA.x, rampA.y, rampB.x, rampB.y, algo, null, tB.id);
+            this.motorways.push(mw1);
+
+            const midSample = mw1.samples[Math.floor(mw1.samples.length * 0.5)];
+            const mx = Math.round(midSample.x);
+            const my = Math.round(midSample.y);
+            if (this.inBounds(mx, my, 8) && this.waterMask[this.idx(mx, my)] === 0 && this.buildingMask[this.idx(mx, my)] !== 3) {
+              primaryMidPt = { x: midSample.x, y: midSample.y };
+            }
+          }
+
+          if (this.towns.length >= 4 && pairs.length > 1) {
+            const m1Towns = new Set([pairs[0].tA.id, pairs[0].tB.id]);
+            const otherTowns = this.towns.filter(t => !m1Towns.has(t.id));
+            if (otherTowns.length >= 2) {
+              const cA = otherTowns[0];
+              const cB = otherTowns[1];
+              const rampA = this.createTerminalStreetStub(cA, false, cB.x, cB.y);
+              const rampB = this.createTerminalStreetStub(cB, false, cA.x, cA.y);
+              const mw2 = this.createMotorwayEntity(
+                mwayNumber++,
+                rampA.x, rampA.y,
+                rampB.x, rampB.y,
+                algo, null, cB.id,
+                primaryMidPt
+              );
+              this.motorways.push(mw2);
+            }
+          }
+
+          for (const ap of this.airports) {
+            const host = this.towns[ap.hostTownId];
+            if (!host) continue;
+
+            let targetTown = host;
+            if (ap.isHub && this.towns.length > 1) {
+              const alt = this.towns.find(t => t.id !== host.id && Math.hypot(ap.gateX - t.x, ap.gateY - t.y) < 95);
+              if (alt) targetTown = alt;
+            }
+
+            const apStub = this.createTerminalStreetStub(ap, true, targetTown.x, targetTown.y);
+            const townStub = this.createTerminalStreetStub(targetTown, false, ap.gateX, ap.gateY);
+
+            ap.motorwayId = mwayNumber;
+            this.motorways.push(
+              this.createMotorwayEntity(mwayNumber++, apStub.x, apStub.y, townStub.x, townStub.y, algo, ap.id, targetTown.id)
+            );
+          }
+        } else {
+          for (const ap of this.airports) {
+            const host = this.towns[ap.hostTownId];
+            if (!host) continue;
+
+            let targetTown = host;
+            if (this.towns.length > 1 && ap.isHub) {
+              const other = this.towns.find(t => t.id !== host.id && t.tier <= 2);
+              if (other && Math.hypot(ap.x - other.x, ap.y - other.y) < 105) {
+                targetTown = other;
+              }
+            }
+
+            const apStub = this.createTerminalStreetStub(ap, true, targetTown.x, targetTown.y);
+            const townStub = this.createTerminalStreetStub(targetTown, false, apStub.x, apStub.y);
+
+            ap.motorwayId = mwayNumber;
+            this.motorways.push(
+              this.createMotorwayEntity(mwayNumber++, apStub.x, apStub.y, townStub.x, townStub.y, algo, ap.id, targetTown.id)
+            );
+          }
+
+          if (this.towns.length >= 3) {
+            const tA = this.towns[0];
+            const tB = this.towns[2];
+            const stubA = this.createTerminalStreetStub(tA, false, tB.x, tB.y);
+            const stubB = this.createTerminalStreetStub(tB, false, tA.x, tA.y);
+            this.motorways.push(
+              this.createMotorwayEntity(mwayNumber++, stubA.x, stubA.y, stubB.x, stubB.y, algo, null, tB.id)
+            );
+          }
+        }
+
+        this.detectAndBuildCloverleafs();
+        this.buildIntermediateExpresswayRamps();
+
+        const cloverCount = this.interchanges.filter(i => i.type === 'cloverleaf').length;
+        const rampCount = this.interchanges.filter(i => i.type === 'diamond-ramp').length;
+        this.logs.push(
+          `Built <b>${this.motorways.length} expressways</b>, <b>${cloverCount} cloverleafs</b> & <b>${rampCount} intermediate ramps</b> (displaced ${this.displacedBuildingsCount} buildings).`
+        );
+      }
+
+      populateLandscapeTrees() {
+        for (let y = 4; y < this.H - 4; y += 2) {
+          for (let x = 4; x < this.W - 4; x += 2) {
+            const id = this.idx(x, y);
+            if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) continue;
+            const dWater = this.distToWater[id];
+            // Keep shoreline buffer completely free of isolated tree dots so banks look razor-sharp
+            if (dWater < 5.0) continue;
+            const n = this.noise.noise(x * 0.14, y * 0.14);
+            if (n > 0.72 && this.rng.next() < 0.28) {
+              this.trees.push({
+                x: x + this.rng.range(-0.35, 0.35),
+                y: y + this.rng.range(-0.35, 0.35),
+                r: this.rng.range(0.36, 0.62),
+                color: this.rng.pick(PALETTE.treeDots)
+              });
+            }
+          }
+        }
+      }
+    }
+
+    /***************************************************************************
+     * 4. LIVE TRAFFIC (CARS) & AVIATION (FLIGHTS) SIMULATION ENGINE
+     ***************************************************************************/
+    class LogisticsSimulator {
+      constructor(world) {
+        this.world = world;
+        this.cars = [];
+        this.planes = [];
+        this.tripsCompleted = 1372;
+        this.simTime = 0;
+        this.initAgents();
+      }
+
+      initAgents() {
+        const { world } = this;
+        // Spawn Mini Motorways cars along road paths and motorways
+        for (let i = 0; i < 65; i++) {
+          this.spawnCar();
+        }
+        // Spawn aircraft operating between airports (or regional off-map airways if 1 airport)
+        if (world.airports.length > 0) {
+          const planeCount = Math.max(2, world.airports.length * 2);
+          for (let i = 0; i < planeCount; i++) {
+            this.spawnPlane(i / planeCount);
+          }
+        }
+      }
+
+      spawnCar() {
+        const { world } = this;
+        const useMotorway = world.motorways.length > 0 && Math.random() < 0.28;
+        if (useMotorway) {
+          const mw = world.motorways[Math.floor(Math.random() * world.motorways.length)];
+          const color = PALETTE.districtColors[Math.floor(Math.random() * PALETTE.districtColors.length)].roof;
+          this.cars.push({
+            mode: 'motorway',
+            mw,
+            t: Math.random(),
+            dir: Math.random() < 0.5 ? 1 : -1,
+            speed: 0.18 + Math.random() * 0.08,
+            color
+          });
+        } else if (world.roads.length > 0) {
+          const road = world.roads[Math.floor(Math.random() * world.roads.length)];
+          if (road.points.length < 3) return;
+          const color = PALETTE.districtColors[Math.floor(Math.random() * PALETTE.districtColors.length)].roof;
+          this.cars.push({
+            mode: 'road',
+            road,
+            segIdx: Math.floor(Math.random() * (road.points.length - 1)),
+            segT: Math.random(),
+            dir: Math.random() < 0.5 ? 1 : -1,
+            speed: 3.5 + Math.random() * 2.0,
+            color
+          });
+        }
+      }
+
+      spawnPlane(initialPhase = 0) {
+        const { world } = this;
+        if (world.airports.length === 0) return;
+        const originIdx = Math.floor(Math.random() * world.airports.length);
+        const origin = world.airports[originIdx];
+        let dest = null;
+        if (world.airports.length > 1) {
+          const destIdx = (originIdx + 1 + Math.floor(Math.random() * (world.airports.length - 1))) % world.airports.length;
+          dest = world.airports[destIdx];
+        } else {
+          // Virtual international off-map corridor if single airport
+          dest = {
+            x: world.W * 0.92,
+            y: world.H * 0.12,
+            angleRad: origin.angleRad,
+            halfLen: 6
+          };
+        }
+
+        this.planes.push({
+          origin,
+          dest,
+          progress: initialPhase, // 0..1 lifecycle (taxi/takeoff -> cruise arc -> landing rollout)
+          speed: 0.048 + Math.random() * 0.015,
+          color: origin.palette.roof
+        });
+      }
+
+      update(dt, simSpeed) {
+        if (simSpeed <= 0) return;
+        const effDt = dt * simSpeed;
+        this.simTime += effDt;
+
+        // Update Cars
+        for (const car of this.cars) {
+          if (car.mode === 'motorway') {
+            car.t += car.dir * car.speed * effDt;
+            if (car.t >= 1) {
+              car.t = 1;
+              car.dir = -1;
+              this.tripsCompleted++;
+            } else if (car.t <= 0) {
+              car.t = 0;
+              car.dir = 1;
+              this.tripsCompleted++;
+            }
+          } else {
+            car.segT += car.speed * effDt;
+            if (car.segT >= 1.0) {
+              car.segT -= 1.0;
+              car.segIdx += car.dir;
+              if (car.segIdx >= car.road.points.length - 1) {
+                car.segIdx = car.road.points.length - 2;
+                car.dir = -1;
+                this.tripsCompleted++;
+              } else if (car.segIdx < 0) {
+                car.segIdx = 0;
+                car.dir = 1;
+              }
+            }
+          }
+        }
+
+        // Update Aircraft
+        for (const p of this.planes) {
+          p.progress += p.speed * effDt;
+          if (p.progress >= 1.0) {
+            p.progress = 0;
+            this.tripsCompleted += 6;
+            // Swap origin and destination for continuous air bridge
+            const tmp = p.origin;
+            p.origin = p.dest.id !== undefined ? p.dest : p.origin;
+            if (this.world.airports.length > 1) {
+              const others = this.world.airports.filter(a => a.id !== p.origin.id);
+              p.dest = others[Math.floor(Math.random() * others.length)];
+            }
+          }
+        }
+      }
+    }
+
+    /***************************************************************************
+     * 5. MINI MOTORWAYS / MINI METRO CANVAS VECTOR RENDERER
+     ***************************************************************************/
+    class MiniMotorwaysRenderer {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.camera = { x: 0, y: 0, zoom: 1 };
+        this.activeLayer = 'aesthetic'; // 'aesthetic' | 'airport' | 'hierarchy' | 'hydrology'
+        this.selectedEntity = null;
+        this.offscreenTerrain = document.createElement('canvas');
+      }
+
+      fitCamera(world) {
+        const worldPxW = world.W * world.tileSize;
+        const worldPxH = world.H * world.tileSize;
+        const scaleX = this.canvas.width / worldPxW;
+        const scaleY = this.canvas.height / worldPxH;
+        this.camera.zoom = Math.min(scaleX, scaleY) * 0.94;
+        this.camera.x = (this.canvas.width - worldPxW * this.camera.zoom) * 0.5;
+        this.camera.y = (this.canvas.height - worldPxH * this.camera.zoom) * 0.5;
+      }
+
+      /**
+       * Pre-renders static terrain layers (Cream background, Pastel Urban Zones,
+       * Cyan Water & Cream Riverbanks) onto an offscreen canvas using a true
+       * Vignelli-style 45°/90° Octilinear Marching-Squares Polygonizer (zero stippling!).
+       */
+      buildVignelliWaterPath(world, ts) {
+        const path = new Path2D();
+        const { W, H } = world;
+        const isW = (x, y) => {
+          const cx = Math.max(0, Math.min(W - 1, x));
+          const cy = Math.max(0, Math.min(H - 1, y));
+          return world.waterMask[world.idx(cx, cy)] > 0;
+        };
+
+        // Marching Squares over dual grid: each cell has 4 corners (tl, tr, br, bl).
+        // Diagonal edges split cells at clean 45-degree bevels (Massimo Vignelli transit map style!)
+        for (let y = -1; y < H; y++) {
+          for (let x = -1; x < W; x++) {
+            const tl = isW(x, y) ? 1 : 0;
+            const tr = isW(x + 1, y) ? 1 : 0;
+            const br = isW(x + 1, y + 1) ? 1 : 0;
+            const bl = isW(x, y + 1) ? 1 : 0;
+            const mask = (tl << 3) | (tr << 2) | (br << 1) | bl;
+            if (mask === 0) continue;
+
+            const x0 = (x + 0.5) * ts;
+            const y0 = (y + 0.5) * ts;
+            const x1 = (x + 1.5) * ts;
+            const y1 = (y + 1.5) * ts;
+            const xm = (x + 1.0) * ts;
+            const ym = (y + 1.0) * ts;
+
+            const poly = (pts) => {
+              path.moveTo(pts[0][0], pts[0][1]);
+              for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0], pts[i][1]);
+              path.closePath();
+            };
+
+            switch (mask) {
+              case 15: poly([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]); break;
+              case 1:  poly([[x0, ym], [xm, y1], [x0, y1]]); break;
+              case 2:  poly([[xm, y1], [x1, ym], [x1, y1]]); break;
+              case 4:  poly([[xm, y0], [x1, y0], [x1, ym]]); break;
+              case 8:  poly([[x0, y0], [xm, y0], [x0, ym]]); break;
+              case 3:  poly([[x0, ym], [x1, ym], [x1, y1], [x0, y1]]); break;
+              case 6:  poly([[xm, y0], [x1, y0], [x1, y1], [xm, y1]]); break;
+              case 9:  poly([[x0, y0], [xm, y0], [xm, y1], [x0, y1]]); break;
+              case 12: poly([[x0, y0], [x1, y0], [x1, ym], [x0, ym]]); break;
+              case 5:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); break;
+              case 10: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [xm, y1], [x0, ym]]); break;
+              case 7:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, y1], [x0, y1]]); break;
+              case 11: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [x0, y1]]); break;
+              case 13: poly([[x0, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); break;
+              case 14: poly([[x0, y0], [x1, y0], [x1, y1], [xm, y1], [x0, ym]]); break;
+            }
+          }
+        }
+        return path;
+      }
+
+      bakeStaticTerrain(world) {
+        const ts = world.tileSize;
+        const pw = world.W * ts;
+        const ph = world.H * ts;
+        this.offscreenTerrain.width = pw;
+        this.offscreenTerrain.height = ph;
+        const ctx = this.offscreenTerrain.getContext('2d');
+
+        // 1. Warm Paper Background
+        ctx.fillStyle = PALETTE.bgPaper;
+        ctx.fillRect(0, 0, pw, ph);
+
+        // 2. Soft Pastel Urban & Waterfront Blush Zones (Clean geometric octilinear & circular zones)
+        ctx.save();
+        ctx.fillStyle = PALETTE.urbanBlushPink;
+        for (const town of world.towns) {
+          ctx.beginPath();
+          ctx.arc(town.x * ts, town.y * ts, (town.urbanRadius + 4.5) * ts, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Build Vignelli 45°/90° Octilinear Marching-Squares Water Path
+        const waterPath = this.buildVignelliWaterPath(world, ts);
+
+        // Use beveled/mitered joins so 45-degree Vignelli shoreline angles stay crisp & architectural
+        ctx.lineCap = 'butt';
+        ctx.lineJoin = 'bevel';
+
+        // 2B. Outer Waterfront Blush Band (follows the exact 45°/90° shoreline contour)
+        ctx.strokeStyle = PALETTE.urbanBlushPink;
+        ctx.lineWidth = ts * 6.0;
+        ctx.stroke(waterPath);
+
+        // 3. Cream Sand/Bank Casing around Water (Clean 45°/90° architectural bank border)
+        ctx.strokeStyle = PALETTE.bgPaper;
+        ctx.lineWidth = ts * 1.65;
+        ctx.stroke(waterPath);
+        ctx.fillStyle = PALETTE.bgPaper;
+        ctx.fill(waterPath);
+
+        // 4. Crisp Cyan Water Body Fill (Zero stippling — pure vector polygon fill!)
+        ctx.fillStyle = PALETTE.waterCyan;
+        ctx.fill(waterPath);
+        ctx.restore();
+
+        // 5. Subtle Architectural Grid Lines (visible across land & water like Mini Motorways)
+        ctx.strokeStyle = PALETTE.gridLine;
+        ctx.lineWidth = 1;
+        const gridStep = ts * 4;
+        ctx.beginPath();
+        for (let x = 0; x <= pw; x += gridStep) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, ph);
+        }
+        for (let y = 0; y <= ph; y += gridStep) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(pw, y);
+        }
+        ctx.stroke();
+
+        // 6. Landscape Trees (Pastel Minimalist Dots with soft shadows)
+        for (const tree of world.trees) {
+          const tx = tree.x * ts;
+          const ty = tree.y * ts;
+          const tr = tree.r * ts;
+          ctx.fillStyle = 'rgba(54, 56, 62, 0.1)';
+          ctx.beginPath();
+          ctx.arc(tx + 2.5, ty + 2.5, tr, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = tree.color;
+          ctx.beginPath();
+          ctx.arc(tx, ty, tr, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      render(world, sim) {
+        const { ctx, canvas, camera } = this;
+        const ts = world.tileSize;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = PALETTE.bgPaper;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.save();
+        ctx.translate(camera.x, camera.y);
+        ctx.scale(camera.zoom, camera.zoom);
+
+        // 1. Draw Baked Base Terrain
+        ctx.drawImage(this.offscreenTerrain, 0, 0);
+
+        // 2. Optional Diagnostic Overlay Underneath Roads/Buildings (Hydrology / Airport Heatmap)
+        if (this.activeLayer === 'hydrology') {
+          this.drawHydrologyOverlay(ctx, world, ts);
+        } else if (this.activeLayer === 'airport') {
+          this.drawAirportSolverOverlay(ctx, world, ts);
+        }
+
+        // 3. Draw Driveways & Road Network (Grey Casing + Crisp White Asphalt + Bridges)
+        this.drawRoadNetwork(ctx, world, ts);
+
+        // 4. Draw Houses & Commercial/Industrial Destinations (with 45° Drop Shadows & Demand Pins)
+        this.drawBuildings(ctx, world, ts);
+
+        // 5. Draw Airports (Apron, Runway Markings, Terminal Building, Control Tower & Windsock)
+        this.drawAirports(ctx, world, ts);
+
+        // 6. Draw Live Ground Vehicles (Cars)
+        this.drawCars(ctx, world, sim, ts);
+
+        // 7. Draw Sweeping Pink Numbered Motorways Overpasses ([1], [2], [3])
+        this.drawMotorways(ctx, world, ts);
+
+        // 8. Draw Central Place Hierarchy Overlay if active
+        if (this.activeLayer === 'hierarchy') {
+          this.drawHierarchyOverlay(ctx, world, ts);
+        }
+
+        // 9. Draw Live Aircraft & Flight Corridors
+        this.drawPlanes(ctx, world, sim, ts);
+
+        // 10. Highlight Selected Town or Airport Ring
+        if (this.selectedEntity) {
+          this.drawSelectionHighlight(ctx, this.selectedEntity, ts);
+        }
+
+        ctx.restore();
+
+        // Soft paper vignette around screen edges
+        const grad = ctx.createRadialGradient(
+          canvas.width * 0.5, canvas.height * 0.5, Math.min(canvas.width, canvas.height) * 0.38,
+          canvas.width * 0.5, canvas.height * 0.5, Math.max(canvas.width, canvas.height) * 0.72
+        );
+        grad.addColorStop(0, 'rgba(242, 239, 233, 0)');
+        grad.addColorStop(1, 'rgba(54, 56, 62, 0.08)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      drawRoadNetwork(ctx, world, ts) {
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // Pass A: House & Destination Driveways
+        ctx.strokeStyle = PALETTE.roadCasing;
+        ctx.lineWidth = ts * 0.42;
+        ctx.beginPath();
+        for (const h of world.houses) {
+          ctx.moveTo(h.x * ts + ts * 0.5, h.y * ts + ts * 0.5);
+          ctx.lineTo(h.roadX * ts + ts * 0.5, h.roadY * ts + ts * 0.5);
+        }
+        for (const d of world.destinations) {
+          ctx.moveTo(d.x * ts + ts * 0.5, d.y * ts + ts * 0.5);
+          ctx.lineTo(d.roadX * ts + ts * 0.5, d.roadY * ts + ts * 0.5);
+        }
+        ctx.stroke();
+
+        // Pass B: Road Outer Casing (Grey)
+        for (const r of world.roads) {
+          if (r.points.length < 2) continue;
+          ctx.strokeStyle = PALETTE.roadCasing;
+          ctx.lineWidth = r.type === 'street' ? ts * 0.58 : (r.type === 'airport-loop' ? ts * 0.66 : ts * 0.74);
+          this.traceSmoothPath(ctx, r.points, ts);
+          ctx.stroke();
+        }
+
+        // Pass C: Bridge Dark Guardrails Over Water
+        for (const r of world.roads) {
+          ctx.strokeStyle = PALETTE.bridgeRail;
+          ctx.lineWidth = ts * 0.88;
+          ctx.beginPath();
+          for (let i = 0; i < r.points.length - 1; i++) {
+            if (r.points[i].isBridge || r.points[i + 1].isBridge) {
+              ctx.moveTo(r.points[i].x * ts + ts * 0.5, r.points[i].y * ts + ts * 0.5);
+              ctx.lineTo(r.points[i + 1].x * ts + ts * 0.5, r.points[i + 1].y * ts + ts * 0.5);
+            }
+          }
+          ctx.stroke();
+        }
+
+        // Pass D: Crisp White Road Asphalt Fill
+        ctx.strokeStyle = PALETTE.roadAsphalt;
+        ctx.lineWidth = ts * 0.26;
+        ctx.beginPath();
+        for (const h of world.houses) {
+          ctx.moveTo(h.x * ts + ts * 0.5, h.y * ts + ts * 0.5);
+          ctx.lineTo(h.roadX * ts + ts * 0.5, h.roadY * ts + ts * 0.5);
+        }
+        ctx.stroke();
+
+        for (const r of world.roads) {
+          if (r.points.length < 2) continue;
+          ctx.strokeStyle = PALETTE.roadAsphalt;
+          ctx.lineWidth = r.type === 'street' ? ts * 0.42 : (r.type === 'airport-loop' ? ts * 0.48 : ts * 0.56);
+          this.traceSmoothPath(ctx, r.points, ts);
+          ctx.stroke();
+        }
+      }
+
+      traceSmoothPath(ctx, pts, ts) {
+        ctx.beginPath();
+        const ox = ts * 0.5;
+        const oy = ts * 0.5;
+        ctx.moveTo(pts[0].x * ts + ox, pts[0].y * ts + oy);
+        for (let i = 1; i < pts.length - 1; i++) {
+          const xc = (pts[i].x + pts[i + 1].x) * 0.5 * ts + ox;
+          const yc = (pts[i].y + pts[i + 1].y) * 0.5 * ts + oy;
+          ctx.quadraticCurveTo(pts[i].x * ts + ox, pts[i].y * ts + oy, xc, yc);
+        }
+        const last = pts[pts.length - 1];
+        ctx.lineTo(last.x * ts + ox, last.y * ts + oy);
+      }
+
+      drawBuildings(ctx, world, ts) {
+        // 1. Residential Houses (with 45° drop shadow & 2-tone roof)
+        const hs = ts * 0.72;
+        for (const h of world.houses) {
+          const cx = h.x * ts + ts * 0.5;
+          const cy = h.y * ts + ts * 0.5;
+
+          // Long 45-degree soft shadow
+          ctx.fillStyle = PALETTE.shadowColor;
+          ctx.beginPath();
+          ctx.roundRect(cx - hs * 0.5 + 3.5, cy - hs * 0.5 + 3.5, hs, hs, 3);
+          ctx.fill();
+
+          // Base front wall
+          ctx.fillStyle = h.palette.base;
+          ctx.beginPath();
+          ctx.roundRect(cx - hs * 0.5, cy - hs * 0.5, hs, hs, 3);
+          ctx.fill();
+
+          // Pitched upper roof highlight
+          ctx.fillStyle = h.palette.roof;
+          ctx.beginPath();
+          ctx.roundRect(cx - hs * 0.5, cy - hs * 0.5, hs, hs * 0.68, 3);
+          ctx.fill();
+        }
+
+        // 2. Commercial / Industrial Destination Buildings (Recessed lot + 3D block + Demand Pins)
+        for (const d of world.destinations) {
+          const cx = d.x * ts + ts * 0.5;
+          const cy = d.y * ts + ts * 0.5;
+          const lotW = ts * 2.55;
+          const bldW = ts * 1.75;
+
+          // Recessed parking lot pad
+          ctx.fillStyle = '#e4e2dc';
+          ctx.strokeStyle = '#b6b4ae';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.roundRect(cx - lotW * 0.5, cy - lotW * 0.5, lotW, lotW, 6);
+          ctx.fill();
+          ctx.stroke();
+
+          // Long 45° building shadow
+          ctx.fillStyle = PALETTE.shadowColor;
+          ctx.beginPath();
+          if (d.isCircular) {
+            ctx.arc(cx + 6, cy + 6, bldW * 0.52, 0, Math.PI * 2);
+          } else {
+            ctx.roundRect(cx - bldW * 0.5 + 6, cy - bldW * 0.5 + 6, bldW, bldW, 5);
+          }
+          ctx.fill();
+
+          // Building Base & Roof
+          ctx.fillStyle = d.palette.base;
+          ctx.beginPath();
+          if (d.isCircular) {
+            ctx.arc(cx, cy, bldW * 0.52, 0, Math.PI * 2);
+          } else {
+            ctx.roundRect(cx - bldW * 0.5, cy - bldW * 0.5, bldW, bldW, 5);
+          }
+          ctx.fill();
+
+          ctx.fillStyle = d.palette.roof;
+          ctx.beginPath();
+          if (d.isCircular) {
+            ctx.arc(cx, cy - 2, bldW * 0.46, 0, Math.PI * 2);
+          } else {
+            ctx.roundRect(cx - bldW * 0.5 + 1.5, cy - bldW * 0.5 + 1.5, bldW - 3, bldW * 0.78, 4);
+          }
+          ctx.fill();
+
+          // Little Demand Pins arranged on the roof (Signature Mini Motorways detail!)
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = d.palette.pin;
+          ctx.lineWidth = 1.5;
+          for (let p = 0; p < d.pinsCount; p++) {
+            let px, py;
+            if (d.isCircular) {
+              const ang = (p / d.pinsCount) * Math.PI * 2;
+              px = cx + Math.cos(ang) * (bldW * 0.27);
+              py = cy - 2 + Math.sin(ang) * (bldW * 0.27);
+            } else {
+              const col = p % 3;
+              const row = Math.floor(p / 3);
+              px = cx - bldW * 0.26 + col * (bldW * 0.26);
+              py = cy - bldW * 0.22 + row * (bldW * 0.26);
+            }
+            ctx.beginPath();
+            ctx.arc(px, py, 2.7, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+
+          // Optional Urgent Red Timer Pin Badge (like in the reference screenshot!)
+          if (d.hasUrgentPin) {
+            const bx = cx - bldW * 0.35;
+            const by = cy - bldW * 0.55;
+            ctx.fillStyle = '#d9383a';
+            ctx.beginPath();
+            ctx.arc(bx, by, 7.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(bx, by, 3.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      /*************************************************************************
+       * DRAW MULTI-TIER AIRPORTS & LANDSIDE TERMINAL CURBSIDE ROADS
+       *************************************************************************/
+      drawAirports(ctx, world, ts) {
+        for (const ap of world.airports) {
+          const cx = ap.x * ts + ts * 0.5;
+          const cy = ap.y * ts + ts * 0.5;
+          const rwyLen = ap.halfLen * 2 * ts;
+          const rwyWid = ts * (ap.isHub ? 1.8 : 1.48);
+          const padLen = rwyLen + ts * 2.6;
+          const padWid = ap.halfWid * 2 * ts + ts * (ap.isHub ? 2.4 : 1.5);
+          const side = ap.apronSide;
+
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(ap.angleRad);
+
+          // 1. Airport Perimeter Concrete Apron Pad
+          ctx.fillStyle = '#e5e2dc';
+          ctx.strokeStyle = '#b6b4ae';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.roundRect(-padLen * 0.5, -padWid * 0.5, padLen, padWid, 14);
+          ctx.fill();
+          ctx.stroke();
+
+          if (ap.isHub) {
+            // =================================================================
+            // TIER 1: INTERNATIONAL DUAL-RUNWAY HUB (Parallel Runways L & R)
+            // =================================================================
+            const mainRwyY = -side * (ts * 1.15);
+            const outerRwyY = -side * (ts * 3.55);
+            const centralTaxiY = side * (ts * 0.55);
+
+            // High-speed parallel & cross-field taxiways
+            ctx.strokeStyle = '#9ca0a6';
+            ctx.lineWidth = ts * 0.5;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(-rwyLen * 0.41, centralTaxiY);
+            ctx.lineTo(rwyLen * 0.41, centralTaxiY);
+            for (const xFrac of [-0.41, -0.18, 0.18, 0.41]) {
+              ctx.moveTo(rwyLen * xFrac, centralTaxiY);
+              ctx.lineTo(rwyLen * (xFrac * 1.04), outerRwyY);
+            }
+            ctx.stroke();
+
+            // Yellow taxiway centerlines
+            ctx.strokeStyle = '#f4c24f';
+            ctx.lineWidth = 1.3;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(-rwyLen * 0.41, centralTaxiY);
+            ctx.lineTo(rwyLen * 0.41, centralTaxiY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Render both Parallel Runways (Primary + Secondary)
+            for (const [ry, rLenScale, rWidScale] of [[mainRwyY, 1.0, 1.0], [outerRwyY, 0.88, 0.86]]) {
+              const curLen = rwyLen * rLenScale;
+              const curWid = rwyWid * rWidScale;
+              ctx.fillStyle = '#36383e';
+              ctx.beginPath();
+              ctx.roundRect(-curLen * 0.5, ry - curWid * 0.5, curLen, curWid, 5);
+              ctx.fill();
+
+              ctx.strokeStyle = '#f2efe9';
+              ctx.lineWidth = 1.8;
+              ctx.setLineDash([8, 7]);
+              ctx.beginPath();
+              ctx.moveTo(-curLen * 0.4, ry);
+              ctx.lineTo(curLen * 0.4, ry);
+              ctx.stroke();
+              ctx.setLineDash([]);
+
+              // Runway piano-key threshold markings
+              ctx.fillStyle = '#f2efe9';
+              for (const endSign of [-1, 1]) {
+                const tx = endSign * (curLen * 0.44);
+                for (let b = -2; b <= 2; b++) {
+                  if (b === 0) continue;
+                  ctx.fillRect(tx - 4, ry + b * (curWid * 0.16) - 1, 8, 2);
+                }
+              }
+            }
+
+            // Multi-Wing International Terminal Concourse + Jetbridges
+            const termW = rwyLen * 0.46;
+            const termH = ts * 1.45;
+            const termY = side * (ts * 1.85);
+
+            // Jetbridge fingers extending toward central apron taxiway
+            ctx.strokeStyle = '#7c7f87';
+            ctx.lineWidth = 3.5;
+            for (let g = -3; g <= 3; g++) {
+              const gx = g * (termW * 0.12);
+              ctx.beginPath();
+              ctx.moveTo(gx, termY);
+              ctx.lineTo(gx, centralTaxiY + side * (ts * 0.35));
+              ctx.stroke();
+            }
+
+            // Terminal Shadow, Base & Roof
+            ctx.fillStyle = PALETTE.shadowColor;
+            ctx.beginPath();
+            ctx.roundRect(-termW * 0.5 + 5, termY - termH * 0.5 + 5, termW, termH, 7);
+            ctx.fill();
+
+            ctx.fillStyle = ap.palette.base;
+            ctx.beginPath();
+            ctx.roundRect(-termW * 0.5, termY - termH * 0.5, termW, termH, 7);
+            ctx.fill();
+
+            ctx.fillStyle = ap.palette.roof;
+            ctx.beginPath();
+            ctx.roundRect(-termW * 0.5 + 2, termY - termH * 0.5 + 2, termW - 4, termH * 0.76, 5);
+            ctx.fill();
+
+            // Demand Pins along Concourse Roof
+            ctx.fillStyle = '#ffffff';
+            for (let p = 0; p < ap.demandPins; p++) {
+              const px = -termW * 0.38 + (p / (ap.demandPins - 1)) * (termW * 0.76);
+              ctx.beginPath();
+              ctx.arc(px, termY, 2.7, 0, Math.PI * 2);
+              ctx.fill();
+            }
+
+            // Landside Short-Term Parking & Transit Plaza inside the Curbside Loop
+            const plazaY = side * (ts * 3.85);
+            ctx.fillStyle = '#d8d5ce';
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.roundRect(-termW * 0.28, plazaY - ts * 0.42, termW * 0.56, ts * 0.84, 5);
+            ctx.fill();
+            ctx.stroke();
+
+            // ATC Control Tower
+            const towerX = termW * 0.5 + ts * 0.75;
+            this.drawAirportTower(ctx, towerX, termY, ts, ap.palette.roof);
+          } else {
+            // =================================================================
+            // TIER 2 & 3: REGIONAL COMMERCIAL ('REG') OR AIR CARGO ('CRG')
+            // =================================================================
+            const mainRwyY = -side * (ts * 0.75);
+            const taxiY = side * (ts * 0.65);
+
+            ctx.strokeStyle = '#9ca0a6';
+            ctx.lineWidth = ts * 0.48;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(-rwyLen * 0.38, taxiY);
+            ctx.lineTo(rwyLen * 0.38, taxiY);
+            ctx.moveTo(-rwyLen * 0.38, taxiY);
+            ctx.lineTo(-rwyLen * 0.43, mainRwyY);
+            ctx.moveTo(0, taxiY);
+            ctx.lineTo(0, mainRwyY);
+            ctx.moveTo(rwyLen * 0.38, taxiY);
+            ctx.lineTo(rwyLen * 0.43, mainRwyY);
+            ctx.stroke();
+
+            // Main Asphalt Runway Strip
+            ctx.fillStyle = '#36383e';
+            ctx.beginPath();
+            ctx.roundRect(-rwyLen * 0.5, mainRwyY - rwyWid * 0.5, rwyLen, rwyWid, 5);
+            ctx.fill();
+
+            ctx.strokeStyle = '#f2efe9';
+            ctx.lineWidth = 1.8;
+            ctx.setLineDash([8, 7]);
+            ctx.beginPath();
+            ctx.moveTo(-rwyLen * 0.38, mainRwyY);
+            ctx.lineTo(rwyLen * 0.38, mainRwyY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            const termW = rwyLen * 0.38;
+            const termH = ts * 1.28;
+            const termY = side * (ts * 1.65);
+
+            if (ap.airportClass === 'CRG') {
+              // Cargo Airfield: Twin Modular Warehouse Sortation Pads
+              for (const wSign of [-1, 1]) {
+                const wx = wSign * (termW * 0.32);
+                const ww = termW * 0.48;
+                ctx.fillStyle = PALETTE.shadowColor;
+                ctx.beginPath();
+                ctx.roundRect(wx - ww * 0.5 + 4, termY - termH * 0.5 + 4, ww, termH, 4);
+                ctx.fill();
+
+                ctx.fillStyle = ap.palette.base;
+                ctx.beginPath();
+                ctx.roundRect(wx - ww * 0.5, termY - termH * 0.5, ww, termH, 4);
+                ctx.fill();
+
+                ctx.fillStyle = ap.palette.roof;
+                ctx.beginPath();
+                ctx.roundRect(wx - ww * 0.5 + 1.5, termY - termH * 0.5 + 1.5, ww - 3, termH * 0.75, 3);
+                ctx.fill();
+              }
+            } else {
+              // Regional Passenger Terminal Concourse
+              ctx.fillStyle = PALETTE.shadowColor;
+              ctx.beginPath();
+              ctx.roundRect(-termW * 0.5 + 5, termY - termH * 0.5 + 5, termW, termH, 6);
+              ctx.fill();
+
+              ctx.fillStyle = ap.palette.base;
+              ctx.beginPath();
+              ctx.roundRect(-termW * 0.5, termY - termH * 0.5, termW, termH, 6);
+              ctx.fill();
+
+              ctx.fillStyle = ap.palette.roof;
+              ctx.beginPath();
+              ctx.roundRect(-termW * 0.5 + 2, termY - termH * 0.5 + 2, termW - 4, termH * 0.76, 5);
+              ctx.fill();
+            }
+
+            // Demand Pins on Roof
+            ctx.fillStyle = '#ffffff';
+            for (let p = 0; p < ap.demandPins; p++) {
+              const px = -termW * 0.34 + (p / (ap.demandPins - 1)) * (termW * 0.68);
+              ctx.beginPath();
+              ctx.arc(px, termY, 2.5, 0, Math.PI * 2);
+              ctx.fill();
+            }
+
+            const towerX = termW * 0.5 + ts * 0.65;
+            this.drawAirportTower(ctx, towerX, termY, ts, ap.palette.roof);
+          }
+
+          ctx.restore();
+
+          // Floating Minimalist IATA & Tier Pill Tag
+          ctx.save();
+          ctx.font = '800 10px Inter, sans-serif';
+          const badgePrefix = ap.airportClass === 'HUB' ? '✈ HUB' : (ap.airportClass === 'CRG' ? '📦 CRG' : '✈ REG');
+          const tagText = `${badgePrefix} • ${ap.iata}`;
+          const tw = ctx.measureText(tagText).width + 14;
+          ctx.fillStyle = ap.isHub ? '#e85c90' : '#36383e';
+          ctx.beginPath();
+          ctx.roundRect(cx - tw * 0.5, cy - ts * (ap.isHub ? 3.2 : 2.5), tw, 18, 9);
+          ctx.fill();
+          ctx.fillStyle = '#f2efe9';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(tagText, cx, cy - ts * (ap.isHub ? 3.2 : 2.5) + 9);
+          ctx.restore();
+        }
+      }
+
+      drawAirportTower(ctx, towerX, termY, ts, accentColor) {
+        ctx.fillStyle = PALETTE.shadowColor;
+        ctx.beginPath();
+        ctx.arc(towerX + 4, termY + 4, ts * 0.48, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#36383e';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(towerX, termY, ts * 0.48, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = accentColor;
+        ctx.beginPath();
+        ctx.arc(towerX, termY, ts * 0.22, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      /*************************************************************************
+       * DRAW SWEEPING PINK MOTORWAYS, CLOVERLEAFS, STREET-STUBS & DIAMOND RAMPS
+       *************************************************************************/
+      traceMotorwaySamples(ctx, samples, ts, oxOffset = 0, oyOffset = 0) {
+        if (!samples || samples.length < 2) return;
+        const ox = ts * 0.5 + oxOffset;
+        const oy = ts * 0.5 + oyOffset;
+        ctx.beginPath();
+        ctx.moveTo(samples[0].x * ts + ox, samples[0].y * ts + oy);
+        for (let i = 1; i < samples.length; i++) {
+          ctx.lineTo(samples[i].x * ts + ox, samples[i].y * ts + oy);
+        }
+      }
+
+      drawInterchangesUnderlay(ctx, world, ts) {
+        const ox = ts * 0.5;
+        const oy = ts * 0.5;
+
+        for (const ic of world.interchanges) {
+          const cx = ic.x * ts + ox;
+          const cy = ic.y * ts + oy;
+
+          if (ic.type === 'cloverleaf') {
+            // =================================================================
+            // TRUE TANGENT-ALIGNED 4-QUADRANT CLOVERLEAF INTERCHANGE
+            // =================================================================
+            const uAx = Math.cos(ic.angleA);
+            const uAy = Math.sin(ic.angleA);
+            const uBx = Math.cos(ic.angleB);
+            const uBy = Math.sin(ic.angleB);
+
+            const quadrants = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+            const outerDist = ts * 2.75;
+            const outerCtrl = ts * 0.92;
+            const leafSpan  = ts * 2.45;
+
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // 1. Soft ground shadow under the entire cloverleaf ramp assembly
+            ctx.strokeStyle = 'rgba(54, 56, 62, 0.11)';
+            ctx.lineWidth = ts * 0.42;
+            for (const [sA, sB] of quadrants) {
+              const rAx = sA * uAx, rAy = sA * uAy;
+              const rBx = sB * uBx, rBy = sB * uBy;
+              // Outer slip ramp shadow
+              ctx.beginPath();
+              ctx.moveTo(cx + rAx * outerDist + 5, cy + rAy * outerDist + 7);
+              ctx.quadraticCurveTo(
+                cx + (rAx + rBx) * outerCtrl + 5,
+                cy + (rAy + rBy) * outerCtrl + 7,
+                cx + rBx * outerDist + 5,
+                cy + rBy * outerDist + 7
+              );
+              ctx.stroke();
+
+              // Inner 270° cloverleaf loop shadow
+              ctx.beginPath();
+              ctx.moveTo(cx + 5, cy + 7);
+              ctx.bezierCurveTo(
+                cx + rAx * leafSpan + 5, cy + rAy * leafSpan + 7,
+                cx + rBx * leafSpan + 5, cy + rBy * leafSpan + 7,
+                cx + 5, cy + 7
+              );
+              ctx.stroke();
+            }
+
+            // 2. Outer Concave Right-Turn Slip Ramps (Casing + Pink Fill)
+            for (const pass of ['border', 'fill']) {
+              ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : '#f48fb1';
+              ctx.lineWidth = pass === 'border' ? ts * 0.36 : ts * 0.22;
+              for (const [sA, sB] of quadrants) {
+                const rAx = sA * uAx, rAy = sA * uAy;
+                const rBx = sB * uBx, rBy = sB * uBy;
+                ctx.beginPath();
+                ctx.moveTo(cx + rAx * outerDist, cy + rAy * outerDist);
+                ctx.quadraticCurveTo(
+                  cx + (rAx + rBx) * outerCtrl,
+                  cy + (rAy + rBy) * outerCtrl,
+                  cx + rBx * outerDist,
+                  cy + rBy * outerDist
+                );
+                ctx.stroke();
+              }
+            }
+
+            // 3. Inner 270° Tangent Cloverleaf Loops (Casing + Pink Fill)
+            for (const pass of ['border', 'fill']) {
+              ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : PALETTE.motorwayFill;
+              ctx.lineWidth = pass === 'border' ? ts * 0.38 : ts * 0.24;
+              for (const [sA, sB] of quadrants) {
+                const rAx = sA * uAx, rAy = sA * uAy;
+                const rBx = sB * uBx, rBy = sB * uBy;
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.bezierCurveTo(
+                  cx + rAx * leafSpan, cy + rAy * leafSpan,
+                  cx + rBx * leafSpan, cy + rBy * leafSpan,
+                  cx, cy
+                );
+                ctx.stroke();
+              }
+            }
+            ctx.restore();
+          } else if (ic.type === 'diamond-ramp') {
+            // =================================================================
+            // CURVED S-RAMP PARCLO / DIAMOND INTERCHANGE & SURFACE UNDERPASS
+            // =================================================================
+            const t1x = ic.c1x * ts + ox;
+            const t1y = ic.c1y * ts + oy;
+            const t2x = ic.c2x * ts + ox;
+            const t2y = ic.c2y * ts + oy;
+            const connX = (ic.connectX !== undefined ? ic.connectX : ic.c1x) * ts + ox;
+            const connY = (ic.connectY !== undefined ? ic.connectY : ic.c1y) * ts + oy;
+
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // 1. Clean Straight Perpendicular Surface Underpass Road + Tie to A* Node
+            for (const [stroke, width] of [[PALETTE.roadCasing, ts * 0.66], [PALETTE.roadAsphalt, ts * 0.48]]) {
+              ctx.strokeStyle = stroke;
+              ctx.lineWidth = width;
+              ctx.beginPath();
+              ctx.moveTo(t1x, t1y);
+              ctx.lineTo(t2x, t2y);
+              // Short tie-in segment to the integer grid node where the A* road starts
+              const nearTx = Math.hypot(connX - t1x, connY - t1y) < Math.hypot(connX - t2x, connY - t2y) ? t1x : t2x;
+              const nearTy = Math.hypot(connX - t1x, connY - t1y) < Math.hypot(connX - t2x, connY - t2y) ? t1y : t2y;
+              ctx.moveTo(nearTx, nearTy);
+              ctx.lineTo(connX, connY);
+              ctx.stroke();
+            }
+
+            // 2. Four Smooth Curved Bezier Slip-Ramps Peeling Tangentially off the Expressway
+            ctx.translate(cx, cy);
+            ctx.rotate(ic.angleRad);
+
+            const along = ts * 2.45;
+            const across = ts * 2.55;
+
+            for (const pass of ['border', 'fill']) {
+              ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : '#f48fb1';
+              ctx.lineWidth = pass === 'border' ? ts * 0.36 : ts * 0.22;
+
+              for (const sxSign of [-1, 1]) {
+                for (const sySign of [-1, 1]) {
+                  ctx.beginPath();
+                  ctx.moveTo(sxSign * along, 0);
+                  ctx.bezierCurveTo(
+                    sxSign * along * 0.42, 0,
+                    sxSign * along * 0.18, sySign * across * 0.78,
+                    0, sySign * across
+                  );
+                  ctx.stroke();
+                }
+              }
+            }
+
+            // 3. Crisp Surface Roundabout Rings at Both Underpass Terminals
+            for (const sySign of [-1, 1]) {
+              ctx.fillStyle = '#ffffff';
+              ctx.strokeStyle = '#36383e';
+              ctx.lineWidth = 2.0;
+              ctx.beginPath();
+              ctx.arc(0, sySign * across, ts * 0.32, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+        }
+      }
+
+      drawMotorways(ctx, world, ts) {
+        // 1. Draw Cloverleaf Loops & Curved Diamond Slip-Ramps underneath the main decks
+        this.drawInterchangesUnderlay(ctx, world, ts);
+
+        // 2. Draw Mainline Elevated Pink Expressways
+        for (const mw of world.motorways) {
+          const samples = mw.samples;
+          if (!samples || samples.length < 2) continue;
+
+          const sx = mw.sx * ts + ts * 0.5;
+          const sy = mw.sy * ts + ts * 0.5;
+          const ex = mw.ex * ts + ts * 0.5;
+          const ey = mw.ey * ts + ts * 0.5;
+
+          // Compute exact arrival tangents at both ends of the expressway
+          const startAng = Math.atan2(samples[0].y - samples[1].y, samples[0].x - samples[1].x);
+          const nSamp = samples.length;
+          const endAng = Math.atan2(samples[nSamp - 1].y - samples[nSamp - 2].y, samples[nSamp - 1].x - samples[nSamp - 2].x);
+
+          ctx.save();
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+
+          // Soft Elevated Overpass Drop Shadow on the ground below
+          ctx.strokeStyle = 'rgba(54, 56, 62, 0.14)';
+          ctx.lineWidth = ts * 0.92;
+          this.traceMotorwaySamples(ctx, samples, ts, 8, 11);
+          ctx.stroke();
+
+          // Draws smooth divided trumpet slip-forks where the expressway meets its arterial terminal
+          for (const [tx, ty, ang] of [[sx, sy, startAng], [ex, ey, endAng]]) {
+            ctx.save();
+            ctx.translate(tx, ty);
+            ctx.rotate(ang);
+            const forkLen = ts * 0.95;
+            const spread = ts * 0.36;
+            for (const [stroke, lw] of [[PALETTE.motorwayBorder, ts * 0.36], ['#f48fb1', ts * 0.22]]) {
+              ctx.strokeStyle = stroke;
+              ctx.lineWidth = lw;
+              ctx.beginPath();
+              ctx.moveTo(-forkLen, 0);
+              ctx.quadraticCurveTo(-forkLen * 0.35, -spread, 0, -spread * 0.85);
+              ctx.moveTo(-forkLen, 0);
+              ctx.quadraticCurveTo(-forkLen * 0.35, spread, 0, spread * 0.85);
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+
+          // Vibrant Pink Motorway Outer Casing
+          ctx.strokeStyle = PALETTE.motorwayBorder;
+          ctx.lineWidth = ts * 0.88;
+          this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
+          ctx.stroke();
+
+          // Translucent Pink Motorway Deck
+          ctx.strokeStyle = PALETTE.motorwayFill;
+          ctx.lineWidth = ts * 0.72;
+          this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
+          ctx.stroke();
+
+          // Crisp Median Divider Line
+          ctx.strokeStyle = PALETTE.motorwayCore;
+          ctx.lineWidth = 2.0;
+          this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
+          ctx.stroke();
+
+          // Grade-Separated Roundabout Interchange Rings at both Street-Stub Terminations
+          for (const [rx, ry] of [[sx, sy], [ex, ey]]) {
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#36383e';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.arc(rx, ry, ts * 0.44, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+
+          // Iconic Highway Shield Badge ([1], [2]) at the path midpoint
+          const midPt = samples[Math.floor(samples.length * 0.36)];
+          const bx = midPt.x * ts + ts * 0.5;
+          const by = midPt.y * ts + ts * 0.5;
+
+          ctx.fillStyle = '#f2efe9';
+          ctx.strokeStyle = '#36383e';
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          const sw = 11;
+          const sh = 12;
+          ctx.moveTo(bx - sw, by - sh * 0.75);
+          ctx.lineTo(bx + sw, by - sh * 0.75);
+          ctx.lineTo(bx + sw, by + sh * 0.15);
+          ctx.quadraticCurveTo(bx, by + sh, bx, by + sh);
+          ctx.quadraticCurveTo(bx, by + sh, bx - sw, by + sh * 0.15);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = '#36383e';
+          ctx.font = '800 11px Inter, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(mw.number), bx, by + 0.5);
+          ctx.restore();
+        }
+
+        // 3. Draw Grade-Separated Overpass Bridge Spans at Cloverleaf & Diamond Centers
+        for (const ic of world.interchanges) {
+          if (ic.type === 'cloverleaf') {
+            const cx = ic.x * ts + ts * 0.5;
+            const cy = ic.y * ts + ts * 0.5;
+            const span = ts * 1.15;
+            const ux = Math.cos(ic.angleB);
+            const uy = Math.sin(ic.angleB);
+            const nx = -uy;
+            const ny = ux;
+            const halfDeck = ts * 0.46;
+
+            ctx.save();
+            ctx.lineCap = 'butt';
+
+            // Upper deck shadow cast onto the lower crossing motorway
+            ctx.strokeStyle = 'rgba(54, 56, 62, 0.22)';
+            ctx.lineWidth = ts * 0.96;
+            ctx.beginPath();
+            ctx.moveTo(cx - ux * span + 3, cy - uy * span + 4);
+            ctx.lineTo(cx + ux * span + 3, cy + uy * span + 4);
+            ctx.stroke();
+
+            // Redraw the upper motorway span cleanly over the lower motorway
+            ctx.strokeStyle = PALETTE.motorwayBorder;
+            ctx.lineWidth = ts * 0.88;
+            ctx.beginPath();
+            ctx.moveTo(cx - ux * span, cy - uy * span);
+            ctx.lineTo(cx + ux * span, cy + uy * span);
+            ctx.stroke();
+
+            ctx.strokeStyle = '#ee6998';
+            ctx.lineWidth = ts * 0.72;
+            ctx.stroke();
+
+            ctx.strokeStyle = PALETTE.motorwayCore;
+            ctx.lineWidth = 2.0;
+            ctx.stroke();
+
+            // Dark charcoal bridge parapet rails along both sides of the upper overpass deck
+            ctx.strokeStyle = '#36383e';
+            ctx.lineWidth = 2.2;
+            for (const side of [-1, 1]) {
+              ctx.beginPath();
+              ctx.moveTo(cx - ux * span + nx * halfDeck * side, cy - uy * span + ny * halfDeck * side);
+              ctx.lineTo(cx + ux * span + nx * halfDeck * side, cy + uy * span + ny * halfDeck * side);
+              ctx.stroke();
+            }
+            ctx.restore();
+          } else if (ic.type === 'diamond-ramp') {
+            // Draw subtle bridge parapet rails where the expressway crosses over the surface underpass
+            const cx = ic.x * ts + ts * 0.5;
+            const cy = ic.y * ts + ts * 0.5;
+            const span = ts * 0.65;
+            const ux = Math.cos(ic.angleRad);
+            const uy = Math.sin(ic.angleRad);
+            const nx = -uy;
+            const ny = ux;
+            const halfDeck = ts * 0.46;
+
+            ctx.save();
+            ctx.strokeStyle = '#36383e';
+            ctx.lineWidth = 2.0;
+            for (const side of [-1, 1]) {
+              ctx.beginPath();
+              ctx.moveTo(cx - ux * span + nx * halfDeck * side, cy - uy * span + ny * halfDeck * side);
+              ctx.lineTo(cx + ux * span + nx * halfDeck * side, cy + uy * span + ny * halfDeck * side);
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+        }
+      }
+
+      drawMotorways(ctx, world, ts) {
+        // 1. Draw Cloverleaf Loops, Diamond Slip-Ramps & Street-Stub Throats underneath the main decks
+        this.drawInterchangesUnderlay(ctx, world, ts);
+
+        // 2. Draw Mainline Elevated Pink Expressways
+        for (const mw of world.motorways) {
+          const samples = mw.samples;
+          if (!samples || samples.length < 2) continue;
+
+          const sx = mw.sx * ts + ts * 0.5;
+          const sy = mw.sy * ts + ts * 0.5;
+          const ex = mw.ex * ts + ts * 0.5;
+          const ey = mw.ey * ts + ts * 0.5;
+
+          ctx.save();
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+
+          // Soft Elevated Overpass Drop Shadow on the ground below
+          ctx.strokeStyle = 'rgba(54, 56, 62, 0.14)';
+          ctx.lineWidth = ts * 0.92;
+          this.traceMotorwaySamples(ctx, samples, ts, 8, 11);
+          ctx.stroke();
+
+          // Vibrant Pink Motorway Outer Casing
+          ctx.strokeStyle = PALETTE.motorwayBorder;
+          ctx.lineWidth = ts * 0.88;
+          this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
+          ctx.stroke();
+
+          // Translucent Pink Motorway Deck
+          ctx.strokeStyle = PALETTE.motorwayFill;
+          ctx.lineWidth = ts * 0.72;
+          this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
+          ctx.stroke();
+
+          // Crisp Median Divider Line
+          ctx.strokeStyle = PALETTE.motorwayCore;
+          ctx.lineWidth = 2.0;
+          this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
+          ctx.stroke();
+
+          // Grade-Separated Interchange Rings at both Street-Stub Terminations
+          for (const [rx, ry] of [[sx, sy], [ex, ey]]) {
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#36383e';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.arc(rx, ry, ts * 0.44, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+
+          // Iconic Highway Shield Badge ([1], [2]) at the path midpoint
+          const midPt = samples[Math.floor(samples.length * 0.36)];
+          const bx = midPt.x * ts + ts * 0.5;
+          const by = midPt.y * ts + ts * 0.5;
+
+          ctx.fillStyle = '#f2efe9';
+          ctx.strokeStyle = '#36383e';
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          const sw = 11;
+          const sh = 12;
+          ctx.moveTo(bx - sw, by - sh * 0.75);
+          ctx.lineTo(bx + sw, by - sh * 0.75);
+          ctx.lineTo(bx + sw, by + sh * 0.15);
+          ctx.quadraticCurveTo(bx, by + sh, bx, by + sh);
+          ctx.quadraticCurveTo(bx, by + sh, bx - sw, by + sh * 0.15);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = '#36383e';
+          ctx.font = '800 11px Inter, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(mw.number), bx, by + 0.5);
+          ctx.restore();
+        }
+
+        // 3. Draw Overpass Bridge Deck Accents at Cloverleaf Centers
+        for (const ic of world.interchanges) {
+          if (ic.type !== 'cloverleaf') continue;
+          const cx = ic.x * ts + ts * 0.5;
+          const cy = ic.y * ts + ts * 0.5;
+          ctx.save();
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#36383e';
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, ts * 0.36, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      drawCars(ctx, world, sim, ts) {
+        const ox = ts * 0.5;
+        const oy = ts * 0.5;
+
+        for (const car of sim.cars) {
+          let x, y, ang;
+          if (car.mode === 'motorway') {
+            const samples = car.mw.samples;
+            if (!samples || samples.length < 2) continue;
+            const scaled = Math.max(0, Math.min(0.9999, car.t)) * (samples.length - 1);
+            const idx = Math.floor(scaled);
+            const frac = scaled - idx;
+            const p0 = samples[idx];
+            const p1 = samples[idx + 1];
+            x = (p0.x + (p1.x - p0.x) * frac) * ts + ox;
+            y = (p0.y + (p1.y - p0.y) * frac) * ts + oy;
+            ang = Math.atan2((p1.y - p0.y) * car.dir, (p1.x - p0.x) * car.dir);
+          } else {
+            const p0 = car.road.points[car.segIdx];
+            const p1 = car.road.points[car.segIdx + 1];
+            if (!p0 || !p1) continue;
+            const t = car.dir > 0 ? car.segT : 1 - car.segT;
+            x = (p0.x + (p1.x - p0.x) * t) * ts + ox;
+            y = (p0.y + (p1.y - p0.y) * t) * ts + oy;
+            ang = Math.atan2((p1.y - p0.y) * car.dir, (p1.x - p0.x) * car.dir);
+          }
+
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(ang);
+          ctx.fillStyle = car.color;
+          ctx.beginPath();
+          ctx.roundRect(-4.2, -2.4, 8.4, 4.8, 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      drawPlanes(ctx, world, sim, ts) {
+        const ox = ts * 0.5;
+        const oy = ts * 0.5;
+
+        for (const p of sim.planes) {
+          const sx = p.origin.x * ts + ox;
+          const sy = p.origin.y * ts + oy;
+          const ex = p.dest.x * ts + ox;
+          const ey = p.dest.y * ts + oy;
+
+          // Draw subtle dashed airway arc between airports
+          const mx = (sx + ex) * 0.5;
+          const my = (sy + ey) * 0.5 - 55;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(54, 56, 62, 0.14)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([5, 6]);
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.quadraticCurveTo(mx, my, ex, ey);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Evaluate aircraft position and altitude scale along the flight arc
+          const t = p.progress;
+          const mt = 1 - t;
+          const px = mt * mt * sx + 2 * mt * t * mx + t * t * ex;
+          const py = mt * mt * sy + 2 * mt * t * my + t * t * ey;
+          const vx = 2 * mt * (mx - sx) + 2 * t * (ex - mx);
+          const vy = 2 * mt * (my - sy) + 2 * t * (ey - my);
+          const ang = Math.atan2(vy, vx);
+          const altitude = Math.sin(t * Math.PI); // 0 on runway, 1 at cruise apex
+
+          // Ground shadow of aircraft (offsets further when at high altitude!)
+          const shadowOff = 4 + altitude * 22;
+          this.drawAirplaneSilhouette(ctx, px + shadowOff, py + shadowOff, ang, 0.75 + altitude * 0.2, 'rgba(54, 56, 62, 0.18)');
+
+          // Crisp White & Color-Accented Minimalist Aircraft
+          this.drawAirplaneSilhouette(ctx, px, py, ang, 0.85 + altitude * 0.35, '#ffffff', '#36383e');
+          ctx.restore();
+        }
+      }
+
+      drawAirplaneSilhouette(ctx, x, y, ang, scale, fill, stroke = null) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(ang);
+        ctx.scale(scale, scale);
+
+        ctx.fillStyle = fill;
+        if (stroke) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = 1.4;
+        }
+
+        ctx.beginPath();
+        // Minimalist geometric swept-wing jet
+        ctx.moveTo(11, 0);
+        ctx.lineTo(4, 2.2);
+        ctx.lineTo(-2, 10.5);
+        ctx.lineTo(-5, 10.5);
+        ctx.lineTo(-2.5, 2.2);
+        ctx.lineTo(-8.5, 2.0);
+        ctx.lineTo(-11, 5.5);
+        ctx.lineTo(-12.5, 5.5);
+        ctx.lineTo(-11, 0);
+        ctx.lineTo(-12.5, -5.5);
+        ctx.lineTo(-11, -5.5);
+        ctx.lineTo(-8.5, -2.0);
+        ctx.lineTo(-2.5, -2.2);
+        ctx.lineTo(-5, -10.5);
+        ctx.lineTo(-2, -10.5);
+        ctx.lineTo(4, -2.2);
+        ctx.closePath();
+        ctx.fill();
+        if (stroke) ctx.stroke();
+        ctx.restore();
+      }
+
+      /*************************************************************************
+       * ALGORITHMIC INSPECTION OVERLAYS
+       *************************************************************************/
+      drawAirportSolverOverlay(ctx, world, ts) {
+        ctx.save();
+        // 1. Render Multi-Criteria Airport Candidate Suitability Heatmap
+        for (let y = 0; y < world.H; y += 2) {
+          for (let x = 0; x < world.W; x += 2) {
+            const score = world.airportHeatmap[world.idx(x, y)];
+            if (score > 0.05) {
+              ctx.fillStyle = score > 0.65
+                ? `rgba(16, 185, 129, ${score * 0.55})`
+                : `rgba(245, 158, 11, ${score * 0.45})`;
+              ctx.fillRect(x * ts, y * ts, ts * 2, ts * 2);
+            }
+          }
+        }
+
+        // 2. Render NIMBY Urban Noise Exclusion Rings around Towns
+        for (const t of world.towns) {
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.55)';
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.08)';
+          ctx.lineWidth = 1.8;
+          ctx.setLineDash([5, 5]);
+          ctx.beginPath();
+          ctx.arc(t.x * ts + ts * 0.5, t.y * ts + ts * 0.5, t.urbanRadius * 0.78 * ts, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // 3. Render Trapezoidal Approach Obstacle-Clearance Funnels on Both Runway Ends
+        for (const ap of world.airports) {
+          const cx = ap.x * ts + ts * 0.5;
+          const cy = ap.y * ts + ts * 0.5;
+          const rwyHalf = ap.halfLen * ts;
+          const appLen = ap.approachLen * ts;
+
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(ap.angleRad);
+
+          for (const sign of [-1, 1]) {
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
+            ctx.strokeStyle = '#059669';
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(sign * rwyHalf, -ts * 0.9);
+            ctx.lineTo(sign * (rwyHalf + appLen), -ts * 3.6);
+            ctx.lineTo(sign * (rwyHalf + appLen), ts * 3.6);
+            ctx.lineTo(sign * rwyHalf, ts * 0.9);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+        ctx.restore();
+      }
+
+      drawHierarchyOverlay(ctx, world, ts) {
+        ctx.save();
+        // Draw Logistics Graph Edges & Town Hierarchy Badges
+        for (const t of world.towns) {
+          const cx = t.x * ts + ts * 0.5;
+          const cy = t.y * ts + ts * 0.5;
+
+          ctx.strokeStyle = t.palette.base;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.arc(cx, cy, t.urbanRadius * ts, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Town Label Card
+          ctx.font = '800 11px Inter, sans-serif';
+          const label = `${t.name} (T${t.tier})`;
+          const w = ctx.measureText(label).width + 14;
+          ctx.fillStyle = '#36383e';
+          ctx.beginPath();
+          ctx.roundRect(cx - w * 0.5, cy - 26, w, 20, 6);
+          ctx.fill();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, cx, cy - 16);
+        }
+        ctx.restore();
+      }
+
+      drawHydrologyOverlay(ctx, world, ts) {
+        ctx.save();
+        for (let y = 0; y < world.H; y += 2) {
+          for (let x = 0; x < world.W; x += 2) {
+            const id = world.idx(x, y);
+            if (world.waterMask[id] === 0) {
+              const u = world.urbanSuitability[id];
+              ctx.fillStyle = `rgba(59, 130, 246, ${u * 0.48})`;
+              ctx.fillRect(x * ts, y * ts, ts * 2, ts * 2);
+            }
+          }
+        }
+        // Highlight main river confluence node
+        if (world.confluencePoint) {
+          const cx = world.confluencePoint.x * ts;
+          const cy = world.confluencePoint.y * ts;
+          ctx.strokeStyle = '#0284c7';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(cx, cy, ts * 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      drawSelectionHighlight(ctx, entity, ts) {
+        const cx = entity.x * ts + ts * 0.5;
+        const cy = entity.y * ts + ts * 0.5;
+        const rad = (entity.urbanRadius ? entity.urbanRadius * 0.85 : entity.halfLen + 2) * ts;
+
+        ctx.save();
+        ctx.strokeStyle = '#36383e';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    /***************************************************************************
+     * 6. APPLICATION CONTROLLER & INTERACTIVE UI BINDINGS
+     ***************************************************************************/
+    const canvas = document.getElementById('worldCanvas');
+    const renderer = new MiniMotorwaysRenderer(canvas);
+    let currentWorld = null;
+    let simulator = null;
+    let simSpeed = 1;
+    const daysOfWeek = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
+    function getGeneratorConfig() {
+      return {
+        seed: document.getElementById('seedInput').value.trim() || 'MINI-TYCOON',
+        archetype: document.getElementById('archetypeSelect').value,
+        expresswayAlgo: document.getElementById('expresswayAlgoSelect').value,
+        airportMix: document.getElementById('airportMixSelect').value,
+        includeIntermediateRamps: document.getElementById('toggleInterRamps').checked,
+        waterCoverage: parseInt(document.getElementById('sliderWater').value, 10),
+        townCount: parseInt(document.getElementById('sliderTowns').value, 10),
+        buildingDensity: parseInt(document.getElementById('sliderDensity').value, 10),
+        airportCount: parseInt(document.getElementById('sliderAirports').value, 10),
+        windAxis: parseInt(document.getElementById('sliderWind').value, 10)
+      };
+    }
+
+    function updateAirportSliderLabel() {
+      const total = parseInt(document.getElementById('sliderAirports').value, 10);
+      const mix = document.getElementById('airportMixSelect').value;
+      let hubs = 1;
+      let cargo = 0;
+      if (mix === 'dual-hub' && total >= 2) hubs = 2;
+      if (mix === 'hub-reg-cargo' && total >= 3) cargo = 1;
+      const reg = Math.max(0, total - hubs - cargo);
+      const parts = [`${hubs} Hub`];
+      if (reg > 0) parts.push(`${reg} Reg`);
+      if (cargo > 0) parts.push(`${cargo} Crg`);
+      document.getElementById('valAirports').textContent = `${total} (${parts.join(', ')})`;
+    }
+
+    function rebuildWorld(preserveCamera = false) {
+      updateAirportSliderLabel();
+      const cfg = getGeneratorConfig();
+      currentWorld = new ProceduralLogisticsWorld(cfg).generate();
+      simulator = new LogisticsSimulator(currentWorld);
+      renderer.bakeStaticTerrain(currentWorld);
+      renderer.selectedEntity = null;
+      document.getElementById('inspectorCard').classList.add('hidden');
+
+      if (!preserveCamera) {
+        renderer.fitCamera(currentWorld);
+      }
+      updateTelemetryUI(currentWorld);
+    }
+
+    function updateTelemetryUI(world) {
+      document.getElementById('genTimeBadge').textContent = `${world.genTimeMs} ms`;
+      document.getElementById('statPop').textContent = world.houses.length + world.destinations.length;
+      const hubs = world.airports.filter(a => a.airportClass === 'HUB').length;
+      const others = world.airports.length - hubs;
+      document.getElementById('statAirports').textContent = `${hubs}H / ${others}R`;
+      const clovers = world.interchanges.filter(i => i.type === 'cloverleaf').length;
+      const ramps = world.interchanges.filter(i => i.type === 'diamond-ramp').length;
+      document.getElementById('statBridges').textContent = `${clovers}C / ${ramps}R`;
+
+      const logEl = document.getElementById('pipelineLog');
+      logEl.innerHTML = world.logs.map(l => `<div class="flex items-start gap-1.5"><span class="text-pink-600 font-bold">•</span><span>${l}</span></div>`).join('');
+    }
+
+    function openEntityInspector(type, entity) {
+      const card = document.getElementById('inspectorCard');
+      const badge = document.getElementById('inspBadge');
+      const code = document.getElementById('inspCode');
+      const title = document.getElementById('inspTitle');
+      const body = document.getElementById('inspBody');
+
+      card.classList.remove('hidden');
+
+      if (type === 'airport') {
+        badge.textContent = entity.classLabel.toUpperCase();
+        badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-[#e85c90] text-white';
+        code.textContent = `IATA: ${entity.iata} • ${entity.runwayLabel}`;
+        title.textContent = entity.name;
+        body.innerHTML = `
+          <div class="grid grid-cols-3 gap-1.5 text-center bg-stone-200/50 p-2 rounded-xl">
+            <div>
+              <div class="mono font-extrabold text-[#36383e]">${entity.runwayCount} RWY</div>
+              <div class="text-[10px] text-stone-500">Configuration</div>
+            </div>
+            <div>
+              <div class="mono font-extrabold text-emerald-600">${entity.approachClearance}%</div>
+              <div class="text-[10px] text-stone-500">Approach Cone</div>
+            </div>
+            <div>
+              <div class="mono font-extrabold text-[#36383e]">${entity.distToCBD} tiles</div>
+              <div class="text-[10px] text-stone-500">To Host CBD</div>
+            </div>
+          </div>
+          <p class="text-[11px] leading-relaxed">
+            Served by a dedicated <b>Landside Curbside Terminal Loop Road</b> and dual-carriageway access spine stub anchored directly into <b>Motorway [${entity.motorwayId || 1}]</b> near <b>${entity.hostTownName}</b>.
+          </p>
+        `;
+      } else {
+        badge.textContent = `TIER ${entity.tier} ${entity.tierTitle.toUpperCase()}`;
+        badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-[#36383e] text-white';
+        code.textContent = `CODE: ${entity.iata}`;
+        title.textContent = entity.name;
+        const ap = entity.airportId !== null ? currentWorld.airports[entity.airportId] : null;
+        body.innerHTML = `
+          <div class="grid grid-cols-3 gap-1.5 text-center bg-stone-200/50 p-2 rounded-xl">
+            <div>
+              <div class="mono font-extrabold text-[#36383e]">${entity.suitabilityScore}%</div>
+              <div class="text-[10px] text-stone-500">Hydrology Fit</div>
+            </div>
+            <div>
+              <div class="mono font-extrabold text-[#36383e]">${entity.housesCount}</div>
+              <div class="text-[10px] text-stone-500">Houses</div>
+            </div>
+            <div>
+              <div class="mono font-extrabold text-[#36383e]">${entity.destinationsCount}</div>
+              <div class="text-[10px] text-stone-500">Industry Lots</div>
+            </div>
+          </div>
+          <p class="text-[11px] leading-relaxed">
+            Seeded via Central Place Theory near alluvial water access. ${ap ? `Served directly by <b>${ap.name} (${ap.iata})</b>.` : 'Connected via regional A* arterial highway network and expressway street-stubs.'}
+          </p>
+        `;
+      }
+    }
+
+    // Resize Handling
+    function handleResize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      if (currentWorld) renderer.fitCamera(currentWorld);
+    }
+    window.addEventListener('resize', handleResize);
+
+    // Pan & Zoom + Click Inspection on Canvas
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let pointerDownPos = { x: 0, y: 0 };
+
+    canvas.addEventListener('pointerdown', (e) => {
+      isDragging = true;
+      dragStart.x = e.clientX - renderer.camera.x;
+      dragStart.y = e.clientY - renderer.camera.y;
+      pointerDownPos = { x: e.clientX, y: e.clientY };
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+      renderer.camera.x = e.clientX - dragStart.x;
+      renderer.camera.y = e.clientY - dragStart.y;
+    });
+
+    window.addEventListener('pointerup', (e) => {
+      if (!isDragging) return;
+      isDragging = false;
+      const moveDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+      if (moveDist < 6 && currentWorld) {
+        // Convert screen click to world tile coordinates
+        const wx = (e.clientX - renderer.camera.x) / (renderer.camera.zoom * currentWorld.tileSize);
+        const wy = (e.clientY - renderer.camera.y) / (renderer.camera.zoom * currentWorld.tileSize);
+
+        // Check Airports first
+        for (const ap of currentWorld.airports) {
+          if (Math.hypot(wx - ap.x, wy - ap.y) <= ap.halfLen + 2) {
+            renderer.selectedEntity = ap;
+            openEntityInspector('airport', ap);
+            return;
+          }
+        }
+        // Check Towns
+        for (const t of currentWorld.towns) {
+          if (Math.hypot(wx - t.x, wy - t.y) <= t.urbanRadius) {
+            renderer.selectedEntity = t;
+            openEntityInspector('town', t);
+            return;
+          }
+        }
+        renderer.selectedEntity = null;
+        document.getElementById('inspectorCard').classList.add('hidden');
+      }
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
+      const newZoom = Math.max(0.35, Math.min(3.5, renderer.camera.zoom * zoomFactor));
+      // Zoom around cursor
+      renderer.camera.x = e.clientX - (e.clientX - renderer.camera.x) * (newZoom / renderer.camera.zoom);
+      renderer.camera.y = e.clientY - (e.clientY - renderer.camera.y) * (newZoom / renderer.camera.zoom);
+      renderer.camera.zoom = newZoom;
+    }, { passive: false });
+
+    // UI Control Bindings
+    document.getElementById('toggleDrawerBtn').addEventListener('click', () => {
+      document.getElementById('generatorDrawer').classList.toggle('hidden');
+    });
+
+    document.getElementById('closeInspectorBtn').addEventListener('click', () => {
+      renderer.selectedEntity = null;
+      document.getElementById('inspectorCard').classList.add('hidden');
+    });
+
+    document.getElementById('resetViewBtn').addEventListener('click', () => {
+      if (currentWorld) renderer.fitCamera(currentWorld);
+    });
+
+    document.getElementById('randomSeedBtn').addEventListener('click', () => {
+      const prefixes = ['METRO', 'DELTA', 'TYCOON', 'AIRWAY', 'VALLEY', 'HARBOR'];
+      const p = prefixes[Math.floor(Math.random() * prefixes.length)];
+      const num = Math.floor(100 + Math.random() * 900);
+      document.getElementById('seedInput').value = `${p}-${num}`;
+      rebuildWorld(false);
+    });
+
+    document.getElementById('seedInput').addEventListener('change', () => rebuildWorld(true));
+    document.getElementById('archetypeSelect').addEventListener('change', () => rebuildWorld(false));
+    document.getElementById('expresswayAlgoSelect').addEventListener('change', () => rebuildWorld(true));
+    document.getElementById('airportMixSelect').addEventListener('change', () => rebuildWorld(true));
+    document.getElementById('toggleInterRamps').addEventListener('change', () => rebuildWorld(true));
+
+    const windNames = { '-1': 'Auto (Seed)', '0': '09/27 (E–W)', '1': '04/22 (NE–SW)', '2': '18/36 (N–S)', '3': '13/31 (NW–SE)' };
+
+    document.getElementById('sliderWater').addEventListener('input', (e) => {
+      document.getElementById('valWater').textContent = `${e.target.value}%`;
+      rebuildWorld(true);
+    });
+    document.getElementById('sliderTowns').addEventListener('input', (e) => {
+      document.getElementById('valTowns').textContent = `${e.target.value} Towns`;
+      rebuildWorld(true);
+    });
+    document.getElementById('sliderDensity').addEventListener('input', (e) => {
+      document.getElementById('valDensity').textContent = `${e.target.value}%`;
+      rebuildWorld(true);
+    });
+    document.getElementById('sliderAirports').addEventListener('input', () => {
+      updateAirportSliderLabel();
+      rebuildWorld(true);
+    });
+    document.getElementById('sliderWind').addEventListener('input', (e) => {
+      document.getElementById('valWind').textContent = windNames[e.target.value];
+      rebuildWorld(true);
+    });
+
+    // Layer Overlay Buttons
+    const layerBadges = {
+      aesthetic: 'Mini Motorways View',
+      airport: 'Airport Solver & Cones',
+      hierarchy: 'Central Place Graph',
+      hydrology: 'Hydrology & Fertility'
+    };
+    document.querySelectorAll('.layer-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderer.activeLayer = btn.dataset.layer;
+        document.getElementById('activeLayerBadge').textContent = layerBadges[renderer.activeLayer];
+      });
+    });
+
+    // Simulation Speed Buttons
+    document.querySelectorAll('.speed-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.speed-btn').forEach(b => {
+          b.classList.remove('bg-[#36383e]', 'text-[#f2efe9]');
+          b.classList.add('text-stone-500');
+        });
+        btn.classList.remove('text-stone-500');
+        btn.classList.add('bg-[#36383e]', 'text-[#f2efe9]');
+        simSpeed = parseFloat(btn.dataset.speed);
+      });
+    });
+
+    // Main Animation Loop
+    let lastTime = performance.now();
+    function animate(now) {
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+
+      if (currentWorld && simulator) {
+        simulator.update(dt, simSpeed);
+        renderer.render(currentWorld, simulator);
+
+        // Update Top-Right Mini Motorways HUD
+        document.getElementById('tripCounter').textContent = simulator.tripsCompleted.toLocaleString();
+        const clockAngle = (simulator.simTime * 24) % 360;
+        document.getElementById('clockHand').style.transform = `rotate(${clockAngle}deg)`;
+        const dayIdx = Math.floor((simulator.simTime * 24) / 360) % 7;
+        document.getElementById('dayLabel').textContent = daysOfWeek[dayIdx];
+      }
+      requestAnimationFrame(animate);
+    }
+
+    window.onload = () => {
+      // Populate District Color Swatches in Legend
+      const swatchContainer = document.getElementById('colorSwatches');
+      if (swatchContainer) {
+        swatchContainer.innerHTML = PALETTE.districtColors.map(c =>
+          `<div class="flex items-center gap-1 bg-white/80 px-1.5 py-0.5 rounded-md border border-stone-300/60" title="${c.name} Demand Channel">
+             <span class="w-2.5 h-2.5 rounded-sm" style="background:${c.roof}; border-bottom: 2px solid ${c.base}"></span>
+             <span class="text-[9px] font-bold text-stone-600">${c.name.slice(0,3)}</span>
+           </div>`
+        ).join('');
+      }
+      handleResize();
+      rebuildWorld(false);
+      requestAnimationFrame(animate);
+    };
+  </script>
+</body>
+</html>
