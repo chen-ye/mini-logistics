@@ -635,10 +635,13 @@
       }
 
       /**
-       * Models an underlying OpenTTD TerraGenesis-style elevation heightmap (`elevationField`)
-       * and derives coastal firths/sounds, contour-hugging inland valley lakes, and slender
-       * downhill-flowing dendritic river networks (`rad = 0.85..2.3` tiles) that connect 100%
-       * continuously into real flooded water basins.
+       * Authentic OpenTTD TerraGenesis (`tgp.cpp`) Multi-Octave Perlin Heightmap &
+       * Grid-Aligned Octilinear A* Downhill River Generator.
+       * - Water bodies (`waterMask === 2`) emerge from thresholding a multi-octave Perlin heightmap
+       *   across regional tectonic troughs (forming indented coastal sounds, bays, and elongated
+       *   Perlin valley lakes like OpenTTD).
+       * - Rivers (`waterMask === 1`) are routed via 8-way octilinear A* downhill pathfinding along
+       *   the lowest Perlin valley thalwegs (1-2 tiles wide with crisp 0°/45°/90° OpenTTD reaches).
        */
       generateHydrology() {
         const { W, H } = this;
@@ -648,88 +651,86 @@
         this.rivers = [];
         this.drainageField.fill(0);
 
-        const seaLevel = 0.30 + (waterRatio - 0.35) * 0.22;
+        const seaLevel = 0.32 + (waterRatio - 0.35) * 0.22;
         this.seaLevel = seaLevel;
 
-        // Seed OpenTTD-style coastal firth/sound, northern bay, and 2 inland valley lake basins
-        const eastCoast = this.rng.next() < 0.55;
-        const baySideX = eastCoast ? 0.90 : 0.10;
-        const baySideY = this.rng.range(0.46, 0.68);
-        const northBayX = this.rng.range(0.42, 0.64);
-        const lakeBasinA = {
-          x: eastCoast ? this.rng.range(0.34, 0.50) : this.rng.range(0.50, 0.66),
-          y: this.rng.range(0.56, 0.70),
-          rx: 0.125,
-          ry: 0.068
-        };
-        const lakeBasinB = {
-          x: this.rng.range(0.28, 0.46),
-          y: this.rng.range(0.22, 0.34),
-          rx: 0.105,
-          ry: 0.058
+        // TerraGenesis Perlin Octave Helper (unwarped, slightly anisotropic E-W like OpenTTD valleys)
+        const tgpPerlin = (x, y) => {
+          const ax = x / 155.0;
+          const ay = y / 112.0;
+          const o1 = this.noise.noise(ax + 1.3, ay + 2.1) * 0.48;
+          const o2 = this.noise.noise(ax * 2.05 + 5.7, ay * 2.05 + 3.4) * 0.26;
+          const o3 = this.noise.noise(ax * 4.15 + 11.2, ay * 4.15 + 8.9) * 0.14;
+          const o4 = this.noise.noise(ax * 8.40 + 19.4, ay * 8.40 + 14.2) * 0.08;
+          const o5 = this.noise.noise(ax * 16.8 + 27.1, ay * 16.8 + 21.8) * 0.04;
+          return o1 + o2 + o3 + o4 + o5;
         };
 
-        // 2A. Synthesize Domain-Warped Multi-Octave Elevation Heightmap & Flood Open Basins (`waterMask = 2`)
+        const eastCoast = this.rng.next() < 0.55;
+        const firthY = this.rng.range(0.50, 0.64);
+        const northBayX = this.rng.range(0.44, 0.60);
+        const lakeAX = eastCoast ? this.rng.range(0.38, 0.48) : this.rng.range(0.52, 0.62);
+        const lakeAY = this.rng.range(0.58, 0.68);
+        const lakeBX = this.rng.range(0.32, 0.46);
+        const lakeBY = this.rng.range(0.22, 0.31);
+
+        // 2A. Synthesize TerraGenesis Multi-Octave Perlin Heightmap & Flood Natural Contour Basins
+        //     (Target ~18%-24% water coverage so continuous green/cream valleys span the entire state like OpenTTD)
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
             const nx = x / W;
             const ny = y / H;
+            const p = tgpPerlin(x, y);
 
-            const warp1X = this.noise.fbm(nx * 2.1 + 3.7, ny * 2.1 + 1.9, 2) * 0.14 - 0.07;
-            const warp1Y = this.noise.fbm(nx * 2.1 + 8.1, ny * 2.1 + 5.4, 2) * 0.14 - 0.07;
-            const wx = nx + warp1X;
-            const wy = ny + warp1Y;
-            const cwx = nx + warp1X * 0.45;
-            const cwy = ny + warp1Y * 0.45;
+            // Smooth tectonic valley troughs so Perlin octaves define the exact shoreline coves & peninsulas
+            const coastReach = eastCoast
+              ? Math.max(0, (nx - 0.64) / 0.36)
+              : Math.max(0, (0.36 - nx) / 0.36);
+            const firthTrough =
+              Math.pow(coastReach, 1.15) *
+              Math.exp(-Math.pow((ny - firthY) / 0.115, 2)) * 0.44;
 
-            const macroContinent = this.noise.fbm(wx * 1.85 + 1.2, wy * 1.85 + 2.4, 3);
-            const ridgeRaw = this.noise.noise(wx * 3.6 + 11.3, wy * 3.6 + 7.1);
-            const ridgedHills = 1.0 - Math.abs(2.0 * ridgeRaw - 1.0);
-            const detailHills = this.noise.fbm(nx * 6.4 + 17.0, ny * 6.4 + 23.0, 2);
+            const northBayTrough =
+              Math.pow(Math.max(0, (0.20 - ny) / 0.20), 1.25) *
+              Math.exp(-Math.pow((nx - northBayX) / 0.145, 2)) * 0.40;
 
-            // Base highland terrain sits above seaLevel so random corner puddles don't form;
-            // explicit tectonic depressions carve the bays, firths, straits, and valley lakes.
-            let elev = seaLevel + 0.06 + (macroContinent - 0.38) * 0.38 + ridgedHills * 0.22 + (detailHills - 0.5) * 0.14;
+            // Elongated E-W tectonic valley troughs where Perlin contours flood into OpenTTD lakes (Lenston / Radinghead style)
+            const valleyTroughA =
+              Math.exp(-Math.pow((nx - lakeAX) / 0.115, 2) - Math.pow((ny - lakeAY) / 0.055, 2)) * 0.33;
+            const valleyTroughB =
+              Math.exp(-Math.pow((nx - lakeBX) / 0.105, 2) - Math.pow((ny - lakeBY) / 0.048, 2)) * 0.31;
 
-            const dLakeA = Math.hypot((cwx - lakeBasinA.x) / lakeBasinA.rx, (cwy - lakeBasinA.y) / lakeBasinA.ry);
-            const dLakeB = Math.hypot((cwx - lakeBasinB.x) / lakeBasinB.rx, (cwy - lakeBasinB.y) / lakeBasinB.ry);
-            const lakeDipA = Math.exp(-dLakeA * dLakeA) * 0.38;
-            const lakeDipB = Math.exp(-dLakeB * dLakeB) * 0.36;
+            let elev = seaLevel + 0.135 + (p - 0.48) * 0.58;
 
             if (arch === 'estuary') {
-              const dSound = Math.hypot((cwx - baySideX) / 0.28, (cwy - baySideY) / 0.15);
-              const dNorthBay = Math.hypot((cwx - northBayX) / 0.18, (cwy - 0.02) / 0.13);
-              const soundDip = Math.exp(-dSound * dSound) * 0.48 + Math.exp(-dNorthBay * dNorthBay) * 0.40;
-              elev -= soundDip + lakeDipA * 0.95 + lakeDipB * 0.85;
+              const nwCove =
+                Math.pow(Math.max(0, (0.22 - nx) / 0.22), 1.3) *
+                Math.exp(-Math.pow((ny - 0.24) / 0.09, 2)) * 0.34;
+              elev -= firthTrough * 1.12 + northBayTrough * 1.05 + valleyTroughA * 0.96 + valleyTroughB * 0.88 + nwCove;
             } else if (arch === 'archipelago') {
-              const dStrait = Math.abs(cwy - (0.50 + Math.sin(cwx * 4.0) * 0.11)) / 0.095;
-              const dCross = Math.abs(cwx - (0.50 + Math.cos(cwy * 3.6) * 0.12)) / 0.085;
-              const straitDip = Math.exp(-dStrait * dStrait) * 0.38 + Math.exp(-dCross * dCross) * 0.32;
-              const dNorthBay = Math.hypot((cwx - northBayX) / 0.18, (cwy - 0.02) / 0.12);
-              elev -= straitDip + Math.exp(-dNorthBay * dNorthBay) * 0.34;
+              const soundA = Math.exp(-Math.pow((nx - 0.50) / 0.11, 2) - Math.pow((ny - 0.38) / 0.12, 2)) * 0.33;
+              const soundB = Math.exp(-Math.pow((nx - 0.36) / 0.12, 2) - Math.pow((ny - 0.64) / 0.09, 2)) * 0.32;
+              elev -= firthTrough * 1.05 + northBayTrough * 1.05 + soundA + soundB;
             } else if (arch === 'inland') {
-              const lakeBasinC = Math.exp(-Math.pow((cwx - (eastCoast ? 0.76 : 0.24)) / 0.12, 2) - Math.pow((cwy - 0.46) / 0.085, 2)) * 0.38;
-              elev -= lakeDipA * 1.08 + lakeDipB * 1.05 + lakeBasinC;
+              const valleyTroughC =
+                Math.exp(-Math.pow((nx - (eastCoast ? 0.72 : 0.28)) / 0.115, 2) - Math.pow((ny - 0.46) / 0.062, 2)) * 0.33;
+              elev -= valleyTroughA * 1.06 + valleyTroughB * 1.04 + valleyTroughC + northBayTrough * 0.75;
             } else {
-              // 'confluence' (OpenTTD classic: coastal firth/sound, northern bay, and 2 valley lakes)
-              const dFirth = Math.hypot((cwx - baySideX) / 0.26, (cwy - baySideY) / 0.135);
-              const dTopBay = Math.hypot((cwx - northBayX) / 0.17, (cwy - 0.01) / 0.125);
-              const firthDip = Math.exp(-dFirth * dFirth) * 0.46 + Math.exp(-dTopBay * dTopBay) * 0.38;
-              elev -= firthDip + lakeDipA * 0.98 + lakeDipB * 0.94;
+              // 'confluence' (OpenTTD baseline: northern bay, coastal firth/sound, and 2 elongated Perlin valley lakes)
+              elev -= firthTrough + northBayTrough + valleyTroughA + valleyTroughB;
             }
 
             const id = this.idx(x, y);
             const clampedElev = Math.max(0.02, Math.min(0.98, elev));
             this.elevationField[id] = clampedElev;
             if (clampedElev < seaLevel) {
-              this.waterMask[id] = 2; // Flooded sea, sound, firth, or valley lake basin
+              this.waterMask[id] = 2;
             }
           }
         }
 
-        // Smooth ONLY the macro basins (`waterMask === 2`) BEFORE carving slender rivers
-        // so rivers aren't eroded or pinched into fat sausages by Cellular Automata!
-        for (let pass = 0; pass < 4; pass++) {
+        // 2-pass Cellular Automata cleanup on `waterMask === 2` to remove single-tile noise while keeping crisp Perlin facets
+        for (let pass = 0; pass < 2; pass++) {
           const nextMask = new Uint8Array(this.waterMask);
           for (let y = 1; y < H - 1; y++) {
             for (let x = 1; x < W - 1; x++) {
@@ -741,15 +742,13 @@
                 }
               }
               const curr = this.waterMask[this.idx(x, y)];
-              if (curr > 0 && waterNeighbors <= 3) nextMask[this.idx(x, y)] = 0;
-              else if (curr === 0 && waterNeighbors >= 5) nextMask[this.idx(x, y)] = 2;
+              if (curr > 0 && waterNeighbors <= 2) nextMask[this.idx(x, y)] = 0;
+              else if (curr === 0 && waterNeighbors >= 6) nextMask[this.idx(x, y)] = 2;
             }
           }
           this.waterMask = nextMask;
         }
 
-        // Helper: Snap any target coordinate `(tx, ty)` to the nearest actual flooded `waterMask === 2` tile
-        // (at least 3 tiles inside the water body) so every river is 100% guaranteed to terminate in real water!
         const snapToDeepWater2 = (tx, ty) => {
           let bestX = Math.round(tx);
           let bestY = Math.round(ty);
@@ -757,7 +756,6 @@
           for (let y = 4; y < H - 4; y += 2) {
             for (let x = 4; x < W - 4; x += 2) {
               if (this.waterMask[this.idx(x, y)] !== 2) continue;
-              // Ensure it's interior to the lake/bay (not a single border pixel)
               if (
                 this.waterMask[this.idx(x + 2, y)] !== 2 ||
                 this.waterMask[this.idx(x - 2, y)] !== 2 ||
@@ -777,10 +775,58 @@
           return { x: bestX, y: bestY };
         };
 
-        const firthPt = snapToDeepWater2(baySideX * W, baySideY * H);
-        const northBayPt = snapToDeepWater2(northBayX * W, H * 0.05);
-        const lakeAPt = snapToDeepWater2(lakeBasinA.x * W, lakeBasinA.y * H);
-        const lakeBPt = snapToDeepWater2(lakeBasinB.x * W, lakeBasinB.y * H);
+        const firthPt = snapToDeepWater2((eastCoast ? 0.88 : 0.12) * W, firthY * H);
+        const northBayPt = snapToDeepWater2(northBayX * W, H * 0.06);
+        const lakeAPt = snapToDeepWater2(lakeAX * W, lakeAY * H);
+        const lakeBPt = snapToDeepWater2(lakeBX * W, lakeBY * H);
+        const mainBasins = [firthPt, northBayPt, lakeAPt, lakeBPt];
+        const extraBasins = [];
+
+        // Remove small isolated Perlin puddles (< 95 tiles) and record any major secondary lakes (`extraBasins`)
+        const visitedW2 = new Uint8Array(W * H);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const startId = this.idx(x, y);
+            if (this.waterMask[startId] !== 2 || visitedW2[startId]) continue;
+            const comp = [startId];
+            visitedW2[startId] = 1;
+            let sumX = 0, sumY = 0, touchesBorder = false, isMainBasin = false;
+            for (let h = 0; h < comp.length; h++) {
+              const cid = comp[h];
+              const cx = cid % W;
+              const cy = Math.floor(cid / W);
+              sumX += cx;
+              sumY += cy;
+              if (cx <= 2 || cx >= W - 3 || cy <= 2 || cy >= H - 3) touchesBorder = true;
+              for (const mb of mainBasins) {
+                if (Math.abs(cx - mb.x) <= 2 && Math.abs(cy - mb.y) <= 2) isMainBasin = true;
+              }
+              for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+                const nx = cx + dx, ny = cy + dy;
+                if (this.inBounds(nx, ny)) {
+                  const nid = this.idx(nx, ny);
+                  if (this.waterMask[nid] === 2 && !visitedW2[nid]) {
+                    visitedW2[nid] = 1;
+                    comp.push(nid);
+                  }
+                }
+              }
+            }
+            if (!isMainBasin) {
+              if (comp.length < 95 && !touchesBorder) {
+                for (const cid of comp) {
+                  this.waterMask[cid] = 0;
+                  this.elevationField[cid] = Math.max(this.elevationField[cid], seaLevel + 0.035);
+                }
+              } else if (comp.length >= 95) {
+                extraBasins.push({
+                  x: Math.round(sumX / comp.length),
+                  y: Math.round(sumY / comp.length)
+                });
+              }
+            }
+          }
+        }
 
         this.hydroFeatures.push(
           { x: lakeAPt.x, y: lakeAPt.y, type: 'lake' },
@@ -788,127 +834,200 @@
           { x: firthPt.x, y: firthPt.y, type: 'firth' }
         );
 
-        // 2B. Trace Slender, Continuous Dendritic Rivers (`rad = 0.90 .. 2.35` tiles)
-        //     Every river marches until it physically enters an existing water body (`waterMask > 0`).
-        const traceDendriticRiver = (startX, startY, targetX, targetY, startRad, endRad, isOutflowFromLake) => {
-          let cx = startX;
-          let cy = startY;
-          let vx = 0;
-          let vy = 0;
-          const phase = this.rng.range(0, Math.PI * 2);
-          const totalChord = Math.hypot(targetX - startX, targetY - startY) || 1;
-          const pathPts = [];
-          let leftSourceBasin = !isOutflowFromLake;
-          let stepsInTargetWater = 0;
+        // 2B. OpenTTD Winding Octilinear Grid A* River Router (`routeGridRiverAStar`)
+        //     Steps along 8-way octilinear reaches of 2-5 tiles (alternating 0°/90° and 45° steps
+        //     guided by Perlin valley noise, forbidding both ruler-straight 45° canals and squid tentacles!)
+        const routeGridRiverAStar = (sx, sy, ex, ey, stopOnAnyWaterAfterLeave = false, salt = 0) => {
+          const startId = this.idx(sx, sy);
+          const endId = this.idx(ex, ey);
+          const gScore = new Float32Array(W * H).fill(Infinity);
+          const parent = new Int32Array(W * H).fill(-1);
+          const closed = new Uint8Array(W * H);
+          const leftSource = new Uint8Array(W * H);
+          const runLen = new Uint8Array(W * H);
 
-          for (let step = 0; step < 650; step++) {
-            const ix = Math.round(cx);
-            const iy = Math.round(cy);
-            if (!this.inBounds(ix, iy, 2)) break;
+          const heapId = [startId];
+          const heapF = [0];
+          const heapPush = (id, f) => {
+            let i = heapId.length;
+            heapId.push(id);
+            heapF.push(f);
+            while (i > 0) {
+              const p = (i - 1) >> 1;
+              if (heapF[p] <= f) break;
+              heapId[i] = heapId[p];
+              heapF[i] = heapF[p];
+              i = p;
+            }
+            heapId[i] = id;
+            heapF[i] = f;
+          };
+          const heapPopId = () => {
+            const topId = heapId[0];
+            const lastId = heapId.pop();
+            const lastF = heapF.pop();
+            const n = heapId.length;
+            if (n > 0) {
+              let i = 0;
+              while ((i << 1) + 1 < n) {
+                let c = (i << 1) + 1;
+                if (c + 1 < n && heapF[c + 1] < heapF[c]) c++;
+                if (lastF <= heapF[c]) break;
+                heapId[i] = heapId[c];
+                heapF[i] = heapF[c];
+                i = c;
+              }
+              heapId[i] = lastId;
+              heapF[i] = lastF;
+            }
+            return topId;
+          };
 
-            const cid = this.idx(ix, iy);
-            const currentMask = this.waterMask[cid];
-            const prevFlow = this.drainageField[cid];
+          gScore[startId] = 0;
+          leftSource[startId] = this.waterMask[startId] === 0 ? 1 : 0;
+          runLen[startId] = 1;
 
-            if (!leftSourceBasin && currentMask === 0) {
-              leftSourceBasin = true;
+          const dirs = [
+            [1, 0, 1.0], [-1, 0, 1.0], [0, 1, 1.0], [0, -1, 1.0],
+            [1, 1, 1.414], [-1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414]
+          ];
+
+          while (heapId.length > 0) {
+            const cid = heapPopId();
+            const cx = cid % W;
+            const cy = Math.floor(cid / W);
+
+            const hitExistingWater =
+              stopOnAnyWaterAfterLeave &&
+              leftSource[cid] === 1 &&
+              this.waterMask[cid] > 0 &&
+              Math.hypot(cx - sx, cy - sy) > 14;
+
+            if (cid === endId || hitExistingWater) {
+              const path = [];
+              let trace = cid;
+              while (trace !== -1) {
+                path.push({ x: trace % W, y: Math.floor(trace / W) });
+                trace = parent[trace];
+              }
+              path.reverse();
+              if (hitExistingWater && this.waterMask[cid] === 1) {
+                this.hydroFeatures.push({ x: cx, y: cy, type: 'confluence' });
+              }
+              return path;
             }
 
-            const distRem = Math.hypot(targetX - cx, targetY - cy);
-            const progress = Math.max(0, Math.min(1, 1 - distRem / totalChord));
-            const mouthFlare = distRem < 11 ? (1 - distRem / 11) * 1.15 : 0;
-            const rad = startRad + (endRad - startRad) * Math.pow(progress, 0.85) + mouthFlare;
+            if (closed[cid]) continue;
+            closed[cid] = 1;
 
-            // Check if we've entered a destination lake/sea (`waterMask === 2`) or merged into an existing river (`prevFlow >= 1.0`)
-            if (leftSourceBasin && step > 14) {
-              if (currentMask === 2 || (!isOutflowFromLake && prevFlow >= 1.0)) {
-                stepsInTargetWater++;
-                if (prevFlow >= 1.0 && stepsInTargetWater === 2) {
-                  this.hydroFeatures.push({ x: ix, y: iy, type: 'confluence' });
-                }
-              } else {
-                stepsInTargetWater = 0;
+            const pid = parent[cid];
+            const prevDx = pid !== -1 ? cx - (pid % W) : 0;
+            const prevDy = pid !== -1 ? cy - Math.floor(pid / W) : 0;
+            const currElev = this.elevationField[cid];
+            const currRun = runLen[cid];
+
+            for (const [dx, dy, baseStep] of dirs) {
+              const nx = cx + dx;
+              const ny = cy + dy;
+              if (!this.inBounds(nx, ny, 3)) continue;
+              const nid = this.idx(nx, ny);
+              if (closed[nid]) continue;
+
+              // Forbid >=90° sharp corners so OpenTTD rivers only bend by 45° between reaches
+              if (pid !== -1 && (dx * prevDx + dy * prevDy) <= 0) continue;
+
+              const sameDir = pid !== -1 && dx === prevDx && dy === prevDy;
+              const nextRun = sameDir ? currRun + 1 : 1;
+
+              const nextElev = this.elevationField[nid];
+              const heightAboveSea = Math.max(0, nextElev - seaLevel);
+              const uphill = Math.max(0, nextElev - currElev);
+
+              // Perlin valley micro-topography guides the river to step organically every 2-4 tiles
+              const valleyMeander =
+                this.noise.fbm(nx * 0.065 + 7.1 + salt, ny * 0.065 + 3.9 + salt, 2) * 8.5 +
+                this.noise.noise(nx * 0.18 + 13.4, ny * 0.18 + 9.2) * 4.5;
+
+              let stepCost = baseStep + heightAboveSea * 15.0 + uphill * 42.0 + valleyMeander;
+
+              // Prefer 2-to-4 tile cardinal reaches with short 1-to-2 tile 45° bevels (never long 45° canals!)
+              const maxCleanRun = (dx !== 0 && dy !== 0) ? 2 : 4;
+              if (sameDir && nextRun > maxCleanRun) {
+                stepCost += (nextRun - maxCleanRun) * 6.8;
+              }
+
+              if (this.waterMask[nid] === 1) {
+                stepCost *= 0.16; // Merge naturally into existing river stems
+              } else if (this.waterMask[nid] === 2 && leftSource[cid] === 0) {
+                stepCost *= 0.35;
+              }
+
+              const tentativeG = gScore[cid] + stepCost;
+              if (tentativeG < gScore[nid]) {
+                gScore[nid] = tentativeG;
+                parent[nid] = cid;
+                runLen[nid] = nextRun;
+                leftSource[nid] = (leftSource[cid] === 1 || this.waterMask[nid] === 0) ? 1 : 0;
+                const h = Math.hypot(ex - nx, ey - ny) * 0.85;
+                heapPush(nid, tentativeG + h);
               }
             }
-
-            this.drainageField[cid] = prevFlow + (isOutflowFromLake ? 2.0 : 1.2);
-            this.carveValleyChannel(cx, cy, rad, 1);
-            pathPts.push({ x: cx, y: cy, rad });
-
-            if (stepsInTargetWater >= 4 || distRem < 2.0) {
-              break;
-            }
-
-            // Sample local topographic downhill gradient over a 6-tile lookahead kernel
-            const localElev = this.elevationField[cid];
-            let gradX = 0;
-            let gradY = 0;
-            const lookR = 6;
-            for (const [dx, dy] of [[lookR, 0], [-lookR, 0], [0, lookR], [0, -lookR], [4, 4], [-4, 4], [4, -4], [-4, -4]]) {
-              const sx = Math.max(1, Math.min(W - 2, ix + dx));
-              const sy = Math.max(1, Math.min(H - 2, iy + dy));
-              const diff = localElev - this.elevationField[this.idx(sx, sy)];
-              const len = Math.hypot(dx, dy);
-              gradX += (dx / len) * diff;
-              gradY += (dy / len) * diff;
-            }
-
-            const toTx = targetX - cx;
-            const toTy = targetY - cy;
-            const toTDist = Math.hypot(toTx, toTy) || 1;
-            const dirTx = toTx / toTDist;
-            const dirTy = toTy / toTDist;
-
-            // Fade meander near the target mouth so the river enters the lake/bay cleanly
-            const meanderAmp = Math.min(1.0, distRem / 24.0);
-            const meander = (Math.sin(step * 0.065 + phase) * 0.42 +
-                            (this.noise.noise(cx * 0.05, cy * 0.05) - 0.5) * 0.52) * meanderAmp;
-            const perpX = -dirTy;
-            const perpY = dirTx;
-
-            const pullWeight = distRem < 32 ? 0.78 : 0.56;
-            let stepX = dirTx * pullWeight + gradX * 2.8 + perpX * meander;
-            let stepY = dirTy * pullWeight + gradY * 2.8 + perpY * meander;
-            const stepLen = Math.hypot(stepX, stepY) || 1;
-            stepX /= stepLen;
-            stepY /= stepLen;
-
-            vx = vx * 0.58 + stepX * 0.42;
-            vy = vy * 0.58 + stepY * 0.42;
-            const vLen = Math.hypot(vx, vy) || 1;
-            cx += (vx / vLen) * 0.95;
-            cy += (vy / vLen) * 0.95;
           }
-          if (pathPts.length > 8) {
-            this.rivers.push(pathPts);
+          return null;
+        };
+
+        const carveOctilinearRiverPath = (path, isMainStem) => {
+          if (!path || path.length < 4) return;
+          this.rivers.push(path);
+          for (let i = 0; i < path.length; i++) {
+            const { x, y } = path[i];
+            const progress = i / (path.length - 1);
+            // Slender OpenTTD river widths:
+            // - Tributaries: 1 tile wide in upper half (rad 0.72), 1.5 tiles wide near confluence (rad 0.98)
+            // - Main stems: 1.5-2 tiles wide (rad 0.98 .. 1.35)
+            const rad = isMainStem
+              ? (0.98 + progress * 0.38)
+              : (progress < 0.55 ? 0.72 : 0.98);
+            this.carveValleyChannel(x, y, rad, 1);
           }
         };
 
-        // 1. Outflow river from Lake Basin A -> Coastal Firth/Sound
-        traceDendriticRiver(lakeAPt.x, lakeAPt.y, firthPt.x, firthPt.y, 1.45, 2.35, true);
+        // 1. Main Valley River 1: Lake Basin A -> Coastal Firth/Sound
+        carveOctilinearRiverPath(routeGridRiverAStar(lakeAPt.x, lakeAPt.y, firthPt.x, firthPt.y, false, 1.1), true);
 
-        // 2. Outflow river from Northern Lake Basin B -> Northern Bay (or Lake Basin A)
-        const bTarget = Math.hypot(northBayPt.x - lakeBPt.x, northBayPt.y - lakeBPt.y) < 120 ? northBayPt : lakeAPt;
-        traceDendriticRiver(lakeBPt.x, lakeBPt.y, bTarget.x, bTarget.y, 1.35, 2.15, true);
+        // 2. Main Valley River 2: Lake Basin B -> Northern Bay
+        carveOctilinearRiverPath(routeGridRiverAStar(lakeBPt.x, lakeBPt.y, northBayPt.x, northBayPt.y, false, 2.3), true);
 
-        // 3. Connecting valley river between Lake Basin B and Lake Basin A
-        traceDendriticRiver(lakeBPt.x, lakeBPt.y, lakeAPt.x, lakeAPt.y, 1.25, 1.95, true);
+        // 3. Cross-Valley River 3: Lake Basin B -> Coastal Firth/Sound (or Lake Basin A)
+        carveOctilinearRiverPath(routeGridRiverAStar(lakeBPt.x, lakeBPt.y, firthPt.x, firthPt.y, true, 3.7), true);
 
-        // 4. Trace 7 Slender Highland Headwater Streams & Tributaries Across All Map Quadrants
-        const springSectors = [
-          { x0: 0.05, x1: 0.22, y0: 0.08, y1: 0.34, target: lakeBPt, startR: 0.90, endR: 1.75 },
-          { x0: 0.05, x1: 0.22, y0: 0.42, y1: 0.68, target: lakeAPt, startR: 0.95, endR: 1.85 },
-          { x0: 0.06, x1: 0.26, y0: 0.74, y1: 0.94, target: lakeAPt, startR: 0.90, endR: 1.75 },
-          { x0: 0.34, x1: 0.62, y0: 0.80, y1: 0.95, target: lakeAPt, startR: 0.88, endR: 1.65 },
-          { x0: 0.72, x1: 0.94, y0: 0.08, y1: 0.34, target: northBayPt, startR: 0.92, endR: 1.80 },
-          { x0: 0.68, x1: 0.94, y0: 0.28, y1: 0.52, target: firthPt, startR: 0.92, endR: 1.85 },
-          { x0: 0.66, x1: 0.94, y0: 0.74, y1: 0.94, target: firthPt, startR: 0.90, endR: 1.75 }
+        // 4. Connect any secondary Perlin lake basins (`extraBasins`) into the nearest main basin
+        for (const eb of extraBasins) {
+          let nearestMb = lakeAPt;
+          let minD = Infinity;
+          for (const mb of mainBasins) {
+            const d = Math.hypot(eb.x - mb.x, eb.y - mb.y);
+            if (d > 8 && d < minD) {
+              minD = d;
+              nearestMb = mb;
+            }
+          }
+          carveOctilinearRiverPath(routeGridRiverAStar(eb.x, eb.y, nearestMb.x, nearestMb.y, true, 4.9), false);
+        }
+
+        // 5. Route 5 Slender OpenTTD Valley Streams from the Uplands into the Lakes / Main Rivers
+        const headwaterTargets = [
+          { x0: 0.05, x1: 0.18, y0: 0.12, y1: 0.34, target: lakeBPt, main: false, salt: 5.1 },
+          { x0: 0.05, x1: 0.18, y0: 0.48, y1: 0.78, target: lakeAPt, main: true, salt: 6.4 },
+          { x0: 0.30, x1: 0.62, y0: 0.84, y1: 0.95, target: lakeAPt, main: false, salt: 7.8 },
+          { x0: eastCoast ? 0.72 : 0.06, x1: eastCoast ? 0.94 : 0.28, y0: 0.14, y1: 0.36, target: firthPt, main: false, salt: 9.2 },
+          { x0: eastCoast ? 0.68 : 0.06, x1: eastCoast ? 0.94 : 0.32, y0: 0.76, y1: 0.94, target: firthPt, main: false, salt: 10.6 }
         ];
 
-        for (const sec of springSectors) {
+        for (const sec of headwaterTargets) {
           let bestSpring = null;
           let maxElev = -1;
-          for (let attempt = 0; attempt < 30; attempt++) {
+          for (let attempt = 0; attempt < 25; attempt++) {
             const sx = Math.round(W * this.rng.range(sec.x0, sec.x1));
             const sy = Math.round(H * this.rng.range(sec.y0, sec.y1));
             const id = this.idx(sx, sy);
@@ -918,26 +1037,17 @@
             }
           }
           if (bestSpring) {
-            // Also spawn a short secondary fork joining this stream halfway down its valley!
-            traceDendriticRiver(bestSpring.x, bestSpring.y, sec.target.x, sec.target.y, sec.startR, sec.endR, false);
-          }
-        }
-
-        // 5. Add 3 Secondary Y-Fork Tributaries Joining Existing River Stems (authentic OpenTTD dendritic branching!)
-        const mainStems = [...this.rivers];
-        for (let rIdx = 0; rIdx < Math.min(3, mainStems.length); rIdx++) {
-          const stem = mainStems[rIdx];
-          if (stem.length < 36) continue;
-          const joinPt = stem[Math.floor(stem.length * 0.52)];
-          const forkAng = Math.atan2(
-            stem[Math.min(stem.length - 1, Math.floor(stem.length * 0.52) + 4)].y - joinPt.y,
-            stem[Math.min(stem.length - 1, Math.floor(stem.length * 0.52) + 4)].x - joinPt.x
-          ) + (rIdx % 2 === 0 ? 1.15 : -1.15);
-          const srcDist = this.rng.range(34, 54);
-          const fx = Math.max(8, Math.min(W - 9, Math.round(joinPt.x - Math.cos(forkAng) * srcDist)));
-          const fy = Math.max(8, Math.min(H - 9, Math.round(joinPt.y - Math.sin(forkAng) * srcDist)));
-          if (this.waterMask[this.idx(fx, fy)] === 0) {
-            traceDendriticRiver(fx, fy, Math.round(joinPt.x), Math.round(joinPt.y), 0.85, 1.45, false);
+            const rPath = routeGridRiverAStar(bestSpring.x, bestSpring.y, sec.target.x, sec.target.y, true, sec.salt);
+            carveOctilinearRiverPath(rPath, sec.main);
+            // Spawn 1 short Y-fork branch joining this valley river midway down its course
+            if (rPath && rPath.length > 26) {
+              const midPt = rPath[Math.floor(rPath.length * 0.48)];
+              const fx = Math.max(8, Math.min(W - 9, midPt.x + this.rng.int(-26, 26)));
+              const fy = Math.max(8, Math.min(H - 9, midPt.y + this.rng.int(-22, 22)));
+              if (Math.hypot(fx - midPt.x, fy - midPt.y) > 15 && this.waterMask[this.idx(fx, fy)] === 0) {
+                carveOctilinearRiverPath(routeGridRiverAStar(fx, fy, midPt.x, midPt.y, true, sec.salt + 0.5), false);
+              }
+            }
           }
         }
 
@@ -945,25 +1055,6 @@
           this.hydroFeatures.find(f => f.type === 'confluence') ||
           this.hydroFeatures[0] ||
           { x: Math.round(W * 0.5), y: Math.round(H * 0.5) };
-
-        // 2C. Clean up any 1-tile land dams or diagonal river gaps without eroding slender streams!
-        for (let pass = 0; pass < 2; pass++) {
-          const nextMask = new Uint8Array(this.waterMask);
-          for (let y = 2; y < H - 2; y++) {
-            for (let x = 2; x < W - 2; x++) {
-              const id = this.idx(x, y);
-              if (this.waterMask[id] > 0) continue;
-              const nW = this.waterMask[this.idx(x - 1, y)] > 0;
-              const nE = this.waterMask[this.idx(x + 1, y)] > 0;
-              const nN = this.waterMask[this.idx(x, y - 1)] > 0;
-              const nS = this.waterMask[this.idx(x, y + 1)] > 0;
-              if ((nW && nE) || (nN && nS)) {
-                nextMask[id] = 1;
-              }
-            }
-          }
-          this.waterMask = nextMask;
-        }
       }
 
       /**
@@ -1717,14 +1808,33 @@
           if (bestChord) edges.push(bestChord);
         }
 
-        // Commit surface arterial roads within urban clusters or regional valley neighbors (<= 82 tiles);
-        // long cross-state links (> 82 tiles across empty uplands) are served by pink Interstate Highways!
+        // Commit surface arterial roads within urban clusters or regional valley neighbors (<= 112 tiles);
+        // also ensure every town has at least one committed regional road edge so no peripheral town is isolated.
+        const townRoadDegree = new Int8Array(nodes.length);
+        const skippedEdges = [];
         for (const [i, j] of edges) {
           const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
           const sameCluster = nodes[i].ref.clusterId === nodes[j].ref.clusterId;
-          if (!sameCluster && d > 82) continue;
+          if (!sameCluster && d > 112) {
+            skippedEdges.push([i, j]);
+            continue;
+          }
           const path = this.findRoadPathAStar(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y, true);
-          if (path) this.commitRoadPath(path, 'arterial');
+          if (path) {
+            this.commitRoadPath(path, 'arterial');
+            townRoadDegree[i]++;
+            townRoadDegree[j]++;
+          }
+        }
+        for (const [i, j] of skippedEdges) {
+          if (townRoadDegree[i] === 0 || townRoadDegree[j] === 0) {
+            const path = this.findRoadPathAStar(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y, true);
+            if (path) {
+              this.commitRoadPath(path, 'arterial');
+              townRoadDegree[i]++;
+              townRoadDegree[j]++;
+            }
+          }
         }
 
         for (const ap of this.airports) {
@@ -1831,8 +1941,9 @@
             if (this.roadGrid[nid] > 0) {
               stepCost *= 0.28;
             } else if (isWater) {
-              // Isotropic Euclidean bridge cost + heavy mid-river turn penalty so bridges are straight & perpendicular
-              stepCost *= 6.4;
+              // River bridges (`waterMask === 1`) are economical; open-sea/lake bridges (`waterMask === 2`)
+              // are heavily penalized so surface roads route around bays/lakes and cross at narrow necks!
+              stepCost *= this.waterMask[nid] === 2 ? 19.5 : 5.8;
               if (currIsWater && pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
                 stepCost += 26.0;
               }
@@ -2153,7 +2264,7 @@
           ).length;
           if (attachedCount >= 2) return false;
           const angDiff = Math.abs(Math.atan2(Math.sin(ic.angleRad - baseAngle), Math.cos(ic.angleRad - baseAngle)));
-          return angDiff >= 1.15;
+          return angDiff >= 0.98;
         }) || null;
       }
 
@@ -2430,7 +2541,7 @@
           const checkShared = (myX, myY, myUx, myUy, otX, otY, otUx, otUy) => {
             if (Math.hypot(myX - otX, myY - otY) < 8.5) {
               const dot = myUx * otUx + myUy * otUy;
-              if (dot > 0.38) return false;
+              if (dot > 0.45) return false;
             }
             return true;
           };
@@ -2452,6 +2563,7 @@
 
           const hit = this.findPolylineIntersection(other.samples, samples);
           if (hit) {
+            if (hit.multiple) return Infinity; // Never allow two motorways to cross each other twice!
             const isTrumpetTargetTouch =
               allowTouchTrunkNum === other.number && Math.hypot(hit.x - ex, hit.y - ey) < 4.5;
             if (!isTrumpetTargetTouch) {
@@ -2467,6 +2579,10 @@
               const dEndB = this.polylineArcLength(samples, hit.idxB, samples.length - 1);
 
               if (dStartA < 20 || dEndA < 20 || dStartB < 20 || dEndB < 20) return Infinity;
+              const nearMajorIc = this.interchanges.some(
+                ic => (ic.type === 'cloverleaf' || ic.type === 'trumpet') && Math.hypot(ic.x - hit.x, ic.y - hit.y) < 22.0
+              );
+              if (nearMajorIc) return Infinity;
               if (!this.isCloverleafFootprintDry(hit.x, hit.y, hit.angleA, hit.angleB, [-1, 1], [-1, 1])) {
                 return Infinity;
               }
@@ -2486,11 +2602,11 @@
           const segLen = i > 0 ? Math.hypot(pt.x - samples[i - 1].x, pt.y - samples[i - 1].y) : 1.0;
 
           if (this.waterMask[id] > 0) {
-            const wWeight = this.waterMask[id] === 2 ? 1.25 : 1.0;
+            const wWeight = this.waterMask[id] === 2 ? 1.45 : 1.0;
             waterArc += segLen * wWeight;
             totalWaterArc += segLen * wWeight;
-            // Hard invariant 6: Never build 30-to-100-tile causeways across wide open lakes/bays!
-            // Expressways may cross rivers and narrow straits (<= 18 tiles), never open lakes/sounds.
+            // Hard invariant 6: Never build causeways across wide open lakes/bays!
+            // Expressways may cross rivers (<= 18 tiles) and narrow straits (<= 12.4 tiles), never open lakes/sounds.
             if (waterArc > 18.0 || totalWaterArc > 24.5) {
               return Infinity;
             }
@@ -2827,7 +2943,7 @@
             if (!this.isTrumpetFootprintDry(hitPt.x, hitPt.y, angleMain, sideSign)) continue;
 
             const chord = Math.hypot(hitPt.x - originX, hitPt.y - originY);
-            if (chord < 14 || chord > 175) continue;
+            if (chord < 14 || chord > 215) continue;
 
             // Ensure the origin lies beside the trunk (not collinearly far beyond its endpoints)
             const tDx = trunk.ex - trunk.sx;
@@ -2835,7 +2951,7 @@
             const tLen = Math.hypot(tDx, tDy) || 1;
             const projT = ((originX - trunk.sx) * tDx + (originY - trunk.sy) * tDy) / (tLen * tLen);
             const perpDist = Math.abs((originX - trunk.sx) * (-tDy) + (originY - trunk.sy) * tDx) / tLen;
-            if (projT < -0.45 || projT > 1.45 || perpDist < 10.5) continue;
+            if (projT < -0.60 || projT > 1.60 || perpDist < 10.5) continue;
 
             // Ensure the origin lies on the sideSign half-space of the trunk
             const cosPerp = ((originX - hitPt.x) * outNx + (originY - hitPt.y) * outNy) / (chord || 1);
@@ -2942,6 +3058,7 @@
         const aEnd = samplesA[samplesA.length - 1];
         const bStart = samplesB[0];
         const bEnd = samplesB[samplesB.length - 1];
+        const hits = [];
 
         for (let i = 0; i < samplesA.length - 1; i++) {
           const a1 = samplesA[i];
@@ -2955,18 +3072,20 @@
               const nearAEnd = Math.min(Math.hypot(pt.x - aStart.x, pt.y - aStart.y), Math.hypot(pt.x - aEnd.x, pt.y - aEnd.y)) < 2.2;
               const nearBEnd = Math.min(Math.hypot(pt.x - bStart.x, pt.y - bStart.y), Math.hypot(pt.x - bEnd.x, pt.y - bEnd.y)) < 2.2;
               if (nearAEnd && nearBEnd) continue;
-              return {
+              if (hits.some(h => Math.hypot(h.x - pt.x, h.y - pt.y) < 5.5)) continue;
+              hits.push({
                 x: pt.x,
                 y: pt.y,
                 idxA: i,
                 idxB: j,
                 angleA: Math.atan2(a2.y - a1.y, a2.x - a1.x),
                 angleB: Math.atan2(b2.y - b1.y, b2.x - b1.x)
-              };
+              });
             }
           }
         }
-        return null;
+        if (hits.length === 0) return null;
+        return { ...hits[0], multiple: hits.length > 1 };
       }
 
       segmentIntersection(x1, y1, x2, y2, x3, y3, x4, y4) {
@@ -3217,14 +3336,14 @@
         };
 
         // 1. Primary Inter-Cluster Interstate Spine (M-1) between the two highest-gravity Metropolises
-        //    along a continuous valley/shoreline corridor (avoiding wide open lake/sound chords)
+        //    along a continuous valley/shoreline corridor
         const pairs = [];
         for (let i = 0; i < this.towns.length; i++) {
           for (let j = i + 1; j < this.towns.length; j++) {
             const tA = this.towns[i];
             const tB = this.towns[j];
             const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
-            if (d < 48 || d > 225) continue;
+            if (d < 68 || d > 235) continue;
             let openWaterHits = 0;
             for (let s = 1; s < 20; s++) {
               const sx = Math.round(tA.x + (tB.x - tA.x) * (s / 20));
@@ -3233,10 +3352,10 @@
                 openWaterHits++;
               }
             }
-            const dryCorridorFactor = Math.exp(-openWaterHits * 0.22);
-            const diffClusterBonus = tA.clusterId !== tB.clusterId ? 1.65 : 0.72;
-            const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 110) / 52, 2));
-            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.42)) * diffClusterBonus * spanBell * dryCorridorFactor;
+            const dryCorridorFactor = Math.exp(-openWaterHits * 0.06);
+            const diffClusterBonus = tA.clusterId !== tB.clusterId ? 2.40 : 0.45;
+            const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 135) / 56, 2));
+            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.38)) * diffClusterBonus * spanBell * dryCorridorFactor;
             pairs.push({ tA, tB, gravity, d });
           }
         }
@@ -3289,53 +3408,58 @@
               continue;
             }
 
-            // 2A. Try a 3-way Trumpet Spur from this Cluster Metropolis (or its International Hub Gate) into an existing trunk
-            let bestTargetPt = { x: this.W * 0.5, y: this.H * 0.5 };
-            let minD = Infinity;
-            for (const mw of this.motorways) {
-              for (let s = Math.floor(mw.samples.length * 0.16); s <= Math.ceil(mw.samples.length * 0.84); s += 3) {
-                const d = Math.hypot(metro.x - mw.samples[s].x, metro.y - mw.samples[s].y);
-                if (d < minD) {
-                  minD = d;
-                  bestTargetPt = mw.samples[s];
-                }
-              }
-            }
-
-            const mEnd = resolveTownOrHubEndpoint(metro, bestTargetPt.x, bestTargetPt.y, true);
-            const spurRes = this.tryBuildTrumpetSpurToTrunk(
-              mwayNumber,
-              mEnd.stub.x,
-              mEnd.stub.y,
-              algo,
-              mEnd.usedHubGate ? mEnd.ap.id : null,
-              metro.id
-            );
-            if (spurRes) {
-              if (mEnd.usedHubGate) mEnd.ap.motorwayId = mwayNumber;
-              mwayNumber++;
-              this.motorways.push(spurRes.mw);
-              this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
-              this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
-              this.interchanges.push(spurRes.trumpetIc);
-              townMotorwayDegree[metro.id]++;
-              connectedClusters.add(metro.clusterId);
-              continue;
-            } else if (!mEnd.usedHubGate) {
-              this.removeOrphanedTerminalStub(mEnd.stub.x, mEnd.stub.y);
-            } else {
-              this.interchanges = this.interchanges.filter(
-                ic => !(ic.type === 'terminal-stub' && ic.isAirportStub && ic.airportId === mEnd.ap.id)
-              );
-            }
-
-            // 2B. Otherwise link `metro` (or a town in `metro`'s cluster) to an already-connected hub town
+            // 2A. Try a 3-way Trumpet Spur from this Cluster Metropolis (or any town in its cluster) into an existing trunk
             const clusterTowns = [
               metro,
               ...this.towns.filter(t => t.clusterId === metro.clusterId && t.id !== metro.id)
             ];
             let linkedCluster = false;
 
+            for (const cTown of clusterTowns) {
+              if (linkedCluster) break;
+              let bestTargetPt = { x: this.W * 0.5, y: this.H * 0.5 };
+              let minD = Infinity;
+              for (const mw of this.motorways) {
+                for (let s = Math.floor(mw.samples.length * 0.16); s <= Math.ceil(mw.samples.length * 0.84); s += 3) {
+                  const d = Math.hypot(cTown.x - mw.samples[s].x, cTown.y - mw.samples[s].y);
+                  if (d < minD) {
+                    minD = d;
+                    bestTargetPt = mw.samples[s];
+                  }
+                }
+              }
+
+              const mEnd = resolveTownOrHubEndpoint(cTown, bestTargetPt.x, bestTargetPt.y, true);
+              const spurRes = this.tryBuildTrumpetSpurToTrunk(
+                mwayNumber,
+                mEnd.stub.x,
+                mEnd.stub.y,
+                algo,
+                mEnd.usedHubGate ? mEnd.ap.id : null,
+                cTown.id
+              );
+              if (spurRes) {
+                if (mEnd.usedHubGate) mEnd.ap.motorwayId = mwayNumber;
+                mwayNumber++;
+                this.motorways.push(spurRes.mw);
+                this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+                this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
+                this.interchanges.push(spurRes.trumpetIc);
+                townMotorwayDegree[cTown.id]++;
+                connectedClusters.add(metro.clusterId);
+                linkedCluster = true;
+                break;
+              } else if (!mEnd.usedHubGate) {
+                this.removeOrphanedTerminalStub(mEnd.stub.x, mEnd.stub.y);
+              } else {
+                this.interchanges = this.interchanges.filter(
+                  ic => !(ic.type === 'terminal-stub' && ic.isAirportStub && ic.airportId === mEnd.ap.id)
+                );
+              }
+            }
+            if (linkedCluster) continue;
+
+            // 2B. Otherwise link `cTown` to an already-connected hub town via a shared beltway stub or Cloverleaf crossing
             for (const cTown of clusterTowns) {
               if (linkedCluster) break;
               const hubCandidates = this.towns
@@ -3349,7 +3473,7 @@
               for (const hubTown of hubCandidates) {
                 if (townMotorwayDegree[hubTown.id] >= 2) continue;
                 const d = Math.hypot(hubTown.x - cTown.x, hubTown.y - cTown.y);
-                if (d < 38 || d > 210) continue;
+                if (d < 36 || d > 215) continue;
                 const canShare =
                   townMotorwayDegree[hubTown.id] === 1 &&
                   this.findPassThroughStubAtTown(hubTown, cTown.x, cTown.y) !== null;
@@ -3366,7 +3490,8 @@
                 const mwCluster = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, hubTown.id);
                 const crossesExisting =
                   mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
-                if (mwCluster && (canShare || crossesExisting || pass === 1)) {
+                // Strict single-component invariant: must either share a degree-1 hub stub OR cross an existing trunk!
+                if (mwCluster && (canShare || crossesExisting)) {
                   if (endA.usedHubGate) endA.ap.motorwayId = mwayNumber;
                   if (endB.usedHubGate) endB.ap.motorwayId = mwayNumber;
                   mwayNumber++;
@@ -3374,6 +3499,7 @@
                   townMotorwayDegree[cTown.id]++;
                   townMotorwayDegree[hubTown.id]++;
                   connectedClusters.add(metro.clusterId);
+                  connectedClusters.add(hubTown.clusterId);
                   this.detectAndBuildCloverleafs();
                   linkedCluster = true;
                   break;
@@ -3469,9 +3595,7 @@
                 mwAp &&
                 (this.motorways.length === 0 ||
                   canSharePassThrough ||
-                  townMotorwayDegree[targetTown.id] >= 1 ||
-                  this.motorways.some(m => this.findPolylineIntersection(m.samples, mwAp.samples) !== null) ||
-                  (ap.isHub && minAlign < 0));
+                  this.motorways.some(m => this.findPolylineIntersection(m.samples, mwAp.samples) !== null));
               if (mwAp && connectsToTrunk) {
                 ap.motorwayId = mwayNumber++;
                 this.motorways.push(mwAp);
@@ -3844,14 +3968,9 @@
         ctx.lineCap = 'butt';
         ctx.lineJoin = 'bevel';
 
-        // 2B. Outer Waterfront Blush Band (follows the exact 45°/90° shoreline contour)
-        ctx.strokeStyle = PALETTE.urbanBlushPink;
-        ctx.lineWidth = ts * 6.0;
-        ctx.stroke(waterPath);
-
         // 3. Cream Sand/Bank Casing around Water (Clean 45°/90° architectural bank border)
         ctx.strokeStyle = PALETTE.bgPaper;
-        ctx.lineWidth = ts * 1.65;
+        ctx.lineWidth = ts * 1.45;
         ctx.stroke(waterPath);
         ctx.fillStyle = PALETTE.bgPaper;
         ctx.fill(waterPath);
