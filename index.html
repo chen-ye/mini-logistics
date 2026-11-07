@@ -190,6 +190,7 @@
           <option value="estuary">Coastal Estuary & Bay Harbor</option>
           <option value="archipelago">Twin-Channel Delta & Islands</option>
           <option value="inland">Inland Lakes & Meandering Valley</option>
+          <option value="island-hopper">🏝️ Island Hopper (Multi-Island Air & Causeway Chain)</option>
         </select>
       </div>
 
@@ -547,6 +548,8 @@
         this.roadGrid = new Uint8Array(size);         // 0 = none, 1 = street, 2 = arterial, 3 = bridge, 4 = airport-loop
         this.buildingMask = new Uint8Array(size);     // 0 = free, 1 = house, 2 = destination, 3 = airport, 4 = interchange/ramp reserve
         this.zoneColorIdx = new Int8Array(size).fill(-1);
+        this.landmassId = new Int16Array(size).fill(-1); // Connected dry-land island ID (0 = largest mainland)
+        this.landmasses = [];
 
         // High-level generated entities
         this.rivers = [];
@@ -661,6 +664,29 @@
         const offY = this.rng.range(10, 90);
         const foldPhase = this.rng.range(0, Math.PI * 2);
 
+        // Optional Volcanic/Tectonic Island Chain Centers for `island-hopper`
+        const islandArc = [];
+        if (arch === 'island-hopper') {
+          const arcAnchors = [
+            { x: 0.18, y: 0.26, rx: 0.112, ry: 0.142, height: 0.92 }, // 1. NW Main High Island
+            { x: 0.48, y: 0.22, rx: 0.088, ry: 0.112, height: 0.82 }, // 2. North-Central Causeway Island
+            { x: 0.81, y: 0.25, rx: 0.094, ry: 0.122, height: 0.84 }, // 3. NE Outer Volcanic Island
+            { x: 0.20, y: 0.76, rx: 0.094, ry: 0.122, height: 0.84 }, // 4. SW Outer Atoll Island
+            { x: 0.51, y: 0.74, rx: 0.090, ry: 0.115, height: 0.82 }, // 5. South-Central Sister Island
+            { x: 0.80, y: 0.72, rx: 0.115, ry: 0.146, height: 0.94 }  // 6. SE Main High Island
+          ];
+          for (const a of arcAnchors) {
+            islandArc.push({
+              x: (a.x - 0.5) + this.rng.range(-0.024, 0.024),
+              y: (a.y - 0.5) + this.rng.range(-0.024, 0.024),
+              rx: a.rx * this.rng.range(0.94, 1.06),
+              ry: a.ry * this.rng.range(0.94, 1.06),
+              ang: this.rng.range(-0.55, 0.55),
+              height: a.height
+            });
+          }
+        }
+
         // 2A. Synthesize Seed-Unique Multi-Octave Tectonic + Fold-Valley Heightmap
         const sampleElevs = [];
         for (let y = 0; y < H; y++) {
@@ -696,7 +722,21 @@
 
             let elev = macroPlate * 0.52 + foldValleys * 0.75 + ridgedSpines + fineDetail;
 
-            if (arch === 'estuary') {
+            if (arch === 'island-hopper') {
+              // Multi-Island Volcanic Archipelago: 6 distinct islands with volcanic peaks, coves & open sea channels
+              let maxIslandDome = 0;
+              for (const isl of islandArc) {
+                const dxI = (nx + warpU * 0.38) - isl.x;
+                const dyI = (ny + warpV * 0.38) - isl.y;
+                const cI = Math.cos(isl.ang), sI = Math.sin(isl.ang);
+                const uI = (dxI * cI + dyI * sI) / isl.rx;
+                const vI = (-dxI * sI + dyI * cI) / isl.ry;
+                const d2 = uI * uI + vI * vI;
+                const dome = Math.exp(-d2 * 2.15) * isl.height;
+                if (dome > maxIslandDome) maxIslandDome = dome;
+              }
+              elev = maxIslandDome * 0.86 + (macroPlate - 0.5) * 0.16 + ridgedSpines * maxIslandDome * 0.65 + (fineDetail - 0.5) * 0.14;
+            } else if (arch === 'estuary') {
               elev += -coastDepth * 0.22 - bayIndent * 1.15 - lakeWell1 * 0.95 - lakeWell2 * 0.85;
             } else if (arch === 'archipelago') {
               const straitWave = Math.cos(uStrike * Math.PI * 2.8 + offX) * Math.sin(vStrike * Math.PI * 2.4 + offY) * 0.22;
@@ -726,8 +766,11 @@
           this.elevationField[i] = 0.02 + ((this.elevationField[i] - minE) / spanE) * 0.96;
         }
 
-        const baseFrac = arch === 'archipelago' ? 0.22 : (arch === 'estuary' ? 0.19 : (arch === 'inland' ? 0.14 : 0.17));
-        const targetWaterFrac = Math.max(0.10, Math.min(0.32, baseFrac * (0.68 + waterRatio * 0.65)));
+        const baseFrac = arch === 'island-hopper'
+          ? 0.64
+          : (arch === 'archipelago' ? 0.22 : (arch === 'estuary' ? 0.19 : (arch === 'inland' ? 0.14 : 0.17)));
+        const maxFrac = arch === 'island-hopper' ? 0.72 : 0.32;
+        const targetWaterFrac = Math.max(0.10, Math.min(maxFrac, baseFrac * (0.68 + waterRatio * 0.65)));
         const qIdx = Math.floor(sampleElevs.length * targetWaterFrac);
         const seaLevel = 0.02 + ((sampleElevs[qIdx] - minE) / spanE) * 0.96;
         this.seaLevel = seaLevel;
@@ -1163,6 +1206,54 @@
             );
           }
         }
+
+        // 3. Connected Dry-Land Landmass / Island Labeling (`this.landmassId`)
+        this.landmassId.fill(-1);
+        this.landmasses = [];
+        const rawLandmasses = [];
+        const visitedLand = new Uint8Array(W * H);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const startId = this.idx(x, y);
+            if (this.waterMask[startId] > 0 || visitedLand[startId]) continue;
+            const comp = [startId];
+            visitedLand[startId] = 1;
+            let sumX = 0, sumY = 0;
+            for (let h = 0; h < comp.length; h++) {
+              const cid = comp[h];
+              const cx = cid % W;
+              const cy = Math.floor(cid / W);
+              sumX += cx;
+              sumY += cy;
+              for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+                const nx = cx + dx, ny = cy + dy;
+                if (this.inBounds(nx, ny)) {
+                  const nid = this.idx(nx, ny);
+                  if (this.waterMask[nid] === 0 && !visitedLand[nid]) {
+                    visitedLand[nid] = 1;
+                    comp.push(nid);
+                  }
+                }
+              }
+            }
+            if (comp.length >= 60) {
+              rawLandmasses.push({
+                tiles: comp,
+                size: comp.length,
+                cx: Math.round(sumX / comp.length),
+                cy: Math.round(sumY / comp.length)
+              });
+            }
+          }
+        }
+        rawLandmasses.sort((a, b) => b.size - a.size);
+        for (let lmIdx = 0; lmIdx < rawLandmasses.length; lmIdx++) {
+          const lm = rawLandmasses[lmIdx];
+          for (const cid of lm.tiles) {
+            this.landmassId[cid] = lmIdx;
+          }
+          this.landmasses.push({ id: lmIdx, size: lm.size, cx: lm.cx, cy: lm.cy });
+        }
       }
 
       seedSettlements() {
@@ -1221,11 +1312,14 @@
           { x: this.W * 0.50, y: this.H * 0.48 }
         ];
 
+        const isIslandHopper = this.config.archetype === 'island-hopper';
+        const landmassTownCount = new Int16Array(Math.max(1, this.landmasses.length));
+
         for (let i = 0; i < targetCount; i++) {
           const isClusterAnchor = i < numRegional;
           const tier = i < numMetros ? 1 : (i < numRegional ? 2 : (i < Math.round(targetCount * 0.65) ? 3 : 4));
-          const urbanRadius = tier === 1 ? 21 : (tier === 2 ? 13 : (tier === 3 ? 8 : 5));
-          const minSpacing = tier === 1 ? 105 : (tier === 2 ? 52 : (tier === 3 ? 28 : 19));
+          const urbanRadius = tier === 1 ? (isIslandHopper ? 17 : 21) : (tier === 2 ? 12 : (tier === 3 ? 8 : 5));
+          const minSpacing = tier === 1 ? (isIslandHopper ? 78 : 105) : (tier === 2 ? (isIslandHopper ? 38 : 52) : (tier === 3 ? 25 : 18));
 
           let bestScore = -1;
           let bestPt = null;
@@ -1235,14 +1329,16 @@
               const id = this.idx(x, y);
               // Allow waterfront-hugging cities right up to 2.2 tiles from the shoreline!
               if (this.waterMask[id] > 0 || this.distToWater[id] < 2.2) continue;
+              const lmId = this.landmassId[id];
+              if (lmId < 0) continue;
               if (this.slopeField[id] > (tier <= 2 ? 0.36 : 0.44) || this.elevationField[id] > this.seaLevel + 0.36) continue;
 
               let tooClose = false;
               for (const t of this.towns) {
                 const d = Math.hypot(x - t.x, y - t.y);
                 const reqDist = (tier === 1 && t.tier === 1)
-                  ? 105
-                  : Math.max(minSpacing, (t.urbanRadius + urbanRadius) * 1.42);
+                  ? (isIslandHopper ? 78 : 105)
+                  : Math.max(minSpacing, (t.urbanRadius + urbanRadius) * 1.38);
                 if (d < reqDist) {
                   tooClose = true;
                   break;
@@ -1257,7 +1353,10 @@
 
               let score = this.urbanSuitability[id] * 0.72 + waterfrontBonus + this.rng.range(-0.025, 0.025);
 
-              if (isClusterAnchor) {
+              // In `island-hopper`, guarantee every island gets seeded with settlements!
+              if (isIslandHopper && landmassTownCount[lmId] === 0 && this.landmasses[lmId].size >= 160) {
+                score += 0.65;
+              } else if (isClusterAnchor) {
                 const sec = sectorCenters[i % sectorCenters.length];
                 const dSec = Math.hypot(x - sec.x, y - sec.y);
                 score += Math.exp(-Math.pow(dSec / (this.W * 0.24), 2)) * 0.42;
@@ -1265,12 +1364,13 @@
 
               if (score > bestScore) {
                 bestScore = score;
-                bestPt = { x, y, score };
+                bestPt = { x, y, score, lmId };
               }
             }
           }
 
           if (bestPt) {
+            landmassTownCount[bestPt.lmId]++;
             let clusterId = i;
             if (!isClusterAnchor && this.clusters.length > 0) {
               let minCD = Infinity;
@@ -1292,6 +1392,7 @@
             const townObj = {
               id: this.towns.length,
               clusterId,
+              landmassId: bestPt.lmId,
               name,
               iata,
               tier,
@@ -1360,13 +1461,31 @@
       }
 
       solveAndPlaceAirports() {
-        const targetAirports = Math.min(this.config.airportCount, this.towns.length);
+        const isIslandHopper = this.config.archetype === 'island-hopper';
+        const effectiveApCount = isIslandHopper ? Math.max(this.config.airportCount, 5) : this.config.airportCount;
+        const targetAirports = Math.min(effectiveApCount, this.towns.length);
         const baseRad = this.windVector.rad;
 
         this.airportHeatmap.fill(0);
 
-        // Sort candidate host cities by tier & population priority
-        const candidateTowns = [...this.towns].sort((a, b) => a.tier - b.tier || b.suitabilityScore - a.suitabilityScore);
+        // Sort candidate host cities by tier & population priority;
+        // in `island-hopper`, prioritize placing 1 airport on each distinct island (`landmassId`) first!
+        const byTier = [...this.towns].sort((a, b) => a.tier - b.tier || b.suitabilityScore - a.suitabilityScore);
+        let candidateTowns = byTier;
+        if (isIslandHopper) {
+          const seenIslands = new Set();
+          const firstPerIsland = [];
+          const rest = [];
+          for (const t of byTier) {
+            if (!seenIslands.has(t.landmassId)) {
+              seenIslands.add(t.landmassId);
+              firstPerIsland.push(t);
+            } else {
+              rest.push(t);
+            }
+          }
+          candidateTowns = [...firstPerIsland, ...rest];
+        }
 
         for (let aIdx = 0; aIdx < targetAirports; aIdx++) {
           const hostTown = candidateTowns[aIdx];
@@ -1812,30 +1931,40 @@
         }
 
         // Commit surface arterial roads within urban clusters or regional valley neighbors (<= 112 tiles);
-        // also ensure every town has at least one committed regional road edge so no peripheral town is isolated.
+        // in `island-hopper`, only connect towns on the same island or across narrow straits (<= 54 tiles)
+        // so deep ocean channels between outer islands are served by the aircraft fleet!
+        const isIslandHopper = this.config.archetype === 'island-hopper';
         const townRoadDegree = new Int8Array(nodes.length);
         const skippedEdges = [];
         for (const [i, j] of edges) {
           const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
+          const sameLandmass = nodes[i].ref.landmassId === nodes[j].ref.landmassId;
           const sameCluster = nodes[i].ref.clusterId === nodes[j].ref.clusterId;
+          if (isIslandHopper && !sameLandmass && d > 54) {
+            continue;
+          }
           if (!sameCluster && d > 112) {
             skippedEdges.push([i, j]);
             continue;
           }
           const path = this.findRoadPathAStar(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y, true);
           if (path) {
+            const bridgeTiles = path.filter(pt => pt.isBridge).length;
+            if (isIslandHopper && !sameLandmass && bridgeTiles > 20) continue;
             this.commitRoadPath(path, 'arterial');
             townRoadDegree[i]++;
             townRoadDegree[j]++;
           }
         }
-        for (const [i, j] of skippedEdges) {
-          if (townRoadDegree[i] === 0 || townRoadDegree[j] === 0) {
-            const path = this.findRoadPathAStar(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y, true);
-            if (path) {
-              this.commitRoadPath(path, 'arterial');
-              townRoadDegree[i]++;
-              townRoadDegree[j]++;
+        if (!isIslandHopper) {
+          for (const [i, j] of skippedEdges) {
+            if (townRoadDegree[i] === 0 || townRoadDegree[j] === 0) {
+              const path = this.findRoadPathAStar(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y, true);
+              if (path) {
+                this.commitRoadPath(path, 'arterial');
+                townRoadDegree[i]++;
+                townRoadDegree[j]++;
+              }
             }
           }
         }
@@ -2481,8 +2610,8 @@
         const gy = Math.round(y);
         if (!this.inBounds(gx, gy, 6)) return false;
         const cid = this.idx(gx, gy);
-        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 3.8) return false;
-        if (this.isPointInAirportPad(x, y, 3.8)) return false;
+        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 2.6) return false;
+        if (this.isPointInAirportPad(x, y, 3.4)) return false;
 
         const uAx = Math.cos(angleA), uAy = Math.sin(angleA);
         const uBx = Math.cos(angleB), uBy = Math.sin(angleB);
@@ -2492,16 +2621,16 @@
             const rAx = sA * uAx, rAy = sA * uAy;
             const rBx = sB * uBx, rBy = sB * uBy;
             const checkPts = [
-              { px: x + rAx * 2.9, py: y + rAy * 2.9 },
-              { px: x + rBx * 2.9, py: y + rBy * 2.9 },
-              { px: x + (rAx + rBx) * 1.95, py: y + (rAy + rBy) * 1.95 }
+              { px: x + rAx * 2.8, py: y + rAy * 2.8 },
+              { px: x + rBx * 2.8, py: y + rBy * 2.8 },
+              { px: x + (rAx + rBx) * 1.85, py: y + (rAy + rBy) * 1.85 }
             ];
             for (const { px, py } of checkPts) {
               const rx = Math.round(px);
               const ry = Math.round(py);
               if (!this.inBounds(rx, ry, 4)) return false;
               const rid = this.idx(rx, ry);
-              if (this.waterMask[rid] > 0 || this.distToWater[rid] < 1.8) return false;
+              if (this.waterMask[rid] > 0 || this.distToWater[rid] < 1.5) return false;
               if (this.isPointInAirportPad(px, py, 2.2)) return false;
             }
           }
@@ -2628,14 +2757,14 @@
               crossCount++;
               if (crossCount > 1) return Infinity;
               const crossSin = Math.abs(Math.sin(hit.angleA - hit.angleB));
-              if (crossSin < 0.78) return Infinity;
+              if (crossSin < 0.64) return Infinity;
 
               const dStartA = this.polylineArcLength(other.samples, 0, hit.idxA);
               const dEndA = this.polylineArcLength(other.samples, hit.idxA, other.samples.length - 1);
               const dStartB = this.polylineArcLength(samples, 0, hit.idxB);
               const dEndB = this.polylineArcLength(samples, hit.idxB, samples.length - 1);
 
-              if (dStartA < 26 || dEndA < 26 || dStartB < 26 || dEndB < 26) return Infinity;
+              if (dStartA < 20 || dEndA < 20 || dStartB < 20 || dEndB < 20) return Infinity;
               const nearMajorIc = this.interchanges.some(
                 ic => (ic.type === 'cloverleaf' || ic.type === 'trumpet') && Math.hypot(ic.x - hit.x, ic.y - hit.y) < 28.0
               );
@@ -2914,6 +3043,7 @@
           candidateCurves.push({
             waypoints: [{ x: sx, y: sy }, { x: c1x, y: c1y }, { x: ex, y: ey }],
             isOctilinear: false,
+            isCloverleafTarget: true,
             off: 0,
             preferOff: 0
           });
@@ -3013,7 +3143,8 @@
         for (const cand of candidateCurves) {
           const samples = this.sampleMotorwayCurve(cand.waypoints, cand.isOctilinear);
           const rawScore = this.scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId, cand.preferOff, cand.off);
-          const score = rawScore - (cand.isValleyCorridor ? 15.0 : 0);
+          const bonus = (cand.isCloverleafTarget ? 35.0 : 0) + (cand.isValleyCorridor ? 15.0 : 0);
+          const score = rawScore - bonus;
           if (score < bestScore) {
             bestScore = score;
             bestCand = { waypoints: cand.waypoints, samples };
@@ -3259,7 +3390,7 @@
             if (!hit) continue;
 
             const crossSin = Math.abs(Math.sin(hit.angleA - hit.angleB));
-            if (crossSin < 0.72) continue;
+            if (crossSin < 0.60) continue;
 
             if (!this.isCloverleafFootprintDry(hit.x, hit.y, hit.angleA, hit.angleB, [-1, 1], [-1, 1])) {
               continue;
@@ -3571,10 +3702,11 @@
           };
         };
 
+        const isIslandHopper = this.config.archetype === 'island-hopper';
         // Only Tier-1 Metropolises, Tier-2 Regional Cities, and Airport Host Cities serve as motorway termini
-        const isMajorMotorwayHub = (t) => t.tier <= 2 || t.airportId !== null;
+        const isMajorMotorwayHub = (t) => t.tier <= 2 || t.airportId !== null || (isIslandHopper && t.tier <= 3);
 
-        // 1. Primary Inter-Cluster Interstate Spine (M-1) between the two highest-gravity Metropolises/Cities
+        // 1A. Primary Inter-Cluster Interstate Spine (M-1) between the two highest-gravity Metropolises/Cities
         const pairs = [];
         for (let i = 0; i < this.towns.length; i++) {
           const tA = this.towns[i];
@@ -3583,11 +3715,13 @@
             const tB = this.towns[j];
             if (!isMajorMotorwayHub(tB)) continue;
             const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
-            if (d < 58 || d > 245) continue;
+            const minPairD = isIslandHopper ? 30 : 58;
+            if (d < minPairD || d > 245) continue;
+            const sameIslandBonus = isIslandHopper && tA.landmassId === tB.landmassId ? 3.5 : 1.0;
             const diffClusterBonus = tA.clusterId !== tB.clusterId ? 2.40 : 0.45;
             const metroBonus = (tA.tier === 1 ? 1.6 : 1.0) * (tB.tier === 1 ? 1.6 : 1.0);
             const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 135) / 56, 2));
-            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.38)) * diffClusterBonus * metroBonus * spanBell;
+            const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.38)) * diffClusterBonus * metroBonus * spanBell * sameIslandBonus;
             pairs.push({ tA, tB, gravity, d });
           }
         }
@@ -3600,7 +3734,7 @@
           const endA = resolveTownOrHubEndpoint(tA, tB.x, tB.y, true);
           const endB = resolveTownOrHubEndpoint(tB, tA.x, tA.y, !endA.usedHubGate);
 
-          if (Math.hypot(endB.stub.x - endA.stub.x, endB.stub.y - endA.stub.y) < 38) {
+          if (Math.hypot(endB.stub.x - endA.stub.x, endB.stub.y - endA.stub.y) < (isIslandHopper ? 24 : 38)) {
             if (!endA.usedHubGate) this.removeOrphanedTerminalStub(endA.stub.x, endA.stub.y);
             if (!endB.usedHubGate) this.removeOrphanedTerminalStub(endB.stub.x, endB.stub.y);
             continue;
@@ -3626,6 +3760,88 @@
           } else {
             if (!endA.usedHubGate) this.removeOrphanedTerminalStub(endA.stub.x, endA.stub.y);
             if (!endB.usedHubGate) this.removeOrphanedTerminalStub(endB.stub.x, endB.stub.y);
+          }
+        }
+
+        // 1B. Transverse Cross-Axis Interstate Trunk (M-2) Forming a 4-Way Cloverleaf Interchange (M-1 × M-2)
+        //     Connects two major hubs on opposite sides of M-1 through a dry interior Cloverleaf site on M-1!
+        if (this.motorways.length === 1 && !isIslandHopper) {
+          const mw1 = this.motorways[0];
+          const mDx = mw1.ex - mw1.sx;
+          const mDy = mw1.ey - mw1.sy;
+          const mLen = Math.hypot(mDx, mDy) || 1;
+          const mNx = -mDy / mLen;
+          const mNy = mDx / mLen;
+
+          const crossPairs = [];
+          for (let i = 0; i < this.towns.length; i++) {
+            const tC = this.towns[i];
+            if (tC.tier > 3 || townMotorwayDegree[tC.id] >= 1) continue;
+            const sideC = (tC.x - mw1.sx) * mNx + (tC.y - mw1.sy) * mNy;
+            if (Math.abs(sideC) < 16) continue;
+            for (let j = i + 1; j < this.towns.length; j++) {
+              const tD = this.towns[j];
+              if (tD.tier > 3 || townMotorwayDegree[tD.id] >= 1) continue;
+              if (!isMajorMotorwayHub(tC) && !isMajorMotorwayHub(tD)) continue;
+              const sideD = (tD.x - mw1.sx) * mNx + (tD.y - mw1.sy) * mNy;
+              if (Math.abs(sideD) < 16 || sideC * sideD >= 0) continue; // Must sit on opposite sides of M-1!
+              const d = Math.hypot(tD.x - tC.x, tD.y - tC.y);
+              if (d < 46 || d > 235) continue;
+              const tierWeight = (tC.tier <= 2 ? 1.8 : 1.0) * (tD.tier <= 2 ? 1.8 : 1.0);
+              const score = ((townPop(tC) * townPop(tD)) / Math.pow(d, 0.35)) * tierWeight;
+              crossPairs.push({ tC, tD, score });
+            }
+          }
+          crossPairs.sort((a, b) => b.score - a.score);
+
+          for (const { tC, tD } of crossPairs) {
+            const endC = resolveTownOrHubEndpoint(tC, tD.x, tD.y, true);
+            const endD = resolveTownOrHubEndpoint(tD, tC.x, tC.y, !endC.usedHubGate);
+            const sx = endD.usedHubGate ? endD.stub.x : endC.stub.x;
+            const sy = endD.usedHubGate ? endD.stub.y : endC.stub.y;
+            const ex = endD.usedHubGate ? endC.stub.x : endD.stub.x;
+            const ey = endD.usedHubGate ? endC.stub.y : endD.stub.y;
+            const startApId = endC.usedHubGate ? endC.ap.id : (endD.usedHubGate ? endD.ap.id : null);
+
+            // Find the best dry Cloverleaf crossing point along the middle 56% of M-1
+            let bestViaPt = null;
+            let minViaDist = Infinity;
+            const midX = (sx + ex) * 0.5;
+            const midY = (sy + ey) * 0.5;
+            const crossAng = Math.atan2(ey - sy, ex - sx);
+            const s0 = Math.floor(mw1.samples.length * 0.22);
+            const s1 = Math.ceil(mw1.samples.length * 0.78);
+            for (let s = s0; s <= s1; s += 2) {
+              const pt = mw1.samples[s];
+              const pPrev = mw1.samples[Math.max(0, s - 1)];
+              const pNext = mw1.samples[Math.min(mw1.samples.length - 1, s + 1)];
+              const mAng = Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x);
+              if (Math.abs(Math.sin(mAng - crossAng)) < 0.64) continue;
+              if (!this.isCloverleafFootprintDry(pt.x, pt.y, mAng, crossAng, [-1, 1], [-1, 1])) continue;
+              const dMid = Math.hypot(pt.x - midX, pt.y - midY);
+              if (dMid < minViaDist) {
+                minViaDist = dMid;
+                bestViaPt = pt;
+              }
+            }
+
+            const mw2 = this.createMotorwayEntity(mwayNumber, sx, sy, ex, ey, algo, startApId, tD.id, bestViaPt);
+            const crossesM1 = mw2 && this.findPolylineIntersection(mw1.samples, mw2.samples) !== null;
+            if (mw2 && crossesM1) {
+              if (endC.usedHubGate) endC.ap.motorwayId = mwayNumber;
+              if (endD.usedHubGate) endD.ap.motorwayId = mwayNumber;
+              mwayNumber++;
+              this.motorways.push(mw2);
+              townMotorwayDegree[tC.id]++;
+              townMotorwayDegree[tD.id]++;
+              connectedClusters.add(tC.clusterId);
+              connectedClusters.add(tD.clusterId);
+              this.detectAndBuildCloverleafs();
+              break;
+            } else {
+              if (!endC.usedHubGate) this.removeOrphanedTerminalStub(endC.stub.x, endC.stub.y);
+              if (!endD.usedHubGate) this.removeOrphanedTerminalStub(endD.stub.x, endD.stub.y);
+            }
           }
         }
 
@@ -3696,8 +3912,12 @@
             for (const cTown of clusterTowns) {
               if (linkedCluster) break;
               const hubCandidates = this.towns
-                .filter(t => t.id !== cTown.id && isMajorMotorwayHub(t) && (townMotorwayDegree[t.id] === 1 || connectedClusters.has(t.clusterId) || (pass === 1 && metro.tier === 1)))
+                .filter(t => t.id !== cTown.id && isMajorMotorwayHub(t) && (townMotorwayDegree[t.id] === 1 || connectedClusters.has(t.clusterId) || (pass === 1 && (metro.tier === 1 || isIslandHopper))))
                 .sort((a, b) => {
+                  if (isIslandHopper) {
+                    const sameLm = (b.landmassId === cTown.landmassId ? 1 : 0) - (a.landmassId === cTown.landmassId ? 1 : 0);
+                    if (sameLm !== 0) return sameLm;
+                  }
                   const degDiff = (townMotorwayDegree[b.id] === 1 ? 1 : 0) - (townMotorwayDegree[a.id] === 1 ? 1 : 0);
                   if (degDiff !== 0) return degDiff;
                   return Math.hypot(a.x - cTown.x, a.y - cTown.y) - Math.hypot(b.x - cTown.x, b.y - cTown.y);
@@ -3706,7 +3926,7 @@
               for (const hubTown of hubCandidates) {
                 if (townMotorwayDegree[hubTown.id] >= 2) continue;
                 const d = Math.hypot(hubTown.x - cTown.x, hubTown.y - cTown.y);
-                if (d < 34 || d > 225) continue;
+                if (d < (isIslandHopper ? 24 : 34) || d > 225) continue;
                 const canShare =
                   townMotorwayDegree[hubTown.id] === 1 &&
                   this.findPassThroughStubAtTown(hubTown, cTown.x, cTown.y) !== null;
@@ -3723,7 +3943,7 @@
                 const mwCluster = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, hubTown.id);
                 const crossesExisting =
                   mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
-                if (mwCluster && (canShare || crossesExisting || (pass === 1 && metro.tier === 1))) {
+                if (mwCluster && (canShare || crossesExisting || (pass === 1 && (metro.tier === 1 || isIslandHopper)))) {
                   if (endA.usedHubGate) endA.ap.motorwayId = mwayNumber;
                   if (endB.usedHubGate) endB.ap.motorwayId = mwayNumber;
                   mwayNumber++;
@@ -3947,9 +4167,10 @@
         for (let i = 0; i < 135; i++) {
           this.spawnCar();
         }
-        // Spawn aircraft operating between airports (or regional off-map airways if 1 airport)
+        // Spawn aircraft operating between airports (with 3x air fleet in Island Hopper mode!)
         if (world.airports.length > 0) {
-          const planeCount = Math.max(2, world.airports.length * 2);
+          const mult = world.config.archetype === 'island-hopper' ? 3 : 2;
+          const planeCount = Math.max(2, world.airports.length * mult);
           for (let i = 0; i < planeCount; i++) {
             this.spawnPlane(i / planeCount);
           }
@@ -4894,9 +5115,9 @@
               }
             }
 
-            const outerDist = ts * 2.15;
-            const outerCtrl = ts * 0.72;
-            const leafSpan  = ts * 1.95;
+            const outerDist = ts * 2.95;
+            const outerCtrl = ts * 1.05;
+            const leafSpan  = ts * 3.10;
 
             ctx.save();
             ctx.lineCap = 'round';
@@ -5900,7 +6121,16 @@
     });
 
     document.getElementById('seedInput').addEventListener('change', () => rebuildWorld(true));
-    document.getElementById('archetypeSelect').addEventListener('change', () => rebuildWorld(false));
+    document.getElementById('archetypeSelect').addEventListener('change', (e) => {
+      if (e.target.value === 'island-hopper') {
+        const apSlider = document.getElementById('sliderAirports');
+        if (parseInt(apSlider.value, 10) < 5) {
+          apSlider.value = '5';
+          updateAirportSliderLabel();
+        }
+      }
+      rebuildWorld(false);
+    });
     document.getElementById('expresswayAlgoSelect').addEventListener('change', () => rebuildWorld(true));
     document.getElementById('airportMixSelect').addEventListener('change', () => rebuildWorld(true));
     document.getElementById('toggleInterRamps').addEventListener('change', () => rebuildWorld(true));
