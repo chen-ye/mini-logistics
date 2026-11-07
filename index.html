@@ -513,9 +513,15 @@
       ]
     };
 
-    const SYLLABLES_START = ['New ', 'Port ', 'San ', 'Mount ', 'Saint ', 'Lake ', 'East ', 'West ', 'North ', ''];
-    const SYLLABLES_ROOT = ['haven', 'brook', 'field', 'ford', 'bridge', 'vale', 'crest', 'wick', 'shore', 'grad', 'burgh', 'ton', 'bay', 'minster'];
-    const SYLLABLES_PRE = ['Oak', 'Clear', 'Fair', 'Mill', 'acorn', 'Silver', 'Rose', 'Pine', 'Cinder', 'bel', 'Mar', 'Ver', 'Sol', 'hal'];
+    const SYLLABLES_START = ['New ', 'Great ', 'Fort ', 'Port ', 'Little ', 'East ', 'West ', 'North ', ''];
+    const SYLLABLES_PRE = [
+      'Oak', 'Clear', 'Fair', 'Mill', 'Silver', 'Rose', 'Pine', 'Cinder', 'Mar', 'Ver',
+      'Barn', 'Dren', 'Flet', 'Gron', 'Suding', 'Chond', 'Wath', 'Len', 'Rading', 'Tud', 'Farn', 'flind', 'shan'
+    ];
+    const SYLLABLES_ROOT_VALLEY = ['ton', 'burgh', 'ham', 'stone', 'wick', 'field', 'ville', 'minster', 'wood', 'hall'];
+    const SYLLABLES_ROOT_RIVER = ['bridge', 'ford', 'brook', 'falls', 'well', 'pool'];
+    const SYLLABLES_ROOT_COAST = ['bay', 'haven', 'shore', 'mouth', 'port'];
+    const SYLLABLES_ROOT_HILL = ['hill', 'ridge', 'crest', 'vale', 'head'];
 
     /***************************************************************************
      * 3. PROCEDURAL WORLD GENERATOR CLASS
@@ -527,12 +533,16 @@
         this.H = 224; // OpenTTD State/Region scale height in tiles
         this.tileSize = 15; // Base world pixel size per tile
 
-        // Flat TypedArrays for fast spatial fields
+        // Flat TypedArrays for fast spatial & topographic fields
         const size = this.W * this.H;
+        this.elevationField = new Float32Array(size); // [0..1] Latent OpenTTD heightmap (sea, plains, valleys, ridges)
+        this.slopeField = new Float32Array(size);     // [0..1] Local topographic gradient magnitude
+        this.drainageField = new Float32Array(size);  // Downhill watershed flow accumulation
+        this.seaLevel = 0.34;
         this.waterMask = new Uint8Array(size);        // 0 = Land, 1 = River, 2 = Sea/Lake
-        this.fertilityField = new Float32Array(size); // [0..1] Alluvial & resource score
+        this.fertilityField = new Float32Array(size); // [0..1] Alluvial & valley fertility score
         this.distToWater = new Float32Array(size);    // Euclidean distance to nearest water tile
-        this.urbanSuitability = new Float32Array(size); // Central Place Theory suitability
+        this.urbanSuitability = new Float32Array(size); // Topography + Central Place Theory suitability
         this.airportHeatmap = new Float32Array(size);   // Multi-criteria airport suitability score
         this.roadGrid = new Uint8Array(size);         // 0 = none, 1 = street, 2 = arterial, 3 = bridge, 4 = airport-loop
         this.buildingMask = new Uint8Array(size);     // 0 = free, 1 = house, 2 = destination, 3 = airport, 4 = interchange/ramp reserve
@@ -573,28 +583,28 @@
         // Step 1: Prevailing Wind Vector (governs airport runway orientation & approach cones)
         this.initPrevailingWind();
 
-        // Step 2: Hydrology (Oceans, Bays, Meandering Rivers & Confluences + Morphological Smoothing)
+        // Step 2: Latent OpenTTD Topography & Watershed Hydrology (Bays, Valley Lakes & Downhill Rivers)
         this.generateHydrology();
 
-        // Step 3: Distance Transforms, Alluvial Fertility & Central Place Suitability
+        // Step 3: Slope Gradients, Distance Transforms & Valley/Alluvial Suitability
         this.computeSpatialFields();
 
-        // Step 4: Central Place Theory Settlement Seeding (Metropolis -> Regional Towns -> Villages)
+        // Step 4: Topography-Guided Central Place Settlement Seeding (Metropolis -> Regional -> Market Towns)
         this.seedSettlements();
 
         // Step 5: Multi-Tier Airport Solver (1 Intl Dual-Rwy Hub + Regional + Cargo) & Landside Terminal Loops
         this.solveAndPlaceAirports();
 
-        // Step 6: Regional A* Road & Perpendicular Bridge Network
+        // Step 6: Regional A* Road & Perpendicular Bridge Network (Valley-Following)
         this.buildRegionalRoadNetwork();
 
-        // Step 7: Local Urban Street Grids, Color-Coded Houses & Destination Lots
+        // Step 7: Local Urban Street Grids, Color-Coded Houses & Destination Lots (Contour-Hugging)
         this.growUrbanFabric();
 
         // Step 8: Expressways, Cloverleaf Interchanges, Street-Stub Terminations & Intermediate Ramps (Displaces Buildings!)
         this.buildNumberedMotorways();
 
-        // Step 9: Landscape Trees & Park Belts
+        // Step 9: Landscape Trees & Upland Forest Belts
         this.populateLandscapeTrees();
 
         this.genTimeMs = Math.round(performance.now() - t0);
@@ -624,133 +634,253 @@
         this.logs.push(`Prevailing wind locked to <b>${chosen.label}</b>.`);
       }
 
+      /**
+       * Models an underlying OpenTTD TerraGenesis-style elevation heightmap (`elevationField`)
+       * and derives coastal firths/sounds, contour-hugging inland valley lakes, and downhill-flowing
+       * dendritic river networks with confluences and estuaries.
+       */
       generateHydrology() {
         const { W, H } = this;
         const waterRatio = this.config.waterCoverage / 100; // 0.20 .. 0.80
         const arch = this.config.archetype;
         this.hydroFeatures = [];
+        this.rivers = [];
+        this.drainageField.fill(0);
 
-        // 2A. Regional Macro-Water Bodies (Coastal Bays, Sounds, or Great Lakes) via Domain-Warped FBM
+        const seaLevel = 0.31 + (waterRatio - 0.35) * 0.24;
+        this.seaLevel = seaLevel;
+
+        // Seed 2-3 tectonic valley lake/bay basins and 2-3 highland massif centers
+        const baySideX = this.rng.next() < 0.5 ? 0.88 : 0.12;
+        const baySideY = this.rng.range(0.45, 0.72);
+        const northBayX = this.rng.range(0.38, 0.66);
+        const lakeBasinA = { x: this.rng.range(0.32, 0.52), y: this.rng.range(0.54, 0.72), rx: 0.14, ry: 0.075 };
+        const lakeBasinB = { x: this.rng.range(0.28, 0.58), y: this.rng.range(0.22, 0.36), rx: 0.11, ry: 0.065 };
+
+        // 2A. Synthesize Domain-Warped Multi-Octave Elevation Heightmap
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
             const nx = x / W;
             const ny = y / H;
-            const warpX = this.noise.fbm(nx * 2.2 + 4.1, ny * 2.2 + 1.7, 2) * 0.14;
-            const warpY = this.noise.fbm(nx * 2.2 + 8.3, ny * 2.2 + 6.2, 2) * 0.14;
-            const n = this.noise.fbm((nx + warpX) * 2.6, (ny + warpY) * 2.6, 2);
+
+            // Multi-scale domain warping so coastlines, valleys, and lakes have organic OpenTTD contours
+            const warp1X = this.noise.fbm(nx * 2.1 + 3.7, ny * 2.1 + 1.9, 2) * 0.16 - 0.08;
+            const warp1Y = this.noise.fbm(nx * 2.1 + 8.1, ny * 2.1 + 5.4, 2) * 0.16 - 0.08;
+            const wx = nx + warp1X;
+            const wy = ny + warp1Y;
+
+            const macroContinent = this.noise.fbm(wx * 1.85 + 1.2, wy * 1.85 + 2.4, 3);
+            const ridgeRaw = this.noise.noise(wx * 3.6 + 11.3, wy * 3.6 + 7.1);
+            const ridgedHills = 1.0 - Math.abs(2.0 * ridgeRaw - 1.0); // Ridged multifractal hill spines
+            const detailHills = this.noise.fbm(nx * 6.4 + 17.0, ny * 6.4 + 23.0, 2);
+
+            let elev = macroContinent * 0.52 + ridgedHills * 0.28 + detailHills * 0.20;
+
+            // Shape regional tectonic basins according to the selected geography archetype
+            const dLakeA = Math.hypot((wx - lakeBasinA.x) / lakeBasinA.rx, (wy - lakeBasinA.y) / lakeBasinA.ry);
+            const dLakeB = Math.hypot((wx - lakeBasinB.x) / lakeBasinB.rx, (wy - lakeBasinB.y) / lakeBasinB.ry);
+            const lakeDipA = Math.exp(-dLakeA * dLakeA) * 0.26;
+            const lakeDipB = Math.exp(-dLakeB * dLakeB) * 0.22;
 
             if (arch === 'estuary') {
-              // Major coastal bay & sound on one side + secondary harbor bay on opposite corner
-              const eastBay = Math.pow(Math.max(0, (nx - 0.66) / 0.34), 1.35) * 0.72 +
-                              Math.pow(Math.max(0, (ny - 0.62) / 0.38), 1.45) * 0.55;
-              const nwSound = Math.pow(Math.max(0, (0.28 - nx) / 0.28), 1.5) *
-                              Math.pow(Math.max(0, (0.34 - ny) / 0.34), 1.5) * 0.78;
-              const seaScore = n * 0.54 + Math.max(eastBay, nwSound);
-              if (seaScore > 0.78 - waterRatio * 0.30) this.waterMask[this.idx(x, y)] = 2;
+              // Deep OpenTTD coastal firth/sound indenting from one side + northern bay + interior valley lake
+              const dSound = Math.hypot((wx - baySideX) / 0.30, (wy - baySideY) / 0.16);
+              const dNorthBay = Math.hypot((wx - northBayX) / 0.19, (wy - 0.04) / 0.14);
+              const soundDip = Math.exp(-dSound * dSound) * 0.42 + Math.exp(-dNorthBay * dNorthBay) * 0.34;
+              elev = elev + 0.08 - soundDip - lakeDipA * 0.85;
             } else if (arch === 'archipelago') {
-              const distCenter = Math.hypot(nx - 0.5, ny - 0.5);
-              const channelWave = Math.sin((nx * 2.2 + ny * 1.4) * Math.PI) * 0.12;
-              const seaScore = n * 0.72 + distCenter * 0.32 + channelWave;
-              if (seaScore > 0.73 - waterRatio * 0.28) this.waterMask[this.idx(x, y)] = 2;
+              // Branching drowned marine straits and sounds separating hilly islands
+              const strait1 = Math.exp(-Math.pow((wy - (0.48 + Math.sin(wx * 4.2) * 0.12)) / 0.09, 2)) * 0.32;
+              const strait2 = Math.exp(-Math.pow((wx - (0.52 + Math.cos(wy * 3.8) * 0.14)) / 0.10, 2)) * 0.30;
+              const edgeSea = Math.pow(Math.max(0, Math.hypot(nx - 0.5, ny - 0.5) - 0.36) / 0.24, 1.5) * 0.24;
+              elev = elev + 0.07 - Math.max(strait1, strait2 * 0.85) - edgeSea;
             } else if (arch === 'inland') {
-              // Regional Great Lakes basins scattered across the state
-              if (n > 0.76 - waterRatio * 0.23) this.waterMask[this.idx(x, y)] = 2;
+              // Continental upland ridges framing 2-3 elongated Great Valley Lakes
+              const lakeBasinC = Math.exp(-Math.pow((wx - 0.76) / 0.13, 2) - Math.pow((wy - 0.46) / 0.09, 2)) * 0.28;
+              elev = elev + 0.11 - lakeDipA * 1.15 - lakeDipB * 1.10 - lakeBasinC;
             } else {
-              // 'confluence': Subtle coastal delta mouth at southern/eastern edge + highland lakes
-              const deltaMouth = Math.pow(Math.max(0, (ny - 0.80) / 0.20), 1.6) *
-                                 Math.exp(-Math.pow((nx - 0.55) / 0.22, 2)) * 0.55;
-              if (n * 0.58 + deltaMouth > 0.81 - waterRatio * 0.20) {
-                this.waterMask[this.idx(x, y)] = 2;
+              // 'confluence': OpenTTD classic — coastal firth/sound on one flank, northern bay, and two valley lakes fed by upland rivers
+              const dFirth = Math.hypot((wx - baySideX) / 0.26, (wy - baySideY) / 0.13);
+              const dTopBay = Math.hypot((wx - northBayX) / 0.17, (wy - 0.02) / 0.12);
+              const firthDip = Math.exp(-dFirth * dFirth) * 0.38 + Math.exp(-dTopBay * dTopBay) * 0.32;
+              elev = elev + 0.10 - firthDip - lakeDipA * 0.98 - lakeDipB * 0.88;
+            }
+
+            const id = this.idx(x, y);
+            const clampedElev = Math.max(0.02, Math.min(0.98, elev));
+            this.elevationField[id] = clampedElev;
+            if (clampedElev < seaLevel) {
+              this.waterMask[id] = 2; // Flooded sea, sound, firth, or valley lake basin
+            }
+          }
+        }
+
+        // Record the primary lake/firth centers as hydro features
+        this.hydroFeatures.push(
+          { x: Math.round(lakeBasinA.x * W), y: Math.round(lakeBasinA.y * H), type: 'lake' },
+          { x: Math.round(lakeBasinB.x * W), y: Math.round(lakeBasinB.y * H), type: 'lake' },
+          { x: Math.round(baySideX * W), y: Math.round(baySideY * H), type: 'firth' }
+        );
+
+        // 2B. Connect Inland Lake Basins to the Sea/Firth via Valley Outflow Rivers
+        //     and Trace Downhill Dendritic Rivers from Highland Springs
+        const traceValleyRiver = (startX, startY, targetX, targetY, baseWidth, isMajorTrunk) => {
+          let cx = startX;
+          let cy = startY;
+          let vx = 0;
+          let vy = 0;
+          const phase = this.rng.range(0, Math.PI * 2);
+          const pathPts = [];
+
+          for (let step = 0; step < 520; step++) {
+            const ix = Math.round(cx);
+            const iy = Math.round(cy);
+            if (!this.inBounds(ix, iy, 2)) break;
+
+            const cid = this.idx(ix, iy);
+            const prevFlow = this.drainageField[cid];
+            this.drainageField[cid] = prevFlow + (isMajorTrunk ? 2.0 : 1.2);
+
+            // Channel width grows downstream with step progress & accumulated tributary flow
+            const flowBoost = Math.min(2.2, prevFlow * 0.45);
+            const progress = Math.min(1.0, step / 160);
+            const localElev = this.elevationField[cid];
+            const estuaryFlare = localElev < seaLevel + 0.045
+              ? Math.max(0, (seaLevel + 0.045 - localElev) / 0.045) * 2.2
+              : 0;
+            const rad = baseWidth * (0.62 + 0.52 * progress) + flowBoost * 0.45 + estuaryFlare;
+
+            this.carveValleyChannel(cx, cy, rad, 1);
+            pathPts.push({ x: cx, y: cy, rad });
+
+            // If we merged into an already-carved river channel after walking >= 28 steps, record a true Confluence!
+            if (prevFlow >= 1.5 && step > 28) {
+              this.hydroFeatures.push({ x: ix, y: iy, type: 'confluence' });
+              if (!isMajorTrunk) break; // Tributary merges cleanly into the main stem!
+            }
+
+            // Stop once deep inside an open sea/lake basin (after leaving the source region)
+            if (step > 24 && this.waterMask[cid] === 2 && localElev < seaLevel - 0.035) {
+              break;
+            }
+            if (Math.hypot(targetX - cx, targetY - cy) < 6.0) break;
+
+            // Sample local topographic downhill gradient over a 7-tile lookahead kernel
+            let gradX = 0;
+            let gradY = 0;
+            const lookR = 7;
+            for (const [dx, dy] of [[lookR, 0], [-lookR, 0], [0, lookR], [0, -lookR], [5, 5], [-5, 5], [5, -5], [-5, -5]]) {
+              const sx = Math.max(1, Math.min(W - 2, ix + dx));
+              const sy = Math.max(1, Math.min(H - 2, iy + dy));
+              const diff = localElev - this.elevationField[this.idx(sx, sy)];
+              const len = Math.hypot(dx, dy);
+              gradX += (dx / len) * diff;
+              gradY += (dy / len) * diff;
+            }
+
+            // Combine downhill topographic gradient + pull toward target drainage basin + natural meander curl
+            const toTx = targetX - cx;
+            const toTy = targetY - cy;
+            const toTDist = Math.hypot(toTx, toTy) || 1;
+            const dirTx = toTx / toTDist;
+            const dirTy = toTy / toTDist;
+
+            const meander = Math.sin(step * 0.055 + phase) * 0.38 +
+                            (this.noise.noise(cx * 0.045, cy * 0.045) - 0.5) * 0.55;
+            const perpX = -dirTy;
+            const perpY = dirTx;
+
+            let stepX = dirTx * 0.52 + gradX * 4.2 + perpX * meander;
+            let stepY = dirTy * 0.52 + gradY * 4.2 + perpY * meander;
+            const stepLen = Math.hypot(stepX, stepY) || 1;
+            stepX /= stepLen;
+            stepY /= stepLen;
+
+            vx = vx * 0.62 + stepX * 0.38;
+            vy = vy * 0.62 + stepY * 0.38;
+            const vLen = Math.hypot(vx, vy) || 1;
+            cx += (vx / vLen) * 1.15;
+            cy += (vy / vLen) * 1.15;
+          }
+          if (pathPts.length > 10) {
+            this.rivers.push(pathPts);
+          }
+        };
+
+        const firthX = baySideX * W;
+        const firthY = baySideY * H;
+        const lakeAX = lakeBasinA.x * W;
+        const lakeAY = lakeBasinA.y * H;
+        const lakeBX = lakeBasinB.x * W;
+        const lakeBY = lakeBasinB.y * H;
+
+        // 1. Outflow river from Lake Basin A -> Coastal Firth/Sound (like Lenston -> Senton/Overnford in OpenTTD)
+        traceValleyRiver(lakeAX, lakeAY, firthX, firthY, 2.5 + waterRatio * 1.8, true);
+
+        // 2. Outflow river from Northern Lake Basin B -> Northern Bay or Lake Basin A
+        traceValleyRiver(lakeBX, lakeBY, northBayX * W, H * 0.04, 2.2 + waterRatio * 1.5, true);
+
+        // 3. Find 5 Highland Springs in the upper hill quadrants and trace dendritic rivers/tributaries downhill
+        const springSectors = [
+          { x0: 0.06, x1: 0.26, y0: 0.10, y1: 0.42, tx: lakeBX, ty: lakeBY, major: true },
+          { x0: 0.06, x1: 0.26, y0: 0.48, y1: 0.88, tx: lakeAX, ty: lakeAY, major: true },
+          { x0: 0.68, x1: 0.94, y0: 0.08, y1: 0.38, tx: firthX, ty: firthY, major: false },
+          { x0: 0.32, x1: 0.68, y0: 0.76, y1: 0.95, tx: lakeAX, ty: lakeAY, major: false },
+          { x0: 0.65, x1: 0.94, y0: 0.68, y1: 0.95, tx: firthX, ty: firthY, major: false }
+        ];
+
+        for (const sec of springSectors) {
+          let bestSpring = null;
+          let maxElev = -1;
+          for (let attempt = 0; attempt < 28; attempt++) {
+            const sx = Math.round(W * this.rng.range(sec.x0, sec.x1));
+            const sy = Math.round(H * this.rng.range(sec.y0, sec.y1));
+            const id = this.idx(sx, sy);
+            if (this.waterMask[id] === 0 && this.elevationField[id] > maxElev) {
+              maxElev = this.elevationField[id];
+              bestSpring = { x: sx, y: sy };
+            }
+          }
+          if (bestSpring) {
+            traceValleyRiver(
+              bestSpring.x,
+              bestSpring.y,
+              sec.tx,
+              sec.ty,
+              (sec.major ? 2.0 : 1.55) + waterRatio * 1.2,
+              sec.major
+            );
+          }
+        }
+
+        this.confluencePoint =
+          this.hydroFeatures.find(f => f.type === 'confluence') ||
+          this.hydroFeatures[0] ||
+          { x: Math.round(W * 0.5), y: Math.round(H * 0.5) };
+
+        // 2C. Breach 1-to-3-Tile Thin Land Dams Between Adjacent Water Bodies
+        for (let pass = 0; pass < 2; pass++) {
+          const nextMask = new Uint8Array(this.waterMask);
+          for (let y = 3; y < H - 3; y++) {
+            for (let x = 3; x < W - 3; x++) {
+              const id = this.idx(x, y);
+              if (this.waterMask[id] > 0) continue;
+              const horizPinch =
+                (this.waterMask[this.idx(x - 1, y)] > 0 || this.waterMask[this.idx(x - 2, y)] > 0) &&
+                (this.waterMask[this.idx(x + 1, y)] > 0 || this.waterMask[this.idx(x + 2, y)] > 0);
+              const vertPinch =
+                (this.waterMask[this.idx(x, y - 1)] > 0 || this.waterMask[this.idx(x, y - 2)] > 0) &&
+                (this.waterMask[this.idx(x, y + 1)] > 0 || this.waterMask[this.idx(x, y + 2)] > 0);
+              if (horizPinch || vertPinch) {
+                nextMask[id] = 1;
               }
             }
           }
+          this.waterMask = nextMask;
         }
 
-        // 2B. Primary River System (Western/Central River Basin + Confluence Fork)
-        const river1X = W * this.rng.range(0.32, 0.48);
-        const phase1A = this.rng.range(0, Math.PI * 2);
-        const phase1B = this.rng.range(0, Math.PI * 2);
-        const amp1 = W * (0.055 + waterRatio * 0.055);
-        const baseRad1 = 3.2 + waterRatio * 3.8;
-
-        const spine1 = [];
-        for (let y = 0; y < H; y++) {
-          const t = y / (H - 1);
-          const wave = Math.sin(t * Math.PI * 2.2 + phase1A) * amp1 +
-                       Math.cos(t * Math.PI * 4.1 + phase1B) * (amp1 * 0.34);
-          const rx = Math.max(22, Math.min(W - 22, river1X + wave + (t - 0.5) * W * 0.08));
-          const rad = baseRad1 * (0.82 + 0.46 * t);
-          spine1.push({ x: rx, y, rad });
-          this.carveDisk(rx, y, rad, 1);
-        }
-
-        // Primary River Y-Confluence Tributary reaching the western/northern boundary
-        const fork1Idx = Math.floor(H * this.rng.range(0.30, 0.50));
-        const fork1 = spine1[fork1Idx];
-        this.hydroFeatures.push({ x: Math.round(fork1.x), y: Math.round(fork1.y), type: 'confluence' });
-        let bx1 = fork1.x;
-        let by1 = fork1.y;
-        const angle1 = this.rng.range(2.35, 2.72); // Heads NW/W across the western basin
-        for (let step = 0; step < 480; step++) {
-          bx1 += Math.cos(angle1 + Math.sin(step * 0.05) * 0.24) * 1.15;
-          by1 += Math.sin(angle1 + Math.cos(step * 0.05) * 0.20) * 1.15;
-          if (!this.inBounds(Math.round(bx1), Math.round(by1), 1)) break;
-          this.carveDisk(bx1, by1, baseRad1 * 0.80, 1);
-        }
-
-        // 2C. Secondary Regional River System (Eastern / Cross-State Valley Basin)
-        const river2X = W * this.rng.range(0.68, 0.82);
-        const phase2A = this.rng.range(0, Math.PI * 2);
-        const amp2 = W * (0.045 + waterRatio * 0.045);
-        const baseRad2 = (2.6 + waterRatio * 3.1);
-
-        const spine2 = [];
-        for (let y = 0; y < H; y++) {
-          const t = y / (H - 1);
-          const wave = Math.sin(t * Math.PI * 1.9 + phase2A) * amp2;
-          const rx = Math.max(24, Math.min(W - 24, river2X + wave - t * W * 0.10));
-          const rad = baseRad2 * (0.80 + 0.42 * t);
-          spine2.push({ x: rx, y, rad });
-          this.carveDisk(rx, y, rad, 1);
-        }
-
-        const fork2Idx = Math.floor(H * this.rng.range(0.45, 0.68));
-        const fork2 = spine2[fork2Idx];
-        this.hydroFeatures.push({ x: Math.round(fork2.x), y: Math.round(fork2.y), type: 'eastern-basin' });
-
-        // Carve a cross-basin connecting tributary or eastern fork to the map boundary
-        let bx2 = fork2.x;
-        let by2 = fork2.y;
-        const angle2 = this.rng.range(-0.45, 0.35); // Flows from the eastern highlands
-        for (let step = 0; step < 420; step++) {
-          bx2 += Math.cos(angle2 + Math.sin(step * 0.06) * 0.22) * 1.15;
-          by2 += Math.sin(angle2 + Math.cos(step * 0.06) * 0.20) * 1.15;
-          if (!this.inBounds(Math.round(bx2), Math.round(by2), 1)) break;
-          this.carveDisk(bx2, by2, baseRad2 * 0.76, 1);
-        }
-
-        // 2D. Carve 1-2 Regional Lake Basins / Bay Harbors at headwaters or valley bends
-        const lakeSpots = [
-          { x: Math.round(W * this.rng.range(0.16, 0.28)), y: Math.round(H * this.rng.range(0.62, 0.80)) },
-          { x: Math.round(W * this.rng.range(0.74, 0.86)), y: Math.round(H * this.rng.range(0.20, 0.38)) }
-        ];
-        for (const ls of lakeSpots) {
-          const lakeR = 7.5 + waterRatio * 6.5;
-          for (let a = 0; a < 10; a++) {
-            const ang = (a / 10) * Math.PI * 2;
-            const ox = ls.x + Math.cos(ang) * lakeR * this.rng.range(0.3, 0.7);
-            const oy = ls.y + Math.sin(ang) * lakeR * this.rng.range(0.3, 0.7);
-            if (this.inBounds(Math.round(ox), Math.round(oy), 8)) {
-              this.carveDisk(ox, oy, lakeR * 0.68, 2);
-            }
-          }
-          this.hydroFeatures.push({ x: ls.x, y: ls.y, type: 'lake' });
-        }
-
-        this.confluencePoint = this.hydroFeatures[0] || { x: Math.round(W * 0.5), y: Math.round(H * 0.5) };
-
-        // 2E. Morphological Cellular Automata Majority-Smoothing (6 passes for ultra-clean vector coastlines)
-        for (let pass = 0; pass < 6; pass++) {
+        // 2D. Morphological Cellular Automata Majority-Smoothing (5 passes for clean Vignelli vector coastlines)
+        for (let pass = 0; pass < 5; pass++) {
           const nextMask = new Uint8Array(this.waterMask);
           for (let y = 1; y < H - 1; y++) {
             for (let x = 1; x < W - 1; x++) {
@@ -770,25 +900,45 @@
         }
       }
 
-      carveDisk(cx, cy, radius, type = 1) {
-        const rCeil = Math.ceil(radius);
+      /**
+       * Carves a river channel disk of radius `radius` and simultaneously erodes a wider
+       * flat-floored alluvial valley trough into `elevationField` so towns and roads naturally
+       * follow the river valley floor.
+       */
+      carveValleyChannel(cx, cy, radius, type = 1) {
+        const valleyRad = radius + 9.5;
+        const rCeil = Math.ceil(valleyRad);
         const r2 = radius * radius;
+        const v2 = valleyRad * valleyRad;
         const ix0 = Math.max(0, Math.floor(cx - rCeil));
         const ix1 = Math.min(this.W - 1, Math.ceil(cx + rCeil));
         const iy0 = Math.max(0, Math.floor(cy - rCeil));
         const iy1 = Math.min(this.H - 1, Math.ceil(cy + rCeil));
         for (let y = iy0; y <= iy1; y++) {
           for (let x = ix0; x <= ix1; x++) {
-            if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
-              this.waterMask[this.idx(x, y)] = type;
+            const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+            if (d2 > v2) continue;
+            const id = this.idx(x, y);
+            if (d2 <= r2) {
+              if (this.waterMask[id] === 0) this.waterMask[id] = type;
+              this.elevationField[id] = Math.min(this.elevationField[id], this.seaLevel - 0.04);
+            } else {
+              // Smoothly grade the surrounding terrain down toward a flat alluvial river terrace
+              const t = (Math.sqrt(d2) - radius) / (valleyRad - radius);
+              const terraceElev = this.seaLevel + 0.045 + t * 0.08;
+              this.elevationField[id] = this.elevationField[id] * (0.35 + 0.65 * t) + terraceElev * (0.65 * (1 - t));
             }
           }
         }
       }
 
+      carveDisk(cx, cy, radius, type = 1) {
+        this.carveValleyChannel(cx, cy, radius, type);
+      }
+
       computeSpatialFields() {
         const { W, H } = this;
-        // BFS Distance Transform from water tiles
+        // 1. BFS Distance Transform from water tiles
         const queue = [];
         this.distToWater.fill(999);
         for (let y = 0; y < H; y++) {
@@ -821,34 +971,44 @@
           }
         }
 
-        // Compute Multi-Basin Alluvial Fertility & State-Scale Urban Suitability Field
+        // 2. Compute Topographic Slope Field (`slopeField`) & Valley-Guided Urban Suitability
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
             const id = this.idx(x, y);
+            const xm = Math.max(0, x - 2), xp = Math.min(W - 1, x + 2);
+            const ym = Math.max(0, y - 2), yp = Math.min(H - 1, y + 2);
+            const dzdx = (this.elevationField[this.idx(xp, y)] - this.elevationField[this.idx(xm, y)]) * 3.8;
+            const dzdy = (this.elevationField[this.idx(x, yp)] - this.elevationField[this.idx(x, ym)]) * 3.8;
+            const slope = Math.min(1.0, Math.hypot(dzdx, dzdy));
+            this.slopeField[id] = slope;
+
             if (this.waterMask[id] > 0) {
               this.fertilityField[id] = 0;
               this.urbanSuitability[id] = 0;
               continue;
             }
             const dWater = this.distToWater[id];
-            const baseFert = this.noise.fbm(x * 0.024 + 10, y * 0.024 + 20, 3);
-            // Alluvial bonus near rivers & bays (ideal 4..16 tiles from water)
-            const riverBonus = Math.exp(-Math.pow((dWater - 7.5) / 9.5, 2));
+            const elev = this.elevationField[id];
+            const heightAboveSea = Math.max(0, elev - this.seaLevel);
+
+            // Flat valley floors and coastal plains have high suitability; steep ridges have low suitability
+            const flatBonus = Math.exp(-Math.pow(slope / 0.30, 2));
+            const lowValleyBonus = Math.exp(-Math.pow((heightAboveSea - 0.06) / 0.18, 2));
+            const riverBonus = Math.exp(-Math.pow((dWater - 7.0) / 9.0, 2));
 
             let featureBonus = 0;
             for (const hf of this.hydroFeatures) {
               const dFeat = Math.hypot(x - hf.x, y - hf.y);
-              featureBonus = Math.max(featureBonus, Math.exp(-dFeat / 42.0) * 0.35);
+              featureBonus = Math.max(featureBonus, Math.exp(-dFeat / 44.0) * 0.35);
             }
 
-            // Edge penalty so towns don't spawn clipped at canvas border
             const borderDist = Math.min(x, W - 1 - x, y, H - 1 - y);
             const borderFactor = Math.min(1, Math.max(0, (borderDist - 12) / 12));
 
-            this.fertilityField[id] = Math.min(1, baseFert * 0.55 + riverBonus * 0.45);
+            this.fertilityField[id] = Math.min(1, flatBonus * 0.45 + riverBonus * 0.35 + lowValleyBonus * 0.20);
             this.urbanSuitability[id] = Math.min(
               1,
-              (riverBonus * 0.50 + featureBonus * 0.28 + baseFert * 0.22) * borderFactor
+              (flatBonus * 0.34 + lowValleyBonus * 0.24 + riverBonus * 0.28 + featureBonus * 0.14) * borderFactor
             );
           }
         }
@@ -857,12 +1017,34 @@
       seedSettlements() {
         const targetCount = this.config.townCount;
         const usedNames = new Set();
-        const generateTownName = () => {
-          for (let attempt = 0; attempt < 40; attempt++) {
-            const prefix = this.rng.next() < 0.28 ? this.rng.pick(SYLLABLES_START) : '';
+
+        const generateTopographicTownName = (gx, gy) => {
+          const id = this.idx(gx, gy);
+          const dW = this.distToWater[id];
+          const elev = this.elevationField[id];
+          let nearRiver = false;
+          let nearSeaOrLake = false;
+          for (let dy = -8; dy <= 8; dy += 4) {
+            for (let dx = -8; dx <= 8; dx += 4) {
+              if (this.inBounds(gx + dx, gy + dy, 1)) {
+                const wm = this.waterMask[this.idx(gx + dx, gy + dy)];
+                if (wm === 1) nearRiver = true;
+                else if (wm === 2) nearSeaOrLake = true;
+              }
+            }
+          }
+
+          for (let attempt = 0; attempt < 45; attempt++) {
+            const prefix = this.rng.next() < 0.24 ? this.rng.pick(SYLLABLES_START) : '';
             const rootA = this.rng.pick(SYLLABLES_PRE);
-            const rootB = this.rng.pick(SYLLABLES_ROOT);
-            const name = (prefix + rootA + rootB).replace(/\b\w/g, c => c.toUpperCase());
+            let rootPool = SYLLABLES_ROOT_VALLEY;
+            if (dW < 10 && nearRiver && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_RIVER;
+            else if (dW < 10 && nearSeaOrLake && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_COAST;
+            else if (elev > this.seaLevel + 0.18 && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_HILL;
+
+            const rootB = this.rng.pick(rootPool);
+            const suffix = (nearSeaOrLake && dW < 9 && !prefix && this.rng.next() < 0.18) ? '-on-Sea' : '';
+            const name = (prefix + rootA + rootB + suffix).replace(/\b\w/g, c => c.toUpperCase());
             if (!usedNames.has(name)) {
               usedNames.add(name);
               return name;
@@ -871,24 +1053,23 @@
           return 'Metro ' + (usedNames.size + 1);
         };
 
-        // Multi-Cluster State Settlement Hierarchy:
-        // 1. Seed 3-4 Tier-1 Regional Metropolises widely spaced across distinct quadrants/basins of the state.
-        // 2. Seed Tier-2 Regional Cities & Tier-3 Satellite/Industrial Hubs orbiting those clusters.
+        // Multi-Cluster OpenTTD Settlement Hierarchy:
+        // 1. Seed 3-4 Tier-1 Regional Metropolises in prime low-slope coastal/confluence basins across the state.
+        // 2. Seed Tier-2 Regional Cities & Tier-3 Market/Valley Towns along river valleys, lake shores, and passes.
         const numClusters = Math.min(4, Math.max(3, Math.round(targetCount / 4.2)));
         this.clusters = [];
 
-        // Quadrant sector biases so the Tier-1 Metropolises span the entire state map
         const sectorCenters = [
           { x: this.W * 0.24, y: this.H * 0.28 },
-          { x: this.W * 0.76, y: this.H * 0.30 },
-          { x: this.W * 0.26, y: this.H * 0.74 },
+          { x: this.W * 0.76, y: this.H * 0.28 },
+          { x: this.W * 0.26, y: this.H * 0.72 },
           { x: this.W * 0.74, y: this.H * 0.72 }
         ];
 
         for (let i = 0; i < targetCount; i++) {
           const isClusterAnchor = i < numClusters;
           const tier = isClusterAnchor ? 1 : (i < numClusters * 2 + 1 ? 2 : 3);
-          const minSpacing = tier === 1 ? 88 : (tier === 2 ? 32 : 22);
+          const minSpacing = tier === 1 ? 82 : (tier === 2 ? 30 : 21);
           const parentCluster = !isClusterAnchor && this.clusters.length > 0
             ? this.clusters[(i - numClusters) % this.clusters.length]
             : null;
@@ -900,11 +1081,13 @@
             for (let x = 18; x < this.W - 18; x += 3) {
               const id = this.idx(x, y);
               if (this.waterMask[id] > 0 || this.distToWater[id] < 4.5) continue;
+              // Towns avoid steep mountain ridges
+              if (this.slopeField[id] > 0.42 || this.elevationField[id] > this.seaLevel + 0.36) continue;
 
               let tooClose = false;
               for (const t of this.towns) {
                 const d = Math.hypot(x - t.x, y - t.y);
-                const reqDist = (isClusterAnchor && t.tier === 1) ? 88 : Math.max(minSpacing, t.urbanRadius + 10);
+                const reqDist = (isClusterAnchor && t.tier === 1) ? 82 : Math.max(minSpacing, t.urbanRadius + 9);
                 if (d < reqDist) {
                   tooClose = true;
                   break;
@@ -912,17 +1095,16 @@
               }
               if (tooClose) continue;
 
-              let score = this.urbanSuitability[id] * 0.75 + this.rng.range(-0.03, 0.03);
+              let score = this.urbanSuitability[id] * 0.78 + this.rng.range(-0.025, 0.025);
 
               if (isClusterAnchor) {
                 const sec = sectorCenters[i % sectorCenters.length];
                 const dSec = Math.hypot(x - sec.x, y - sec.y);
-                score += Math.exp(-Math.pow(dSec / (this.W * 0.26), 2)) * 0.42;
+                score += Math.exp(-Math.pow(dSec / (this.W * 0.25), 2)) * 0.42;
               } else if (parentCluster) {
-                // Orbiting satellite town around its parent Metropolis (ideal 30..58 tiles away)
                 const dParent = Math.hypot(x - parentCluster.x, y - parentCluster.y);
-                if (dParent > 95) continue;
-                const orbitBonus = Math.exp(-Math.pow((dParent - 40) / 22, 2)) * 0.48;
+                if (dParent > 96) continue;
+                const orbitBonus = Math.exp(-Math.pow((dParent - 38) / 22, 2)) * 0.46;
                 score += orbitBonus;
               }
 
@@ -934,11 +1116,22 @@
           }
 
           if (bestPt) {
-            const clusterId = isClusterAnchor ? i : (parentCluster ? parentCluster.clusterId : 0);
+            // Assign each non-anchor town to its nearest actual Tier-1 Metropolis cluster
+            let clusterId = i;
+            if (!isClusterAnchor && this.clusters.length > 0) {
+              let minCD = Infinity;
+              for (const cl of this.clusters) {
+                const cd = Math.hypot(bestPt.x - cl.x, bestPt.y - cl.y);
+                if (cd < minCD) {
+                  minCD = cd;
+                  clusterId = cl.clusterId;
+                }
+              }
+            }
             const colorIdx = (isClusterAnchor ? i : clusterId + (i % 2)) % PALETTE.districtColors.length;
-            const tierTitle = tier === 1 ? 'Metropolis' : (tier === 2 ? 'Regional City' : 'Industrial Town');
-            const urbanRadius = tier === 1 ? 19 : (tier === 2 ? 14 : 10);
-            const name = generateTownName();
+            const tierTitle = tier === 1 ? 'Metropolis' : (tier === 2 ? 'Regional City' : 'Market Town');
+            const urbanRadius = tier === 1 ? 17 : (tier === 2 ? 13 : 9);
+            const name = generateTopographicTownName(bestPt.x, bestPt.y);
             const iata = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
 
             const townObj = {
@@ -965,7 +1158,7 @@
           }
         }
         this.logs.push(
-          `Seeded <b>${this.towns.length} settlements</b> across <b>${this.clusters.length} urban clusters</b>.`
+          `Seeded <b>${this.towns.length} settlements</b> across <b>${this.clusters.length} valley & coastal clusters</b>.`
         );
       }
 
@@ -1102,8 +1295,10 @@
               }
               if (tooCloseToAirport) continue;
 
-              // 4. Oriented Bounding Box Footprint Check (Include space for Landside Terminal Loop & Gate!)
+              // 4. Oriented Bounding Box Footprint & Flat-Terrain Slope Check
               let landOk = true;
+              let slopeSum = 0;
+              let obbCount = 0;
               for (let u = -halfLen - 2.5; u <= halfLen + 2.5; u += 1.5) {
                 for (let v = -halfWid - 2.5; v <= candStubDist + 2.5; v += 1.5) {
                   const gx = Math.round(cx + u * cosA + v * candLandNx);
@@ -1112,10 +1307,14 @@
                     landOk = false;
                     break;
                   }
+                  slopeSum += this.slopeField[this.idx(gx, gy)];
+                  obbCount++;
                 }
                 if (!landOk) break;
               }
               if (!landOk) continue;
+              const avgSlope = obbCount > 0 ? slopeSum / obbCount : 0;
+              if (avgSlope > 0.36) continue;
 
               const candGateX = Math.round(cx + candLandNx * candStubDist);
               const candGateY = Math.round(cy + candLandNy * candStubDist);
@@ -1146,12 +1345,13 @@
               }
               if (approachScore <= 0.2) continue;
 
-              const waterApproachBonus = sampleCount > 0 ? (waterUnderApproach / sampleCount) * 0.22 : 0;
+              const waterApproachBonus = sampleCount > 0 ? (waterUnderApproach / sampleCount) * 0.20 : 0;
+              const flatTerrainBonus = Math.max(0, 1.0 - avgSlope * 2.4) * 0.12;
               const broadsideBonus = broadsideAlignment * 0.14;
               const regionalReachBonus = Math.min(0.16, landsideTownsCount * 0.045) + Math.max(0, inwardMetroDot) * 0.12;
               const totalScore = Math.min(
                 1.0,
-                proximityScore * 0.46 + approachScore * 0.20 + waterApproachBonus + broadsideBonus + regionalReachBonus
+                proximityScore * 0.42 + approachScore * 0.18 + waterApproachBonus + flatTerrainBonus + broadsideBonus + regionalReachBonus
               );
 
               for (let dy = -1; dy <= 1; dy++) {
@@ -1396,17 +1596,21 @@
         const riverAwareEdgeCost = (a, b) => {
           const d = Math.hypot(b.x - a.x, b.y - a.y);
           let waterHits = 0;
+          let ridgePenalty = 0;
           const steps = 18;
           for (let s = 1; s < steps; s++) {
             const t = s / steps;
             const sx = Math.round(a.x + (b.x - a.x) * t);
             const sy = Math.round(a.y + (b.y - a.y) * t);
             if (this.inBounds(sx, sy, 1)) {
-              if (this.waterMask[this.idx(sx, sy)] > 0) waterHits++;
-              if (this.buildingMask[this.idx(sx, sy)] === 3) waterHits += 4;
+              const id = this.idx(sx, sy);
+              if (this.waterMask[id] > 0) waterHits++;
+              if (this.buildingMask[id] === 3) waterHits += 4;
+              ridgePenalty += Math.max(0, this.elevationField[id] - this.seaLevel - 0.14) * 18.0 + this.slopeField[id] * 10.0;
             }
           }
-          return d + (waterHits > 0 ? 22 + waterHits * 3.5 : 0);
+          const diffCluster = a.ref.clusterId !== b.ref.clusterId ? 24 : 0;
+          return d + diffCluster + ridgePenalty + (waterHits > 0 ? 22 + waterHits * 3.5 : 0);
         };
 
         while (connected.size < nodes.length) {
@@ -1427,7 +1631,7 @@
           edges.push(bestEdge);
         }
 
-        // Add 1 extra chord connection for realistic logistics redundancy
+        // Add 1 extra intra-cluster/regional chord connection for realistic valley redundancy
         if (nodes.length >= 4) {
           let bestChord = null;
           let bestScore = Infinity;
@@ -1435,6 +1639,7 @@
             for (let j = i + 1; j < nodes.length; j++) {
               const already = edges.some(e => (e[0] === i && e[1] === j) || (e[0] === j && e[1] === i));
               if (already) continue;
+              if (Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y) > 76) continue;
               const cost = riverAwareEdgeCost(nodes[i], nodes[j]);
               if (cost < bestScore) {
                 bestScore = cost;
@@ -1445,8 +1650,12 @@
           if (bestChord) edges.push(bestChord);
         }
 
-        // Run A* for each inter-town edge and for each Airport Gate -> Host Town
+        // Commit surface arterial roads within urban clusters or regional valley neighbors (<= 82 tiles);
+        // long cross-state links (> 82 tiles across empty uplands) are served by pink Interstate Highways!
         for (const [i, j] of edges) {
+          const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
+          const sameCluster = nodes[i].ref.clusterId === nodes[j].ref.clusterId;
+          if (!sameCluster && d > 82) continue;
           const path = this.findRoadPathAStar(nodes[i].x, nodes[i].y, nodes[j].x, nodes[j].y, true);
           if (path) this.commitRoadPath(path, 'arterial');
         }
@@ -1566,6 +1775,9 @@
               if (dW < 2.5 && !currIsWater) {
                 stepCost += (2.6 - dW) * 2.5;
               }
+              // Topographic valley-following cost: avoid steep slopes and high mountain ridges
+              const dElev = Math.max(0, this.elevationField[nid] - this.elevationField[cid]);
+              stepCost += this.slopeField[nid] * 3.8 + dElev * 16.0 + Math.max(0, this.elevationField[nid] - this.seaLevel - 0.14) * 2.2;
               // Prefer orthogonal cardinal movement inside town street grids
               if (dx !== 0 && dy !== 0 && this.zoneColorIdx[nid] >= 0) {
                 stepCost *= 1.24;
@@ -1613,20 +1825,25 @@
         for (const town of this.towns) {
           const R = Math.round(town.urbanRadius * (0.80 + 0.34 * Math.sqrt(densityMult)));
           const step = densityMult >= 1.35 ? 3 : 4;
+          const townElev = this.elevationField[this.idx(town.x, town.y)];
 
-          // Ensure the center cross-avenues extend out to the full high-density radius R
+          // Ensure the center cross-avenues extend out to the contour-guided radius R
           this.carveStreetFromCenter(town.x, town.y, 1, 0, R, R);
           this.carveStreetFromCenter(town.x, town.y, 0, 1, R, R);
 
-          // 7A. Paint soft pastel urban background zone around the town
+          // 7A. Paint contour-hugging pastel urban background zone around the town
           for (let dy = -R - 3; dy <= R + 3; dy++) {
             for (let dx = -R - 3; dx <= R + 3; dx++) {
               const gx = town.x + dx;
               const gy = town.y + dy;
               if (!this.inBounds(gx, gy, 2)) continue;
-              const d = Math.hypot(dx, dy) + this.noise.noise(gx * 0.15, gy * 0.15) * 3.5;
-              if (d <= R + 1.5 && this.waterMask[this.idx(gx, gy)] === 0) {
-                this.zoneColorIdx[this.idx(gx, gy)] = town.colorIdx;
+              const id = this.idx(gx, gy);
+              if (this.waterMask[id] > 0) continue;
+              // Steep hillsides & high ridges shrink the urban growth envelope organically
+              const elevPenalty = Math.max(0, this.elevationField[id] - townElev) * 32.0 + this.slopeField[id] * 12.0;
+              const d = Math.hypot(dx, dy) + elevPenalty + this.noise.noise(gx * 0.15, gy * 0.15) * 3.2;
+              if (d <= R + 1.5) {
+                this.zoneColorIdx[id] = town.colorIdx;
               }
             }
           }
@@ -1670,14 +1887,17 @@
 
       /**
        * Carves a street line starting at `(cx, cy)` and marching outward in both `-dir` and `+dir`,
-       * stopping immediately upon hitting water, riverbank buffer, or an airport pad so streets
-       * never jump across obstacles to form disconnected islands.
+       * stopping immediately upon hitting water, riverbank buffer, steep hillsides, or an airport pad
+       * so streets hug valley floors and never jump across obstacles to form disconnected islands.
        */
       carveStreetFromCenter(cx, cy, ux, uy, negSteps, posSteps) {
+        const baseElev = this.inBounds(cx, cy, 1) ? this.elevationField[this.idx(cx, cy)] : this.seaLevel;
         const isPassable = (x, y) => {
           if (!this.inBounds(x, y, 3)) return false;
           const id = this.idx(x, y);
-          return this.waterMask[id] === 0 && this.buildingMask[id] === 0 && this.distToWater[id] >= 1.8;
+          if (this.waterMask[id] !== 0 || this.buildingMask[id] !== 0 || this.distToWater[id] < 1.8) return false;
+          if (this.slopeField[id] > 0.46 || this.elevationField[id] - baseElev > 0.14) return false;
+          return true;
         };
         if (!isPassable(cx, cy)) return;
 
@@ -1864,7 +2084,7 @@
           ).length;
           if (attachedCount >= 2) return false;
           const angDiff = Math.abs(Math.atan2(Math.sin(ic.angleRad - baseAngle), Math.cos(ic.angleRad - baseAngle)));
-          return angDiff >= 1.35;
+          return angDiff >= 1.15;
         }) || null;
       }
 
@@ -2058,15 +2278,16 @@
         const gy = Math.round(y);
         if (!this.inBounds(gx, gy, 6)) return false;
         const cid = this.idx(gx, gy);
-        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 3.6) return false;
+        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 4.5) return false;
         if (this.isPointInAirportPad(x, y, 3.8)) return false;
 
         const ux = Math.cos(angleMain), uy = Math.sin(angleMain);
         const nx = -uy * sideSign, ny = ux * sideSign;
 
-        // Check both the directional slip-ramps on the terminating highway side (+sideSign)
-        // AND the 270° trumpet loop on the OPPOSITE side (-sideSign) across the mainline.
+        // Check both the directional slip-ramps on the terminating highway side (+sideSign),
+        // the mainline ramp merge toes (±3.4), AND the 270° trumpet loop on the OPPOSITE side (-sideSign).
         const localPts = [
+          [-3.4, 0], [3.4, 0],
           [-2.8, 0.4], [2.8, 0.4], [0, 2.8], [-1.4, 1.5], [1.4, 1.5],
           [0, -2.2], [1.8, -1.8], [2.2, -1.0]
         ];
@@ -2077,7 +2298,7 @@
           const ry = Math.round(py);
           if (!this.inBounds(rx, ry, 4)) return false;
           const rid = this.idx(rx, ry);
-          if (this.waterMask[rid] > 0 || this.distToWater[rid] < 1.6) return false;
+          if (this.waterMask[rid] > 0 || this.distToWater[rid] < 2.2) return false;
           if (this.isPointInAirportPad(px, py, 2.2)) return false;
         }
         return true;
@@ -2115,9 +2336,9 @@
             }
           }
         }
-        if (arcLen / chord > 1.34) return Infinity;
+        if (arcLen / chord > 1.38) return Infinity;
 
-        // Hard invariant 4: Never form an acute V-spike (< 128°) when sharing an endpoint with an existing motorway
+        // Hard invariant 4: Never form an acute V-spike (< 115°) when sharing an endpoint with an existing motorway
         const nS = samples.length;
         const startDirX = samples[Math.min(3, nS - 1)].x - samples[0].x;
         const startDirY = samples[Math.min(3, nS - 1)].y - samples[0].y;
@@ -2140,7 +2361,7 @@
           const checkShared = (myX, myY, myUx, myUy, otX, otY, otUx, otUy) => {
             if (Math.hypot(myX - otX, myY - otY) < 8.5) {
               const dot = myUx * otUx + myUy * otUy;
-              if (dot > 0.22) return false;
+              if (dot > 0.38) return false;
             }
             return true;
           };
@@ -2184,7 +2405,7 @@
           }
         }
 
-        let penalty = Math.abs(candidateOff - preferOff) * 0.45 + Math.abs(candidateOff) * 0.25;
+        let penalty = Math.abs(candidateOff - preferOff) * 0.35 + Math.abs(candidateOff) * 0.18;
         let waterRun = 0;
 
         for (let i = 0; i < samples.length; i++) {
@@ -2199,6 +2420,9 @@
           } else {
             waterRun = 0;
             if (this.distToWater[id] < 1.8) penalty += 1.2;
+            // Topographic valley preference: penalize routing expressways over steep mountain ridges
+            const ridgeElev = Math.max(0, this.elevationField[id] - this.seaLevel - 0.16);
+            penalty += ridgeElev * 4.5 + this.slopeField[id] * 1.8;
           }
 
           // Hard reject passing near an existing motorway's endpoints or running parallel nearby
@@ -2241,16 +2465,13 @@
         const len = Math.hypot(dx, dy) || 1;
         const nx = -dy / len;
         const ny = dx / len;
-        const mx = (sx + ex) * 0.5;
-        const my = (sy + ey) * 0.5;
 
         const ap = airportId !== null ? this.airports[airportId] : null;
-        const departPull = ap ? Math.min(24, Math.max(9.0, len * 0.34)) : 0;
+        const departPull = ap ? Math.min(26, Math.max(9.0, len * 0.34)) : 0;
 
         const candidateCurves = [];
 
         if (forcedViaPt && !ap) {
-          // Smooth quadratic Bezier whose apex passes through forcedViaPt (P1 = 2*V - 0.5*(P0 + P2))
           const c1x = 2 * forcedViaPt.x - 0.5 * (sx + ex);
           const c1y = 2 * forcedViaPt.y - 0.5 * (sy + ey);
           candidateCurves.push({
@@ -2274,9 +2495,41 @@
 
         const defaultSign = number % 2 === 0 ? 1 : -1;
         const preferMag = algo === 'classic-bezier'
-          ? Math.min(15, len * 0.18)
-          : (algo === 'terrain-parkway' ? Math.min(12, len * 0.15) : Math.min(8.5, len * 0.11));
+          ? Math.min(18, len * 0.18)
+          : (algo === 'terrain-parkway' ? Math.min(14, len * 0.15) : Math.min(9.5, len * 0.11));
         const preferOff = defaultSign * preferMag;
+
+        // Topographic Saddle / Valley-Seeking Candidate Curve:
+        // Probe lateral offsets at t=0.34 and t=0.66 to find the lowest-elevation dry valley pass
+        if (!ap && len >= 36) {
+          const findValleyCtrl = (tFrac) => {
+            let bestPt = { x: sx + dx * tFrac, y: sy + dy * tFrac };
+            let minCost = Infinity;
+            for (let sOff = -36; sOff <= 36; sOff += 6) {
+              const px = sx + dx * tFrac + nx * sOff;
+              const py = sy + dy * tFrac + ny * sOff;
+              const gx = Math.round(px), gy = Math.round(py);
+              if (!this.inBounds(gx, gy, 6)) continue;
+              if (this.isPointInAirportPad(px, py, 3.0)) continue;
+              const id = this.idx(gx, gy);
+              const waterCost = this.waterMask[id] > 0 ? 12.0 : 0;
+              const topoCost = (this.elevationField[id] - this.seaLevel) * 18.0 + this.slopeField[id] * 8.0 + Math.abs(sOff) * 0.08 + waterCost;
+              if (topoCost < minCost) {
+                minCost = topoCost;
+                bestPt = { x: px, y: py };
+              }
+            }
+            return bestPt;
+          };
+          const v1 = findValleyCtrl(0.34);
+          const v2 = findValleyCtrl(0.66);
+          candidateCurves.push({
+            waypoints: [{ x: sx, y: sy }, v1, v2, { x: ex, y: ey }],
+            isOctilinear: false,
+            off: preferOff,
+            preferOff
+          });
+        }
 
         const offsetFracs = [
           defaultSign * 0.11,
@@ -2287,11 +2540,13 @@
           defaultSign * 0.26,
           -defaultSign * 0.26,
           defaultSign * 0.34,
-          -defaultSign * 0.34
+          -defaultSign * 0.34,
+          defaultSign * 0.42,
+          -defaultSign * 0.42
         ];
 
         for (const frac of offsetFracs) {
-          const off = Math.max(-26, Math.min(26, len * frac));
+          const off = Math.max(-46, Math.min(46, len * frac));
           if (ap) {
             // Smooth Cubic Bezier with P1 locked to the airport's landside normal (zero gate doglegs!)
             const p1 = {
@@ -2472,7 +2727,7 @@
             if (Math.hypot(hitPt.x - trunk.sx, hitPt.y - trunk.sy) < 9.5) continue;
             if (Math.hypot(hitPt.x - trunk.ex, hitPt.y - trunk.ey) < 9.5) continue;
 
-            const nearOtherIc = this.interchanges.some(ic => Math.hypot(ic.x - hitPt.x, ic.y - hitPt.y) < 11.5);
+            const nearOtherIc = this.interchanges.some(ic => Math.hypot(ic.x - hitPt.x, ic.y - hitPt.y) < 18.0);
             if (nearOtherIc) continue;
 
             const pPrev = tSamples[Math.max(0, i - 1)];
@@ -2492,25 +2747,24 @@
             if (!this.isTrumpetFootprintDry(hitPt.x, hitPt.y, angleMain, sideSign)) continue;
 
             const chord = Math.hypot(hitPt.x - originX, hitPt.y - originY);
-            if (chord < 14 || chord > 145) continue;
+            if (chord < 14 || chord > 175) continue;
 
-            // Ensure the origin lies beside the trunk (not collinearly beyond its endpoints)
-            // so a spur never overshoots a trunk endpoint to run parallel alongside the trunk.
+            // Ensure the origin lies beside the trunk (not collinearly far beyond its endpoints)
             const tDx = trunk.ex - trunk.sx;
             const tDy = trunk.ey - trunk.sy;
             const tLen = Math.hypot(tDx, tDy) || 1;
             const projT = ((originX - trunk.sx) * tDx + (originY - trunk.sy) * tDy) / (tLen * tLen);
             const perpDist = Math.abs((originX - trunk.sx) * (-tDy) + (originY - trunk.sy) * tDx) / tLen;
-            if (projT < -0.25 || projT > 1.25 || perpDist < 10.5) continue;
+            if (projT < -0.45 || projT > 1.45 || perpDist < 10.5) continue;
 
             // Ensure the origin lies on the sideSign half-space of the trunk
             const cosPerp = ((originX - hitPt.x) * outNx + (originY - hitPt.y) * outNy) / (chord || 1);
-            if (cosPerp < 0.25) continue;
+            if (cosPerp < 0.22) continue;
 
             // If departing an airport gate, ensure the trumpet target is reachable from the landside gate
             if (ap) {
               const alignGate = ((hitPt.x - originX) * ap.landNx + (hitPt.y - originY) * ap.landNy) / chord;
-              if (alignGate < (ap.isHub ? -0.18 : 0.12)) continue;
+              if (alignGate < (ap.isHub ? -0.28 : 0.08)) continue;
             }
 
             const pullStart = ap ? Math.min(26, Math.max(8.0, chord * 0.34)) : chord * 0.34;
@@ -2842,6 +3096,7 @@
       buildNumberedMotorways() {
         const algo = this.config.expresswayAlgo || 'gravity-ring';
         let mwayNumber = 1;
+        const maxStateMotorways = 6;
 
         const townPop = (t) => (t.housesCount + t.destinationsCount * 3 + 16) * (t.airportId !== null ? 1.35 : 1) * (t.tier === 1 ? 1.45 : 1.0);
         const townMotorwayDegree = new Int8Array(this.towns.length);
@@ -2858,6 +3113,29 @@
           return false;
         };
 
+        // Helper: If `town` hosts an unserved International Hub Airport whose landside gate
+        // faces `towardX, towardY`, anchor the expressway directly to `(ap.gateX, ap.gateY)`
+        // so the International Hub is never stranded 12-16 tiles away from its own city's stub!
+        const resolveTownOrHubEndpoint = (town, towardX, towardY, allowHub = true) => {
+          const ap = town.airportId !== null ? this.airports[town.airportId] : null;
+          if (allowHub && ap && ap.isHub && ap.motorwayId === null) {
+            const dGate = Math.hypot(towardX - ap.gateX, towardY - ap.gateY) || 1;
+            const alignGate = ((towardX - ap.gateX) * ap.landNx + (towardY - ap.gateY) * ap.landNy) / dGate;
+            if (alignGate >= -0.32) {
+              return {
+                stub: this.createTerminalStreetStub(ap, true, towardX, towardY),
+                ap,
+                usedHubGate: true
+              };
+            }
+          }
+          return {
+            stub: this.createTerminalStreetStub(town, false, towardX, towardY),
+            ap: null,
+            usedHubGate: false
+          };
+        };
+
         // 1. Primary Inter-Cluster Interstate Spine (M-1) between the two highest-gravity Metropolises
         const pairs = [];
         for (let i = 0; i < this.towns.length; i++) {
@@ -2865,9 +3143,9 @@
             const tA = this.towns[i];
             const tB = this.towns[j];
             const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
-            if (d < 52 || d > 215) continue;
-            const diffClusterBonus = tA.clusterId !== tB.clusterId ? 1.55 : 0.75;
-            const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 115) / 48, 2));
+            if (d < 52 || d > 235) continue;
+            const diffClusterBonus = tA.clusterId !== tB.clusterId ? 1.65 : 0.72;
+            const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 120) / 54, 2));
             const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.42)) * diffClusterBonus * spanBell;
             pairs.push({ tA, tB, gravity, d });
           }
@@ -2878,37 +3156,24 @@
 
         for (const cand of pairs) {
           const { tA, tB } = cand;
-          const apA = tA.airportId !== null ? this.airports[tA.airportId] : null;
-          const apB = tB.airportId !== null ? this.airports[tB.airportId] : null;
-          const useHubGateA =
-            apA && apA.isHub &&
-            ((tB.x - apA.gateX) * apA.landNx + (tB.y - apA.gateY) * apA.landNy) / (Math.hypot(tB.x - apA.gateX, tB.y - apA.gateY) || 1) >= 0.28;
-          const useHubGateB =
-            apB && apB.isHub && !useHubGateA &&
-            ((tA.x - apB.gateX) * apB.landNx + (tA.y - apB.gateY) * apB.landNy) / (Math.hypot(tA.x - apB.gateX, tA.y - apB.gateY) || 1) >= 0.28;
+          const endA = resolveTownOrHubEndpoint(tA, tB.x, tB.y, true);
+          const endB = resolveTownOrHubEndpoint(tB, tA.x, tA.y, !endA.usedHubGate);
 
-          const rampA = useHubGateA
-            ? this.createTerminalStreetStub(apA, true, tB.x, tB.y)
-            : this.createTerminalStreetStub(tA, false, tB.x, tB.y);
-          const rampB = useHubGateB
-            ? this.createTerminalStreetStub(apB, true, tA.x, tA.y)
-            : this.createTerminalStreetStub(tB, false, tA.x, tA.y);
-
-          if (Math.hypot(rampB.x - rampA.x, rampB.y - rampA.y) < 42) {
-            if (!useHubGateA) this.removeOrphanedTerminalStub(rampA.x, rampA.y);
-            if (!useHubGateB) this.removeOrphanedTerminalStub(rampB.x, rampB.y);
+          if (Math.hypot(endB.stub.x - endA.stub.x, endB.stub.y - endA.stub.y) < 38) {
+            if (!endA.usedHubGate) this.removeOrphanedTerminalStub(endA.stub.x, endA.stub.y);
+            if (!endB.usedHubGate) this.removeOrphanedTerminalStub(endB.stub.x, endB.stub.y);
             continue;
           }
-          const startX = useHubGateB ? rampB.x : rampA.x;
-          const startY = useHubGateB ? rampB.y : rampA.y;
-          const endX = useHubGateB ? rampA.x : rampB.x;
-          const endY = useHubGateB ? rampA.y : rampB.y;
-          const startApId = useHubGateA ? apA.id : (useHubGateB ? apB.id : null);
+          const startX = endB.usedHubGate ? endB.stub.x : endA.stub.x;
+          const startY = endB.usedHubGate ? endB.stub.y : endA.stub.y;
+          const endX = endB.usedHubGate ? endA.stub.x : endB.stub.x;
+          const endY = endB.usedHubGate ? endA.stub.y : endB.stub.y;
+          const startApId = endA.usedHubGate ? endA.ap.id : (endB.usedHubGate ? endB.ap.id : null);
 
           const mw1 = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, tB.id);
           if (mw1) {
-            if (useHubGateA) apA.motorwayId = mwayNumber;
-            if (useHubGateB) apB.motorwayId = mwayNumber;
+            if (endA.usedHubGate) endA.ap.motorwayId = mwayNumber;
+            if (endB.usedHubGate) endB.ap.motorwayId = mwayNumber;
             mwayNumber++;
             this.motorways.push(mw1);
             townMotorwayDegree[tA.id]++;
@@ -2918,14 +3183,13 @@
             primaryPair = cand;
             break;
           } else {
-            this.removeOrphanedTerminalStub(rampA.x, rampA.y);
-            this.removeOrphanedTerminalStub(rampB.x, rampB.y);
+            if (!endA.usedHubGate) this.removeOrphanedTerminalStub(endA.stub.x, endA.stub.y);
+            if (!endB.usedHubGate) this.removeOrphanedTerminalStub(endB.stub.x, endB.stub.y);
           }
         }
 
-        // 2. Connect Remaining Metropolitan Clusters into the State Interstate Network
+        // 2. Connect All Remaining Metropolitan Clusters into the State Interstate Network
         //    (via 3-way Trumpet Spurs onto existing trunks, shared pass-through beltways, or Cloverleafs)
-        const maxStateMotorways = 5;
         const clusterMetros = [...this.clusters].sort((a, b) => townPop(b) - townPop(a));
         for (let pass = 0; pass < 2 && this.motorways.length < maxStateMotorways; pass++) {
           for (const metro of clusterMetros) {
@@ -2935,11 +3199,11 @@
               continue;
             }
 
-            // 2A. First try a 3-way Trumpet Spur from this Cluster Metropolis into an existing Interstate trunk
+            // 2A. Try a 3-way Trumpet Spur from this Cluster Metropolis (or its International Hub Gate) into an existing trunk
             let bestTargetPt = { x: this.W * 0.5, y: this.H * 0.5 };
             let minD = Infinity;
             for (const mw of this.motorways) {
-              for (let s = Math.floor(mw.samples.length * 0.18); s <= Math.ceil(mw.samples.length * 0.82); s += 3) {
+              for (let s = Math.floor(mw.samples.length * 0.16); s <= Math.ceil(mw.samples.length * 0.84); s += 3) {
                 const d = Math.hypot(metro.x - mw.samples[s].x, metro.y - mw.samples[s].y);
                 if (d < minD) {
                   minD = d;
@@ -2948,9 +3212,17 @@
               }
             }
 
-            const mStub = this.createTerminalStreetStub(metro, false, bestTargetPt.x, bestTargetPt.y);
-            const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, mStub.x, mStub.y, algo, null, metro.id);
+            const mEnd = resolveTownOrHubEndpoint(metro, bestTargetPt.x, bestTargetPt.y, true);
+            const spurRes = this.tryBuildTrumpetSpurToTrunk(
+              mwayNumber,
+              mEnd.stub.x,
+              mEnd.stub.y,
+              algo,
+              mEnd.usedHubGate ? mEnd.ap.id : null,
+              metro.id
+            );
             if (spurRes) {
+              if (mEnd.usedHubGate) mEnd.ap.motorwayId = mwayNumber;
               mwayNumber++;
               this.motorways.push(spurRes.mw);
               this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
@@ -2959,40 +3231,66 @@
               townMotorwayDegree[metro.id]++;
               connectedClusters.add(metro.clusterId);
               continue;
+            } else if (!mEnd.usedHubGate) {
+              this.removeOrphanedTerminalStub(mEnd.stub.x, mEnd.stub.y);
             } else {
-              this.removeOrphanedTerminalStub(mStub.x, mStub.y);
+              this.interchanges = this.interchanges.filter(
+                ic => !(ic.type === 'terminal-stub' && ic.isAirportStub && ic.airportId === mEnd.ap.id)
+              );
             }
 
-            // 2B. Otherwise link `metro` to an already-connected hub town via a pass-through beltway or Cloverleaf
-            const hubCandidates = this.towns
-              .filter(t => t.id !== metro.id && (townMotorwayDegree[t.id] === 1 || connectedClusters.has(t.clusterId)))
-              .sort((a, b) => Math.hypot(a.x - metro.x, a.y - metro.y) - Math.hypot(b.x - metro.x, b.y - metro.y));
+            // 2B. Otherwise link `metro` (or a town in `metro`'s cluster) to an already-connected hub town
+            const clusterTowns = [
+              metro,
+              ...this.towns.filter(t => t.clusterId === metro.clusterId && t.id !== metro.id)
+            ];
+            let linkedCluster = false;
 
-            for (const hubTown of hubCandidates) {
-              if (townMotorwayDegree[hubTown.id] >= 2) continue;
-              const d = Math.hypot(hubTown.x - metro.x, hubTown.y - metro.y);
-              if (d < 42 || d > 195) continue;
-              const canShare =
-                townMotorwayDegree[hubTown.id] === 1 &&
-                this.findPassThroughStubAtTown(hubTown, metro.x, metro.y) !== null;
-              if (townMotorwayDegree[hubTown.id] >= 1 && !canShare) continue;
+            for (const cTown of clusterTowns) {
+              if (linkedCluster) break;
+              const hubCandidates = this.towns
+                .filter(t => t.clusterId !== metro.clusterId && (townMotorwayDegree[t.id] === 1 || connectedClusters.has(t.clusterId)))
+                .sort((a, b) => {
+                  const degDiff = (townMotorwayDegree[b.id] === 1 ? 1 : 0) - (townMotorwayDegree[a.id] === 1 ? 1 : 0);
+                  if (degDiff !== 0) return degDiff;
+                  return Math.hypot(a.x - cTown.x, a.y - cTown.y) - Math.hypot(b.x - cTown.x, b.y - cTown.y);
+                });
 
-              const rA = this.createTerminalStreetStub(metro, false, hubTown.x, hubTown.y);
-              const rB = this.createTerminalStreetStub(hubTown, false, metro.x, metro.y);
-              const mwCluster = this.createMotorwayEntity(mwayNumber, rA.x, rA.y, rB.x, rB.y, algo, null, hubTown.id);
-              const crossesExisting =
-                mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
-              if (mwCluster && (canShare || crossesExisting)) {
-                mwayNumber++;
-                this.motorways.push(mwCluster);
-                townMotorwayDegree[metro.id]++;
-                townMotorwayDegree[hubTown.id]++;
-                connectedClusters.add(metro.clusterId);
-                this.detectAndBuildCloverleafs();
-                break;
-              } else {
-                this.removeOrphanedTerminalStub(rA.x, rA.y);
-                this.removeOrphanedTerminalStub(rB.x, rB.y);
+              for (const hubTown of hubCandidates) {
+                if (townMotorwayDegree[hubTown.id] >= 2) continue;
+                const d = Math.hypot(hubTown.x - cTown.x, hubTown.y - cTown.y);
+                if (d < 38 || d > 210) continue;
+                const canShare =
+                  townMotorwayDegree[hubTown.id] === 1 &&
+                  this.findPassThroughStubAtTown(hubTown, cTown.x, cTown.y) !== null;
+                if (townMotorwayDegree[hubTown.id] >= 1 && !canShare) continue;
+
+                const endA = resolveTownOrHubEndpoint(cTown, hubTown.x, hubTown.y, true);
+                const endB = resolveTownOrHubEndpoint(hubTown, cTown.x, cTown.y, !endA.usedHubGate);
+                const startX = endB.usedHubGate ? endB.stub.x : endA.stub.x;
+                const startY = endB.usedHubGate ? endB.stub.y : endA.stub.y;
+                const endX = endB.usedHubGate ? endA.stub.x : endB.stub.x;
+                const endY = endB.usedHubGate ? endA.stub.y : endB.stub.y;
+                const startApId = endA.usedHubGate ? endA.ap.id : (endB.usedHubGate ? endB.ap.id : null);
+
+                const mwCluster = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, hubTown.id);
+                const crossesExisting =
+                  mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
+                if (mwCluster && (canShare || crossesExisting || pass === 1)) {
+                  if (endA.usedHubGate) endA.ap.motorwayId = mwayNumber;
+                  if (endB.usedHubGate) endB.ap.motorwayId = mwayNumber;
+                  mwayNumber++;
+                  this.motorways.push(mwCluster);
+                  townMotorwayDegree[cTown.id]++;
+                  townMotorwayDegree[hubTown.id]++;
+                  connectedClusters.add(metro.clusterId);
+                  this.detectAndBuildCloverleafs();
+                  linkedCluster = true;
+                  break;
+                } else {
+                  if (!endA.usedHubGate) this.removeOrphanedTerminalStub(endA.stub.x, endA.stub.y);
+                  if (!endB.usedHubGate) this.removeOrphanedTerminalStub(endB.stub.x, endB.stub.y);
+                }
               }
             }
           }
@@ -3022,7 +3320,7 @@
           }
 
           // 3B. Otherwise connect the airport gate to a major landside city hub that links into the trunk network
-          const minAlignPasses = ap.isHub ? [0.38, 0.10] : [0.44];
+          const minAlignPasses = ap.isHub ? [0.32, -0.05] : [0.40];
           for (const minAlign of minAlignPasses) {
             if (builtApMotorway) break;
             const townCandidates = [];
@@ -3031,7 +3329,6 @@
               const canSharePassThrough =
                 townMotorwayDegree[t.id] === 1 && this.findPassThroughStubAtTown(t, ap.gateX, ap.gateY) !== null;
               if (townMotorwayDegree[t.id] >= 1 && !canSharePassThrough) continue;
-              if (this.motorways.length > 0 && !canSharePassThrough && minAlign > 0.2) continue;
               if (
                 primaryPair &&
                 ((primaryPair.tA.id === ap.hostTownId && primaryPair.tB.id === t.id) ||
@@ -3042,28 +3339,28 @@
               const dx = t.x - ap.x;
               const dy = t.y - ap.y;
               const landV = dx * ap.landNx + dy * ap.landNy;
-              if (landV < 4.0) continue;
+              if (landV < 3.0) continue;
 
               const gateDist = Math.hypot(t.x - ap.gateX, t.y - ap.gateY);
               const minSpan = ap.isHub ? 18 : 26;
-              if (gateDist < minSpan || gateDist > 155) continue;
+              if (gateDist < minSpan || gateDist > 165) continue;
 
               const alignCos = ((t.x - ap.gateX) * ap.landNx + (t.y - ap.gateY) * ap.landNy) / (gateDist || 1);
               if (alignCos < minAlign) continue;
 
               const isHost = t.id === ap.hostTownId;
-              const networkLinkBonus = canSharePassThrough ? 5.0 : 0.65;
+              const networkLinkBonus = canSharePassThrough ? 5.0 : (connectedClusters.has(t.clusterId) ? 1.8 : 0.85);
               const score =
                 (townPop(t) / Math.pow(gateDist, 0.58)) *
-                (0.55 + 0.65 * alignCos) *
+                (0.55 + 0.65 * Math.max(0, alignCos)) *
                 (isHost ? 1.15 : 1.0) *
                 networkLinkBonus;
-              townCandidates.push({ town: t, score });
+              townCandidates.push({ town: t, score, canSharePassThrough });
             }
 
             townCandidates.sort((a, b) => b.score - a.score);
 
-            for (const { town: targetTown } of townCandidates) {
+            for (const { town: targetTown, canSharePassThrough } of townCandidates) {
               const apStub = this.createTerminalStreetStub(ap, true, targetTown.x, targetTown.y);
               const townStub = this.createTerminalStreetStub(targetTown, false, ap.gateX, ap.gateY);
               const stubChord = Math.hypot(townStub.x - apStub.x, townStub.y - apStub.y);
@@ -3081,8 +3378,10 @@
               const connectsToTrunk =
                 mwAp &&
                 (this.motorways.length === 0 ||
+                  canSharePassThrough ||
                   townMotorwayDegree[targetTown.id] >= 1 ||
-                  this.motorways.some(m => this.findPolylineIntersection(m.samples, mwAp.samples) !== null));
+                  this.motorways.some(m => this.findPolylineIntersection(m.samples, mwAp.samples) !== null) ||
+                  (ap.isHub && minAlign < 0));
               if (mwAp && connectsToTrunk) {
                 ap.motorwayId = mwayNumber++;
                 this.motorways.push(mwAp);
@@ -3154,12 +3453,14 @@
             const dWater = this.distToWater[id];
             // Keep shoreline buffer completely free of isolated tree dots so banks look razor-sharp
             if (dWater < 5.0) continue;
-            const n = this.noise.noise(x * 0.14, y * 0.14);
-            if (n > 0.72 && this.rng.next() < 0.28) {
+            // Cluster forest belts naturally on upland hills & ridges (guided by latent topography!)
+            const hillHeight = Math.max(0, this.elevationField[id] - this.seaLevel);
+            const n = this.noise.noise(x * 0.12, y * 0.12) + hillHeight * 0.62;
+            if (n > 0.76 && this.rng.next() < 0.34) {
               this.trees.push({
                 x: x + this.rng.range(-0.35, 0.35),
                 y: y + this.rng.range(-0.35, 0.35),
-                r: this.rng.range(0.36, 0.62),
+                r: this.rng.range(0.38, 0.65),
                 color: this.rng.pick(PALETTE.treeDots)
               });
             }
@@ -3432,14 +3733,19 @@
         ctx.fillStyle = PALETTE.bgPaper;
         ctx.fillRect(0, 0, pw, ph);
 
-        // 2. Soft Pastel Urban & Waterfront Blush Zones (Clean geometric octilinear & circular zones)
+        // 2. Soft Pastel Contour-Hugging Urban & Waterfront Blush Zones
         ctx.save();
         ctx.fillStyle = PALETTE.urbanBlushPink;
-        for (const town of world.towns) {
-          ctx.beginPath();
-          ctx.arc(town.x * ts, town.y * ts, (town.urbanRadius + 4.5) * ts, 0, Math.PI * 2);
-          ctx.fill();
+        ctx.beginPath();
+        for (let y = 0; y < world.H; y += 2) {
+          for (let x = 0; x < world.W; x += 2) {
+            if (world.zoneColorIdx[world.idx(x, y)] >= 0) {
+              ctx.moveTo((x + 4.5) * ts, (y + 1) * ts);
+              ctx.arc((x + 1) * ts, (y + 1) * ts, 3.5 * ts, 0, Math.PI * 2);
+            }
+          }
         }
+        ctx.fill();
 
         // Build Vignelli 45°/90° Octilinear Marching-Squares Water Path
         const waterPath = this.buildVignelliWaterPath(world, ts);
@@ -4706,20 +5012,29 @@
           for (let x = 0; x < world.W; x += 2) {
             const id = world.idx(x, y);
             if (world.waterMask[id] === 0) {
-              const u = world.urbanSuitability[id];
-              ctx.fillStyle = `rgba(59, 130, 246, ${u * 0.48})`;
-              ctx.fillRect(x * ts, y * ts, ts * 2, ts * 2);
+              const elev = world.elevationField[id];
+              const hAbove = Math.max(0, elev - world.seaLevel);
+              if (hAbove > 0.16) {
+                // Latent upland hill/ridge elevation contour band
+                const band = Math.floor(hAbove * 18) / 18;
+                ctx.fillStyle = `rgba(120, 113, 108, ${Math.min(0.45, band * 0.85)})`;
+                ctx.fillRect(x * ts, y * ts, ts * 2, ts * 2);
+              } else {
+                const u = world.urbanSuitability[id];
+                ctx.fillStyle = `rgba(59, 130, 246, ${u * 0.48})`;
+                ctx.fillRect(x * ts, y * ts, ts * 2, ts * 2);
+              }
             }
           }
         }
-        // Highlight main river confluence node
-        if (world.confluencePoint) {
-          const cx = world.confluencePoint.x * ts;
-          const cy = world.confluencePoint.y * ts;
-          ctx.strokeStyle = '#0284c7';
-          ctx.lineWidth = 3;
+        // Highlight regional hydro features (confluences, lakes, firths)
+        for (const hf of world.hydroFeatures) {
+          const cx = hf.x * ts;
+          const cy = hf.y * ts;
+          ctx.strokeStyle = hf.type === 'confluence' ? '#0284c7' : '#0d9488';
+          ctx.lineWidth = 2.5;
           ctx.beginPath();
-          ctx.arc(cx, cy, ts * 4, 0, Math.PI * 2);
+          ctx.arc(cx, cy, ts * 3.5, 0, Math.PI * 2);
           ctx.stroke();
         }
         ctx.restore();
