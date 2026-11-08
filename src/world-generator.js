@@ -712,10 +712,10 @@ export class ProceduralLogisticsWorld {
       let bestScore = -1;
 
       const scanR = Math.round(hostTown.urbanRadius + (isHub ? 36 : 28));
-      const y0 = Math.max(10, hostTown.y - scanR);
-      const y1 = Math.min(this.H - 10, hostTown.y + scanR);
-      const x0 = Math.max(10, hostTown.x - scanR);
-      const x1 = Math.min(this.W - 10, hostTown.x + scanR);
+      const y0 = Math.max(22, hostTown.y - scanR);
+      const y1 = Math.min(this.H - 22, hostTown.y + scanR);
+      const x0 = Math.max(22, hostTown.x - scanR);
+      const x1 = Math.min(this.W - 22, hostTown.x + scanR);
 
       let sumMetroX = 0, sumMetroY = 0;
       for (const otherT of this.towns) {
@@ -736,6 +736,8 @@ export class ProceduralLogisticsWorld {
       // terrain, shoreline inscribed-circle, NIMBY, and airspace checks run once per cell
       for (let cy = y0; cy <= y1; cy += 2) {
         for (let cx = x0; cx <= x1; cx += 2) {
+          if (cx > this.W - 56 && cy < 36) continue;
+          if (cx < 88 && cy < 28) continue;
           const id = this.idx(cx, cy);
           if (this.waterMask[id] > 0) continue;
           if (this.slopeField[id] > maxCenterSlope || this.distToWater[id] < minInscribedDistToWater) continue;
@@ -1115,22 +1117,28 @@ export class ProceduralLogisticsWorld {
 
     const riverAwareEdgeCost = (a, b) => {
       const d = Math.hypot(b.x - a.x, b.y - a.y);
-      let waterHits = 0;
+      let riverHits = 0;
+      let seaHits = 0;
       let ridgePenalty = 0;
-      const steps = 18;
+      const steps = 22;
       for (let s = 1; s < steps; s++) {
         const t = s / steps;
         const sx = Math.round(a.x + (b.x - a.x) * t);
         const sy = Math.round(a.y + (b.y - a.y) * t);
         if (this.inBounds(sx, sy, 1)) {
           const id = this.idx(sx, sy);
-          if (this.waterMask[id] > 0) waterHits++;
-          if (this.buildingMask[id] === 3) waterHits += 4;
-          ridgePenalty += Math.max(0, this.elevationField[id] - this.seaLevel - 0.14) * 18.0 + this.slopeField[id] * 10.0;
+          const wm = this.waterMask[id];
+          if (wm === 1) riverHits++;
+          else if (wm === 2) seaHits++;
+          if (this.buildingMask[id] === 3) riverHits += 4;
+          ridgePenalty += Math.max(0, this.elevationField[id] - this.seaLevel - 0.12) * 24.0 + this.slopeField[id] * 12.0;
         }
       }
       const diffCluster = a.ref.clusterId !== b.ref.clusterId ? 24 : 0;
-      return d + diffCluster + ridgePenalty + (waterHits > 0 ? 22 + waterHits * 3.5 : 0);
+      const waterCost =
+        (riverHits > 0 ? 22 + riverHits * 3.5 : 0) +
+        (seaHits > 0 ? (this.config.archetype === 'island-hopper' ? 28 + seaHits * 5.0 : 85 + seaHits * 32.0) : 0);
+      return d + diffCluster + ridgePenalty + waterCost;
     };
 
     while (connected.size < nodes.length) {
@@ -1192,6 +1200,7 @@ export class ProceduralLogisticsWorld {
       if (path) {
         const bridgeTiles = path.filter(pt => pt.isBridge).length;
         if (isIslandHopper && !sameLandmass && bridgeTiles > 20) continue;
+        if (!isIslandHopper && bridgeTiles > 11 && sameLandmass) continue;
         this.commitRoadPath(path, 'arterial');
         townRoadDegree[i]++;
         townRoadDegree[j]++;
@@ -1307,6 +1316,9 @@ export class ProceduralLogisticsWorld {
       const pid = parent[cid];
       const prevDx = pid !== -1 ? cx - (pid % W) : 0;
       const prevDy = pid !== -1 ? cy - Math.floor(pid / W) : 0;
+      const gpid = pid !== -1 ? parent[pid] : -1;
+      const gPrevDx = gpid !== -1 ? (pid % W) - (gpid % W) : 0;
+      const gPrevDy = gpid !== -1 ? Math.floor(pid / W) - Math.floor(gpid / W) : 0;
       const currIsWater = this.waterMask[cid] > 0;
 
       for (const [dx, dy, baseStep] of dirs) {
@@ -1368,7 +1380,16 @@ export class ProceduralLogisticsWorld {
             }
             stepCost *= crossesToBank ? 8.5 : 65.0;
           } else {
-            stepCost *= 19.5;
+            let crossesNarrowBay = false;
+            for (let s = 1; s <= 9; s++) {
+              const bx = nx + dx * s;
+              const by = ny + dy * s;
+              if (this.inBounds(bx, by, 1) && this.waterMask[this.idx(bx, by)] === 0) {
+                crossesNarrowBay = true;
+                break;
+              }
+            }
+            stepCost *= crossesNarrowBay ? 24.0 : (this.config.archetype === 'island-hopper' ? 38.0 : 95.0);
           }
           if (currIsWater && pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
             stepCost += 85.0;
@@ -1386,9 +1407,32 @@ export class ProceduralLogisticsWorld {
           if (dW < 2.5 && !currIsWater) {
             stepCost += (2.6 - dW) * 2.5;
           }
-          // Topographic valley-following cost: avoid steep slopes and high mountain ridges
-          const dElev = Math.max(0, this.elevationField[nid] - this.elevationField[cid]);
-          stepCost += this.slopeField[nid] * 3.8 + dElev * 16.0 + Math.max(0, this.elevationField[nid] - this.seaLevel - 0.14) * 2.2;
+          // Topographic valley-following & contour-hugging cost:
+          // Penalize both uphill and downhill grade nonlinearly (`absDeltaElev^2`) and strongly penalize
+          // climbing onto upland contour terraces (`hAbove > 0.105`) so roads hug valley floors around hills!
+          const hAbove = Math.max(0, this.elevationField[nid] - this.seaLevel);
+          const uplandOver = Math.max(0, hAbove - 0.105);
+          const absDeltaElev = Math.abs(this.elevationField[nid] - this.elevationField[cid]) / baseStep;
+          const terraceStepPenalty = hAbove >= 0.115 ? 5.5 : 0;
+          const gradeCost =
+            absDeltaElev * 64.0 +
+            absDeltaElev * absDeltaElev * 1350.0 +
+            this.slopeField[nid] * 22.0 +
+            hAbove * 14.0 +
+            uplandOver * 46.0 +
+            uplandOver * uplandOver * 140.0 +
+            terraceStepPenalty;
+          stepCost += gradeCost;
+          // Valley-bench discount only below the first hill contour (`hAbove <= 0.11`)
+          if (absDeltaElev < 0.0035 && hAbove <= 0.11) {
+            stepCost *= 0.86;
+          }
+          // Subtle low-frequency topographic meander bias on rural dry land so long valley arterials
+          // gently follow micro-topography instead of forming 45-tile dead-straight CAD ruler lines
+          if (this.zoneColorIdx[nid] < 0 && !isInterchangeBypass && this.noise) {
+            const meanderMod = (this.noise.fbm(nx * 0.048 + 1.9, ny * 0.048 + 6.2, 2) + 0.45) * 0.68;
+            stepCost += Math.max(0, meanderMod);
+          }
           // Strongly prefer existing orthogonal streets inside urban zones; never carve a parallel street 1-2 tiles away!
           if (this.zoneColorIdx[nid] >= 0 && !isInterchangeBypass && this.buildingMask[nid] !== 4) {
             stepCost *= 4.5;
@@ -1408,14 +1452,17 @@ export class ProceduralLogisticsWorld {
           }
         }
 
-        // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) so A* marches in clean octilinear runs
-        // instead of 1-tile staircases or caterpillar zig-zags!
+        // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) with a gentle rural bend cost (0.85)
+        // plus a 2-step anti-oscillation guard (`gpid`) so roads curve around hills without 1-tile staircases!
         if (pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
           if (customTurnPenalty !== null) {
             stepCost += customTurnPenalty;
           } else {
             const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
-            stepCost += inUrban ? 4.2 : 2.4;
+            stepCost += inUrban ? 4.2 : 0.85;
+            if (!inUrban && gpid !== -1 && (prevDx !== gPrevDx || prevDy !== gPrevDy)) {
+              stepCost += 4.5;
+            }
           }
         }
 
@@ -2620,6 +2667,7 @@ export class ProceduralLogisticsWorld {
     let chosenAy = town.y;
     let chosenTiePath = null;
     let chosenAngle = baseAngle;
+    let bestStubCost = Infinity;
 
     for (const rScale of radiusScales) {
       for (const aOff of angleOffsets) {
@@ -2629,25 +2677,38 @@ export class ProceduralLogisticsWorld {
         const candY = Math.max(7, Math.min(this.H - 8, Math.round(town.y + Math.sin(ang) * r)));
         const cid = this.idx(candX, candY);
 
-        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 3.0) continue;
+        if (this.waterMask[cid] > 0 || this.distToWater[cid] < 3.2) continue;
         if (this.buildingMask[cid] >= 1 && this.buildingMask[cid] <= 3) continue;
         if (this.isPointInAirportPad(candX, candY, 2.5)) continue;
 
         const tooCloseStub = this.interchanges.some(
-          ic => ic.type === 'terminal-stub' && Math.hypot(ic.x - candX, ic.y - candY) < 8.5
+          ic => Math.hypot(ic.x - candX, ic.y - candY) < 11.0
         );
         if (tooCloseStub) continue;
 
+        // Never plant a terminal roundabout on or near the shoulder of an existing motorway (`HARBOR-305` invariant)!
+        const tooCloseMotorway = this.motorways.some(mw =>
+          mw.samples.some(pt => Math.hypot(pt.x - candX, pt.y - candY) < 15.0)
+        );
+        if (tooCloseMotorway) continue;
+
+        const hAbove = Math.max(0, this.elevationField[cid] - this.seaLevel);
+        const stubCost =
+          Math.abs(aOff) * 0.45 +
+          Math.abs(rScale - 1.0) * 1.2 +
+          hAbove * 28.0 +
+          this.slopeField[cid] * 14.0;
+        if (stubCost >= bestStubCost) continue;
+
         const tiePath = this.findRoadPathAStar(candX, candY, town.x, town.y, false, null, true);
         if (tiePath && tiePath.length >= 2) {
+          bestStubCost = stubCost;
           chosenAx = candX;
           chosenAy = candY;
           chosenTiePath = tiePath;
           chosenAngle = ang;
-          break;
         }
       }
-      if (chosenTiePath) break;
     }
 
     if (!chosenTiePath) {
@@ -2658,9 +2719,13 @@ export class ProceduralLogisticsWorld {
           const candX = Math.max(5, Math.min(this.W - 6, Math.round(town.x + Math.cos(ang) * r)));
           const candY = Math.max(5, Math.min(this.H - 6, Math.round(town.y + Math.sin(ang) * r)));
           const cid = this.idx(candX, candY);
-          if (this.waterMask[cid] > 0 || this.distToWater[cid] < 1.8) continue;
+          if (this.waterMask[cid] > 0 || this.distToWater[cid] < 2.2) continue;
           if (this.buildingMask[cid] >= 1 && this.buildingMask[cid] <= 3) continue;
           if (this.isPointInAirportPad(candX, candY, 2.2)) continue;
+          const tooCloseMotorway = this.motorways.some(mw =>
+            mw.samples.some(pt => Math.hypot(pt.x - candX, pt.y - candY) < 13.5)
+          );
+          if (tooCloseMotorway) continue;
           const tiePath = this.findRoadPathAStar(candX, candY, town.x, town.y, true, null, true);
           if (tiePath && tiePath.length >= 2) {
             chosenAx = candX;
@@ -2736,8 +2801,12 @@ export class ProceduralLogisticsWorld {
     const gy = Math.round(y);
     if (!this.inBounds(gx, gy, 6)) return false;
     const cid = this.idx(gx, gy);
-    if (this.waterMask[cid] > 0 || this.distToWater[cid] < 4.5) return false;
+    if (this.waterMask[cid] > 0 || this.distToWater[cid] < 6.0) return false;
     if (this.isPointInAirportPad(x, y, 3.8)) return false;
+    // Never place a Trumpet interchange inside a town's dense core (`< urbanRadius * 0.85`)
+    for (const t of this.towns) {
+      if (Math.hypot(x - t.x, y - t.y) < t.urbanRadius * 0.85) return false;
+    }
 
     const ux = Math.cos(angleMain), uy = Math.sin(angleMain);
     const nx = -uy * sideSign, ny = ux * sideSign;
@@ -2885,7 +2954,8 @@ export class ProceduralLogisticsWorld {
           const dStartB = this.polylineArcLength(samples, 0, hit.idxB);
           const dEndB = this.polylineArcLength(samples, hit.idxB, samples.length - 1);
 
-          if (dStartA < 20 || dEndA < 20 || dStartB < 20 || dEndB < 20) return Infinity;
+          const minCrossArm = this.motorways.length >= 2 ? 28 : 20;
+          if (dStartA < 20 || dEndA < 20 || dStartB < minCrossArm || dEndB < minCrossArm) return Infinity;
           const nearMajorIc = this.interchanges.some(
             ic => (ic.type === 'cloverleaf' || ic.type === 'trumpet') && Math.hypot(ic.x - hit.x, ic.y - hit.y) < 28.0
           );
@@ -2901,6 +2971,8 @@ export class ProceduralLogisticsWorld {
     let waterArc = 0;
     let totalWaterArc = 0;
     let riverProxArc = 0;
+    let tunnelRunArc = 0;
+    let totalTunnelArc = 0;
 
     for (let i = 0; i < samples.length; i++) {
       const pt = samples[i];
@@ -2928,7 +3000,7 @@ export class ProceduralLogisticsWorld {
         const l1 = Math.hypot(vx1, vy1) || 1;
         const l2 = Math.hypot(vx2, vy2) || 1;
         const cosWide = (vx1 * vx2 + vy1 * vy2) / (l1 * l2);
-        if (cosWide < 0.44) return Infinity;
+        if (cosWide < 0.16) return Infinity;
       }
 
       if (this.waterMask[id] === 1) {
@@ -2938,6 +3010,7 @@ export class ProceduralLogisticsWorld {
       }
 
       if (this.waterMask[id] > 0) {
+        tunnelRunArc = 0;
         const wWeight = this.waterMask[id] === 2 ? 1.35 : 0.72;
         waterArc += segLen * wWeight;
         totalWaterArc += segLen * wWeight;
@@ -2954,37 +3027,85 @@ export class ProceduralLogisticsWorld {
           return Infinity;
         }
         waterArc = 0;
-        if (this.distToWater[id] < 2.2) penalty += segLen * 2.2;
-        // Topographic valley preference (weighted by segLen so sample density never biases the score!)
-        const ridgeElev = Math.max(0, this.elevationField[id] - this.seaLevel - 0.14);
-        penalty += segLen * (ridgeElev * 6.5 + this.slopeField[id] * 2.5);
+        const dWater = this.distToWater[id];
+        if (dWater < 3.6) {
+          penalty += (3.8 - dWater) * 7.5 * segLen;
+        }
+        // Topographic valley preference & tunnel portal discipline:
+        // Expressways strongly prefer incised river valleys & low passes, and only bore short perpendicular mountain tunnels!
+        const hAbove = Math.max(0, this.elevationField[id] - this.seaLevel);
+        const ridgeElev = Math.max(0, hAbove - 0.115);
+        penalty += segLen * (hAbove * 18.0 + ridgeElev * 42.0 + this.slopeField[id] * 12.5);
+        if (i > 0) {
+          const prevPt = samples[i - 1];
+          const prevId = this.idx(Math.round(prevPt.x), Math.round(prevPt.y));
+          const dElev = Math.abs(this.elevationField[id] - this.elevationField[prevId]);
+          penalty += dElev * 75.0;
+        }
+        if (hAbove >= 0.235) {
+          if (tunnelRunArc === 0) {
+            // Fixed tunnel portal entry surcharge so isolated hills are always bypassed via the valley floor!
+            penalty += 68.0;
+          }
+          tunnelRunArc += segLen;
+          totalTunnelArc += segLen;
+          penalty += segLen * 16.0;
+          if (tunnelRunArc > 42.0 || totalTunnelArc > 52.0) return Infinity;
+          if (tunnelRunArc > 20.0) {
+            penalty += (tunnelRunArc - 20.0) * 4.5 * segLen;
+          }
+        } else {
+          tunnelRunArc = 0;
+        }
       }
 
-      // Hard reject passing near an existing motorway's endpoints or running parallel nearby
-      if (i > 3 && i < samples.length - 4) {
-        for (const other of this.motorways) {
-          if (allowTouchTrunkNum === other.number && i > samples.length - 22) continue;
-          if (
-            Math.hypot(pt.x - other.sx, pt.y - other.sy) < 11.5 ||
-            Math.hypot(pt.x - other.ex, pt.y - other.ey) < 11.5
-          ) {
+      // Penalize crossing directly through an airport's low-altitude runway approach funnel
+      for (const ap of this.airports) {
+        if (ap.id === airportId && i < 10) continue;
+        const adx = pt.x - ap.x;
+        const ady = pt.y - ap.y;
+        const cosA = Math.cos(ap.angleRad);
+        const sinA = Math.sin(ap.angleRad);
+        const u = Math.abs(adx * cosA + ady * sinA);
+        const v = Math.abs(-adx * sinA + ady * cosA);
+        if (u > ap.halfLen && u <= ap.halfLen + 15.0 && v <= ap.halfWid + 3.2) {
+          penalty += segLen * 18.0;
+        }
+      }
+
+      // Hard reject passing near an existing motorway's endpoints or running parallel/colliding with its interior
+      for (const other of this.motorways) {
+        if (allowTouchTrunkNum === other.number && i > samples.length - 22) continue;
+        const sharedStart =
+          Math.hypot(sx - other.sx, sy - other.sy) < 2.5 || Math.hypot(sx - other.ex, sy - other.ey) < 2.5;
+        const sharedEnd =
+          Math.hypot(ex - other.sx, ey - other.sy) < 2.5 || Math.hypot(ex - other.ex, ey - other.ey) < 2.5;
+        if ((i <= 4 && sharedStart) || (i >= samples.length - 5 && sharedEnd)) continue;
+
+        if (
+          Math.hypot(pt.x - other.sx, pt.y - other.sy) < 11.5 ||
+          Math.hypot(pt.x - other.ex, pt.y - other.ey) < 11.5
+        ) {
+          return Infinity;
+        }
+        for (let j = 2; j < other.samples.length - 2; j += 2) {
+          const d = Math.hypot(pt.x - other.samples[j].x, pt.y - other.samples[j].y);
+          // Endpoints of a non-trumpet motorway must NEVER land within 13.5 tiles of another motorway's interior!
+          if ((i <= 3 || i >= samples.length - 4) && d < 13.5) {
             return Infinity;
           }
-          for (let j = 2; j < other.samples.length - 2; j += 2) {
-            const d = Math.hypot(pt.x - other.samples[j].x, pt.y - other.samples[j].y);
-            if (d < 16.0) {
-              const a1 = Math.atan2(
-                samples[Math.min(samples.length - 1, i + 1)].y - samples[Math.max(0, i - 1)].y,
-                samples[Math.min(samples.length - 1, i + 1)].x - samples[Math.max(0, i - 1)].x
-              );
-              const a2 = Math.atan2(
-                other.samples[Math.min(other.samples.length - 1, j + 1)].y - other.samples[Math.max(0, j - 1)].y,
-                other.samples[Math.min(other.samples.length - 1, j + 1)].x - other.samples[Math.max(0, j - 1)].x
-              );
-              const sinCross = Math.abs(Math.sin(a1 - a2));
-              if (sinCross < 0.72) {
-                return Infinity;
-              }
+          if (d < 16.0) {
+            const a1 = Math.atan2(
+              samples[Math.min(samples.length - 1, i + 1)].y - samples[Math.max(0, i - 1)].y,
+              samples[Math.min(samples.length - 1, i + 1)].x - samples[Math.max(0, i - 1)].x
+            );
+            const a2 = Math.atan2(
+              other.samples[Math.min(other.samples.length - 1, j + 1)].y - other.samples[Math.max(0, j - 1)].y,
+              other.samples[Math.min(other.samples.length - 1, j + 1)].x - other.samples[Math.max(0, j - 1)].x
+            );
+            const sinCross = Math.abs(Math.sin(a1 - a2));
+            if (sinCross < 0.72) {
+              return Infinity;
             }
           }
         }
@@ -3022,10 +3143,9 @@ export class ProceduralLogisticsWorld {
         } else if (wm === 0) {
           const hAbove = Math.max(0, this.elevationField[id] - this.seaLevel);
           const slope = this.slopeField[id];
-          if (this.distToWater[id] < 2.2) c += 26.0;
-          c += hAbove >= 0.205
-            ? (0.205 * 38.0 + (hAbove - 0.205) * 14.0 + slope * 10.0)
-            : (hAbove * 38.0 + slope * 22.0);
+          const dW = this.distToWater[id];
+          if (dW < 3.8) c += (4.0 - dW) * 14.0;
+          c += hAbove * 115.0 + hAbove * hAbove * 240.0 + slope * 56.0;
           for (const t of this.towns) {
             const dt = Math.hypot(gx - t.x, gy - t.y);
             if (dt >= 7 && dt <= 16) {
@@ -3131,17 +3251,24 @@ export class ProceduralLogisticsWorld {
         rawPts.reverse();
         if (rawPts.length < 3) return [{ x: sx, y: sy }, { x: ex, y: ey }];
 
-        // Subsample control points every ~4 coarse steps and apply 1 gentle smoothing pass + S-curve/valley wave
-        // so the B-spline curves gracefully through valley passes without flattening into a straight ruler!
+        // Extract denser control points directly from the A* valley path (`every ~3 coarse steps, up to 14 points`)
+        // without adding a synthetic 16-tile sine wave that pushes waypoints out of the valley onto mountain ridges!
+        let maxHAbove = 0;
+        for (const p of rawPts) {
+          const pid = this.idx(Math.max(0, Math.min(this.W - 1, p.x)), Math.max(0, Math.min(this.H - 1, p.y)));
+          const ha = Math.max(0, this.elevationField[pid] - this.seaLevel);
+          if (ha > maxHAbove) maxHAbove = ha;
+        }
         let outWps = [{ x: sx, y: sy }];
-        const numCtrl = Math.min(9, Math.max(4, Math.floor(rawPts.length / 4)));
-        const waveAmp = Math.min(16.0, chordLen * 0.11) * (lateralBias >= 0 ? 1 : -1);
+        const numCtrl = Math.min(14, Math.max(5, Math.floor(rawPts.length / 3)));
+        // Only apply a subtle <= 2.2-tile S-curve grace when the entire corridor lies on a dead-flat lowland plain
+        const flatPlainWaveAmp = maxHAbove < 0.08 ? Math.min(2.2, chordLen * 0.025) * (lateralBias >= 0 ? 1 : -1) : 0;
         for (let k = 1; k <= numCtrl; k++) {
           const frac = k / (numCtrl + 1);
           const idx = Math.floor(frac * (rawPts.length - 1));
-          const wave = (Math.sin(frac * Math.PI) * 0.65 + Math.sin(frac * Math.PI * 2) * 0.35) * waveAmp;
-          const wx = rawPts[idx].x + chordNx * wave * 0.82;
-          const wy = rawPts[idx].y + chordNy * wave * 0.82;
+          const wave = Math.sin(frac * Math.PI * 2) * flatPlainWaveAmp;
+          const wx = rawPts[idx].x + chordNx * wave;
+          const wy = rawPts[idx].y + chordNy * wave;
           if (this.inBounds(Math.round(wx), Math.round(wy), 5) && !this.isPointInAirportPad(wx, wy, 2.2, airportId)) {
             outWps.push({ x: wx, y: wy });
           } else {
@@ -3150,18 +3277,28 @@ export class ProceduralLogisticsWorld {
         }
         outWps.push({ x: ex, y: ey });
 
-        const nextWps = [outWps[0]];
-        for (let i = 1; i < outWps.length - 1; i++) {
-          const nx = 0.20 * outWps[i - 1].x + 0.60 * outWps[i].x + 0.20 * outWps[i + 1].x;
-          const ny = 0.20 * outWps[i - 1].y + 0.60 * outWps[i].y + 0.20 * outWps[i + 1].y;
-          if (!this.isPointInAirportPad(nx, ny, 2.2, airportId)) {
-            nextWps.push({ x: nx, y: ny });
-          } else {
-            nextWps.push(outWps[i]);
+        for (let pass = 0; pass < 4; pass++) {
+          const nextWps = [outWps[0]];
+          for (let i = 1; i < outWps.length - 1; i++) {
+            const nx = 0.25 * outWps[i - 1].x + 0.50 * outWps[i].x + 0.25 * outWps[i + 1].x;
+            const ny = 0.25 * outWps[i - 1].y + 0.50 * outWps[i].y + 0.25 * outWps[i + 1].y;
+            const curId = this.idx(Math.round(outWps[i].x), Math.round(outWps[i].y));
+            const newId = this.idx(Math.round(nx), Math.round(ny));
+            // Accept smoothed position unless it enters water/airport pad or climbs onto a steep mountain wall
+            if (
+              !this.isPointInAirportPad(nx, ny, 2.2, airportId) &&
+              this.waterMask[newId] === 0 &&
+              this.elevationField[newId] <= this.elevationField[curId] + 0.08
+            ) {
+              nextWps.push({ x: nx, y: ny });
+            } else {
+              nextWps.push(outWps[i]);
+            }
           }
+          nextWps.push(outWps[outWps.length - 1]);
+          outWps = nextWps;
         }
-        nextWps.push(outWps[outWps.length - 1]);
-        return nextWps;
+        return outWps;
       }
 
       if (closedGen[cid] === gen) continue;
@@ -3169,6 +3306,9 @@ export class ProceduralLogisticsWorld {
 
       const cx = cid % cw;
       const cy = Math.floor(cid / cw);
+      const currGx = cx * stride;
+      const currGy = cy * stride;
+      const currElev = this.inBounds(currGx, currGy, 1) ? this.elevationField[this.idx(currGx, currGy)] : this.seaLevel;
       const pid = parent[cid];
       const prevDx = pid !== -1 ? cx - (pid % cw) : 0;
       const prevDy = pid !== -1 ? cy - Math.floor(pid / cw) : 0;
@@ -3188,8 +3328,9 @@ export class ProceduralLogisticsWorld {
 
         const id = this.idx(gx, gy);
         const wm = this.waterMask[id];
+        const absDeltaH = Math.abs(this.elevationField[id] - currElev) / baseStep;
 
-        let cost = baseStep * stride + baseCostTable[nid];
+        let cost = baseStep * stride + baseCostTable[nid] + absDeltaH * 145.0;
         if (wm === 2) {
           // Distinguish narrow strait crossings (land within 12 tiles ahead) from deep open lakes/bays
           const aheadX = gx + dx * stride * 4;
@@ -3232,7 +3373,34 @@ export class ProceduralLogisticsWorld {
 
     const candidateCurves = [];
 
+    const defaultSign = number % 2 === 0 ? 1 : -1;
+    const preferMag = Math.min(7.5, len * 0.09);
+    const preferOff = defaultSign * preferMag;
+
     if (forcedViaPt && !ap) {
+      // Route Cloverleaf transverse trunks (`M-2`) through two chained valley A* legs (`start -> forcedViaPt -> end`)
+      // with colinear tangent alignment across `forcedViaPt` so M-2 follows topographic valleys on both sides!
+      for (const bias of [0, defaultSign * 10, -defaultSign * 10]) {
+        const leg1 = this.findValleyMotorwayWaypoints(sx, sy, forcedViaPt.x, forcedViaPt.y, null, bias);
+        const leg2 = this.findValleyMotorwayWaypoints(forcedViaPt.x, forcedViaPt.y, ex, ey, null, -bias);
+        if (leg1 && leg2 && leg1.length >= 2 && leg2.length >= 2) {
+          const joined = [...leg1, ...leg2.slice(1)];
+          const vIdx = leg1.length - 1;
+          if (vIdx >= 1 && vIdx < joined.length - 1) {
+            joined[vIdx - 1] = {
+              x: 0.55 * joined[vIdx - 1].x + 0.45 * (2 * forcedViaPt.x - joined[vIdx + 1].x),
+              y: 0.55 * joined[vIdx - 1].y + 0.45 * (2 * forcedViaPt.y - joined[vIdx + 1].y)
+            };
+          }
+          candidateCurves.push({
+            waypoints: joined,
+            isCloverleafTarget: true,
+            isValleyCorridor: true,
+            off: 0,
+            preferOff: 0
+          });
+        }
+      }
       const c1x = 2 * forcedViaPt.x - 0.5 * (sx + ex);
       const c1y = 2 * forcedViaPt.y - 0.5 * (sy + ey);
       candidateCurves.push({
@@ -3243,12 +3411,8 @@ export class ProceduralLogisticsWorld {
       });
     }
 
-    const defaultSign = number % 2 === 0 ? 1 : -1;
-    const preferMag = Math.min(7.5, len * 0.09);
-    const preferOff = defaultSign * preferMag;
-
     // 1. Terrain-Guided A* Valley Corridor B-Spline Candidates (enabled for both airport & city trunks!)
-    if (len >= 32) {
+    if (len >= 28) {
       const vStartX = ap ? sx + ap.landNx * Math.min(10, len * 0.14) : sx;
       const vStartY = ap ? sy + ap.landNy * Math.min(10, len * 0.14) : sy;
       for (const bias of [defaultSign * 14, -defaultSign * 14, 0]) {
@@ -3393,7 +3557,34 @@ export class ProceduralLogisticsWorld {
       next.push(pts[pts.length - 1]);
       pts = next;
     }
-    return pts;
+
+    // Resample Chaikin polyline to 45 uniform arc-length samples (matching cubic Bezier sample density)
+    // so `cosTurn` and `cosWide` evaluate consistent physical curvature radii!
+    const cumLen = new Float32Array(pts.length);
+    for (let i = 1; i < pts.length; i++) {
+      cumLen[i] = cumLen[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    }
+    const totalLen = cumLen[pts.length - 1];
+    if (totalLen < 1e-3) return pts;
+
+    const steps = 44;
+    const resampled = [pts[0]];
+    let segIdx = 0;
+    for (let s = 1; s < steps; s++) {
+      const targetD = (s / steps) * totalLen;
+      while (segIdx < pts.length - 2 && cumLen[segIdx + 1] < targetD) {
+        segIdx++;
+      }
+      const d0 = cumLen[segIdx];
+      const d1 = cumLen[segIdx + 1];
+      const t = d1 > d0 ? (targetD - d0) / (d1 - d0) : 0;
+      resampled.push({
+        x: pts[segIdx].x + (pts[segIdx + 1].x - pts[segIdx].x) * t,
+        y: pts[segIdx].y + (pts[segIdx + 1].y - pts[segIdx].y) * t
+      });
+    }
+    resampled.push(pts[pts.length - 1]);
+    return resampled;
   }
 
   polylineArcLength(samples, i0, i1) {
@@ -3505,43 +3696,76 @@ export class ProceduralLogisticsWorld {
           const p2 = { x: hitPt.x + outNx * pullEnd, y: hitPt.y + outNy * pullEnd };
           const p3 = { x: hitPt.x, y: hitPt.y };
 
-          const waypoints = [p0, p1, p2, p3];
-          const samples = this.sampleMotorwayCurve(waypoints);
-          const score = this.scoreMotorwaySamples(samples, originX, originY, hitPt.x, hitPt.y, airportId, 0, 0, true, trunk.number);
-          if (!Number.isFinite(score)) continue;
+          const cDx = hitPt.x - originX;
+          const cDy = hitPt.y - originY;
+          const cLen = Math.hypot(cDx, cDy) || 1;
+          const cNx = -cDy / cLen;
+          const cNy = cDx / cLen;
 
-          const totalScore =
-            score +
-            chord * 0.45 +
-            (1.0 - cosPerp) * 18 +
-            this.interchangeRoadOverlapCost(hitPt.x, hitPt.y, 4.0) * 0.55;
-          if (totalScore < bestScore) {
-            bestScore = totalScore;
-            bestResult = {
-              mw: {
-                number,
-                sx: originX,
-                sy: originY,
-                ex: hitPt.x,
-                ey: hitPt.y,
-                waypoints,
-                samples,
-                airportId,
-                townId,
-                prunedStart: false,
-                prunedEnd: true
-              },
-              trumpetIc: {
-                type: 'trumpet',
-                x: hitPt.x,
-                y: hitPt.y,
-                angleMain,
-                sideSign,
-                mwayMain: trunk.number,
-                mwaySpur: number,
-                label: `M-${trunk.number} × M-${number} Trumpet Interchange`
+          const spurCandidates = [{ waypoints: [p0, p1, p2, p3], isValley: false }];
+          // Add lateral C-curve Bezier candidates (`p1` offset perpendicular to chord) so Trumpet spurs
+          // can curve gracefully around an isolated hill (`VALLEY-618`) into the perpendicular throat `p2 -> p3`!
+          if (!ap) {
+            for (const latFrac of [0.18, -0.18, 0.30, -0.30]) {
+              const p1Lat = {
+                x: p1.x + cNx * (chord * latFrac),
+                y: p1.y + cNy * (chord * latFrac)
+              };
+              spurCandidates.push({ waypoints: [p0, p1Lat, p2, p3], isValley: false });
+            }
+          }
+          // For medium/long spurs (chord >= 24, every 2nd trunk sample), also test terrain-following Valley A* paths into `p2 -> p3`!
+          if (chord >= 24 && i % 2 === 0) {
+            const vStart = ap ? p1 : p0;
+            for (const bias of [0, 10, -10]) {
+              const valleyWps = this.findValleyMotorwayWaypoints(vStart.x, vStart.y, p2.x, p2.y, airportId, bias);
+              if (valleyWps && valleyWps.length >= 3) {
+                const fullWps = ap ? [p0, ...valleyWps, p3] : [...valleyWps, p3];
+                spurCandidates.push({ waypoints: fullWps, isValley: true });
               }
-            };
+            }
+          }
+
+          for (const sc of spurCandidates) {
+            const waypoints = sc.waypoints;
+            const samples = this.sampleMotorwayCurve(waypoints);
+            const score = this.scoreMotorwaySamples(samples, originX, originY, hitPt.x, hitPt.y, airportId, 0, 0, true, trunk.number);
+            if (!Number.isFinite(score)) continue;
+
+            const totalScore =
+              score -
+              (sc.isValley ? 18.0 : 0) +
+              chord * 0.45 +
+              (1.0 - cosPerp) * 18 +
+              this.interchangeRoadOverlapCost(hitPt.x, hitPt.y, 4.0) * 0.55;
+            if (totalScore < bestScore) {
+              bestScore = totalScore;
+              bestResult = {
+                mw: {
+                  number,
+                  sx: originX,
+                  sy: originY,
+                  ex: hitPt.x,
+                  ey: hitPt.y,
+                  waypoints,
+                  samples,
+                  airportId,
+                  townId,
+                  prunedStart: false,
+                  prunedEnd: true
+                },
+                trumpetIc: {
+                  type: 'trumpet',
+                  x: hitPt.x,
+                  y: hitPt.y,
+                  angleMain,
+                  sideSign,
+                  mwayMain: trunk.number,
+                  mwaySpur: number,
+                  label: `M-${trunk.number} × M-${number} Trumpet Interchange`
+                }
+              };
+            }
           }
         }
       }
@@ -4256,10 +4480,10 @@ export class ProceduralLogisticsWorld {
         const tB = this.towns[j];
         if (!isMajorMotorwayHub(tB)) continue;
         const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
-        const minPairD = isIslandHopper ? 30 : 58;
+        const minPairD = isIslandHopper ? 36 : 78;
         if (d < minPairD || d > 245 * scaleSpan) continue;
         const sameIslandBonus = isIslandHopper && tA.landmassId === tB.landmassId ? 3.5 : 1.0;
-        const diffClusterBonus = tA.clusterId !== tB.clusterId ? 2.40 : 0.45;
+        const diffClusterBonus = tA.clusterId !== tB.clusterId ? 4.20 : 0.18;
         const metroBonus = (tA.tier === 1 ? 1.6 : 1.0) * (tB.tier === 1 ? 1.6 : 1.0);
         const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 135 * scaleSpan) / (56 * scaleSpan), 2));
         const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.38)) * diffClusterBonus * metroBonus * spanBell * sameIslandBonus;
@@ -4656,7 +4880,7 @@ export class ProceduralLogisticsWorld {
    * (`elevationField >= seaLevel + 0.21`) and marks subterranean tunnel portals (`mw.tunnels`).
    */
   detectMountainExpresswayTunnels() {
-    const tunnelThresh = this.seaLevel + 0.21;
+    const tunnelThresh = this.seaLevel + 0.235;
     for (const mw of this.motorways) {
       mw.tunnels = [];
       const samples = mw.samples;
@@ -4680,13 +4904,13 @@ export class ProceduralLogisticsWorld {
           inTunnel = true;
           startIdx = i;
         } else if (!isHighRidge && inTunnel) {
-          if (i - 1 - startIdx >= 3) {
+          if (i - 1 - startIdx >= 5) {
             rawSpans.push({ i0: startIdx, i1: i - 1 });
           }
           inTunnel = false;
         }
       }
-      if (inTunnel && samples.length - 7 - startIdx >= 3) {
+      if (inTunnel && samples.length - 7 - startIdx >= 5) {
         rawSpans.push({ i0: startIdx, i1: samples.length - 7 });
       }
 
@@ -4712,7 +4936,7 @@ export class ProceduralLogisticsWorld {
       }
 
       for (const { i0, i1 } of mergedSpans) {
-        if (i1 - i0 < 4) continue;
+        if (i1 - i0 < 6) continue;
         const p0 = samples[i0];
         const p0Next = samples[i0 + 1];
         const p1 = samples[i1];

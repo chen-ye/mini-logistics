@@ -1,12 +1,12 @@
 # Plan 1: Elevation-Reactive Regional Road & Expressway Routing
 
 ## Steps
-- [ ] Penalize uphill and downhill grade nonlinearly in `findRoadPathAStar` and add a contour-bench discount
-- [ ] Lower rural turn penalty in `findRoadPathAStar` with anti-zigzag hysteresis so roads curve around hills without staircasing
-- [ ] Remove synthetic sine-wave displacement in `findValleyMotorwayWaypoints` and add directional grade cost to coarse valley A*
-- [ ] Route Cloverleaf `forcedViaPt` trunks (`M-2`) and Trumpet spurs (`tryBuildTrumpetSpurToTrunk`) through `findValleyMotorwayWaypoints`
-- [ ] Penalize long continuous mountain tunnel spans in `scoreMotorwaySamples` so expressways prefer valley passes over 80-tile diagonal bores
-- [ ] Verify across benchmark seeds (`HARBOR-305`, `DELTA-402`, `VALLEY-618`, `OTTD-METRO-84`) and review with parallel Targeted + Uncued Holistic subagents
+- [x] Penalize uphill and downhill grade nonlinearly in `findRoadPathAStar` and add a contour-bench discount
+- [x] Lower rural turn penalty in `findRoadPathAStar` with anti-zigzag hysteresis so roads curve around hills without staircasing
+- [x] Remove synthetic sine-wave displacement in `findValleyMotorwayWaypoints` and add directional grade cost to coarse valley A*
+- [x] Route Cloverleaf `forcedViaPt` trunks (`M-2`) and Trumpet spurs (`tryBuildTrumpetSpurToTrunk`) through `findValleyMotorwayWaypoints`
+- [x] Penalize long continuous mountain tunnel spans in `scoreMotorwaySamples` so expressways prefer valley passes over 80-tile diagonal bores
+- [x] Verify across benchmark seeds (`HARBOR-305`, `DELTA-402`, `VALLEY-618`, `OTTD-METRO-84`) and review with parallel Targeted + Uncued Holistic subagents
 
 ## 1. Grade-Squared Contour-Hugging Regional Road A* (`findRoadPathAStar`)
 
