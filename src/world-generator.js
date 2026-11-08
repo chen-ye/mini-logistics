@@ -428,50 +428,54 @@ export class ProceduralLogisticsWorld {
     }
   }
 
+  generateTopographicTownName(gx, gy, usedNames) {
+    const id = this.idx(gx, gy);
+    const dW = this.distToWater[id];
+    const elev = this.elevationField[id];
+    let nearRiver = false;
+    let nearSeaOrLake = false;
+    for (let dy = -8; dy <= 8; dy += 4) {
+      for (let dx = -8; dx <= 8; dx += 4) {
+        if (this.inBounds(gx + dx, gy + dy, 1)) {
+          const wm = this.waterMask[this.idx(gx + dx, gy + dy)];
+          if (wm === 1) nearRiver = true;
+          else if (wm === 2) nearSeaOrLake = true;
+        }
+      }
+    }
+
+    for (let attempt = 0; attempt < 45; attempt++) {
+      const prefix = this.rng.next() < 0.24 ? this.rng.pick(SYLLABLES_START) : '';
+      const rootA = this.rng.pick(SYLLABLES_PRE);
+      let rootPool = SYLLABLES_ROOT_VALLEY;
+      if (dW < 10 && nearRiver && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_RIVER;
+      else if (dW < 10 && nearSeaOrLake && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_COAST;
+      else if (elev > this.seaLevel + 0.16 && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_HILL;
+
+      const rootB = this.rng.pick(rootPool);
+      const suffix = (nearSeaOrLake && dW < 9 && !prefix && this.rng.next() < 0.18) ? '-on-Sea' : '';
+      const name = (prefix + rootA + rootB + suffix).replace(/\b\w/g, c => c.toUpperCase());
+      if (!usedNames.has(name)) {
+        usedNames.add(name);
+        return name;
+      }
+    }
+    const fallback = 'Metro ' + (usedNames.size + 1);
+    usedNames.add(fallback);
+    return fallback;
+  }
+
+  /**
+   * Phase 1 of Two-Phase Historical Settlement Co-Evolution (Stage 4):
+   * Seeds the founding Tier-1 Metropolises & Tier-2 Regional Cities at primary river confluences,
+   * harbor bays, and island anchors BEFORE airports and ancient valley trunk highways are routed.
+   * Secondary Tier-3 Market/Bridgehead Towns & Tier-4 Crossroads Hamlets nucleate in Stage 6C
+   * along the resulting trunk highways and river bridgeheads!
+   */
   seedSettlements() {
-    const targetCount = this.config.townCount;
+    const targetCount = this.config.townCount || 20;
     const usedNames = new Set();
 
-    const generateTopographicTownName = (gx, gy) => {
-      const id = this.idx(gx, gy);
-      const dW = this.distToWater[id];
-      const elev = this.elevationField[id];
-      let nearRiver = false;
-      let nearSeaOrLake = false;
-      for (let dy = -8; dy <= 8; dy += 4) {
-        for (let dx = -8; dx <= 8; dx += 4) {
-          if (this.inBounds(gx + dx, gy + dy, 1)) {
-            const wm = this.waterMask[this.idx(gx + dx, gy + dy)];
-            if (wm === 1) nearRiver = true;
-            else if (wm === 2) nearSeaOrLake = true;
-          }
-        }
-      }
-
-      for (let attempt = 0; attempt < 45; attempt++) {
-        const prefix = this.rng.next() < 0.24 ? this.rng.pick(SYLLABLES_START) : '';
-        const rootA = this.rng.pick(SYLLABLES_PRE);
-        let rootPool = SYLLABLES_ROOT_VALLEY;
-        if (dW < 10 && nearRiver && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_RIVER;
-        else if (dW < 10 && nearSeaOrLake && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_COAST;
-        else if (elev > this.seaLevel + 0.16 && this.rng.next() < 0.65) rootPool = SYLLABLES_ROOT_HILL;
-
-        const rootB = this.rng.pick(rootPool);
-        const suffix = (nearSeaOrLake && dW < 9 && !prefix && this.rng.next() < 0.18) ? '-on-Sea' : '';
-        const name = (prefix + rootA + rootB + suffix).replace(/\b\w/g, c => c.toUpperCase());
-        if (!usedNames.has(name)) {
-          usedNames.add(name);
-          return name;
-        }
-      }
-      return 'Metro ' + (usedNames.size + 1);
-    };
-
-    // True 4-Tier Regional Settlement Hierarchy (10x Area Span):
-    // - Tier 1 (2 Regional Metropolises, R=21): Multi-borough harbor/confluence conurbations
-    // - Tier 2 (4 Regional Cities, R=13): Secondary bay ports & valley junctions
-    // - Tier 3 (7 Market/Bridge Towns, R=8): River bridgeheads & lake towns
-    // - Tier 4 (Remaining Rural Villages/Hamlets, R=5): Compact agricultural/foothill crossroad hamlets
     const numMetros = 2;
     const numRegional = Math.min(6, Math.max(4, Math.round(targetCount * 0.30)));
     this.clusters = [];
@@ -488,7 +492,7 @@ export class ProceduralLogisticsWorld {
     const landmassTownCount = new Int16Array(Math.max(1, this.landmasses.length));
     const spanScale = Math.sqrt(this.W / 360);
 
-    // Pre-collect dry-land settlement candidate sites once (`O(N)` instead of rescanning the full grid `T` times)
+    // Pre-collect dry-land settlement candidate sites once (`O(N)`)
     const candidateSites = [];
     for (let y = 14; y < this.H - 14; y += 3) {
       for (let x = 14; x < this.W - 14; x += 3) {
@@ -511,14 +515,22 @@ export class ProceduralLogisticsWorld {
       }
     }
 
-    for (let i = 0; i < targetCount; i++) {
+    const majorIslandsCount = isIslandHopper
+      ? this.landmasses.filter(lm => lm.size >= 160).length
+      : 0;
+    const phase1Count = Math.min(
+      targetCount,
+      Math.max(numRegional, isIslandHopper ? majorIslandsCount + 2 : numRegional)
+    );
+
+    for (let i = 0; i < phase1Count; i++) {
       const isClusterAnchor = i < numRegional;
-      const tier = i < numMetros ? 1 : (i < numRegional ? 2 : (i < Math.round(targetCount * 0.65) ? 3 : 4));
-      const urbanRadius = tier === 1 ? (isIslandHopper ? 17 : 21) : (tier === 2 ? 12 : (tier === 3 ? 8 : 5));
+      const tier = i < numMetros ? 1 : (i < numRegional ? 2 : 3);
+      const urbanRadius = tier === 1 ? (isIslandHopper ? 17 : 21) : (tier === 2 ? 12 : 8);
       const minSpacing =
-        (tier === 1 ? (isIslandHopper ? 78 : 105) : (tier === 2 ? (isIslandHopper ? 38 : 52) : (tier === 3 ? 25 : 18))) *
+        (tier === 1 ? (isIslandHopper ? 78 : 105) : (tier === 2 ? (isIslandHopper ? 38 : 52) : 25)) *
         (tier <= 2 ? spanScale : 1.0);
-      const maxSlope = tier <= 2 ? 0.38 : 0.48;
+      const maxSlope = tier <= 2 ? 0.38 : 0.46;
 
       let bestScore = -1;
       let bestPt = null;
@@ -542,10 +554,8 @@ export class ProceduralLogisticsWorld {
         }
         if (tooClose) continue;
 
-        const waterfrontBonus = tier <= 3 ? site.wfBonus13 : site.wfBonus4;
-        let score = site.baseSuit + waterfrontBonus + this.rng.range(-0.025, 0.025);
+        let score = site.baseSuit + site.wfBonus13 + this.rng.range(-0.025, 0.025);
 
-        // In `island-hopper`, guarantee every island gets seeded with settlements!
         if (isIslandHopper && landmassTownCount[lmId] === 0 && this.landmasses[lmId].size >= 160) {
           score += 0.65;
         } else if (isClusterAnchor) {
@@ -574,10 +584,8 @@ export class ProceduralLogisticsWorld {
           }
         }
         const colorIdx = (isClusterAnchor ? i : clusterId + (i % 2)) % PALETTE.districtColors.length;
-        const tierTitle = tier === 1
-          ? 'Metropolis'
-          : (tier === 2 ? 'Regional City' : (tier === 3 ? 'Market Town' : 'Rural Hamlet'));
-        const name = generateTopographicTownName(bestPt.x, bestPt.y);
+        const tierTitle = tier === 1 ? 'Metropolis' : (tier === 2 ? 'Regional City' : 'Market Town');
+        const name = this.generateTopographicTownName(bestPt.x, bestPt.y, usedNames);
         const iata = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
 
         const townObj = {
@@ -597,6 +605,7 @@ export class ProceduralLogisticsWorld {
           housesCount: 0,
           destinationsCount: 0,
           airportId: null,
+          _seededInPhase1: true,
           boroughs: [{ x: bestPt.x, y: bestPt.y, r: urbanRadius }]
         };
         this.towns.push(townObj);
@@ -606,7 +615,7 @@ export class ProceduralLogisticsWorld {
       }
     }
     this.logs.push(
-      `Seeded <b>${this.towns.length} settlements</b> (2 Metropolises, ${this.towns.filter(t => t.tier === 2).length} Cities, ${this.towns.filter(t => t.tier >= 3).length} Towns/Hamlets).`
+      `Seeded <b>${this.towns.length} founding capitals & regional cities</b> (2 Metropolises, ${this.towns.length - 2} Regional Ports).`
     );
   }
 
@@ -1229,6 +1238,260 @@ export class ProceduralLogisticsWorld {
         if (path) this.commitRoadPath(path, 'arterial');
       }
     }
+
+    // Phase 2 of Historical Co-Evolution (Stage 6C & 6D):
+    // Nucleate Tier-3 Market/Bridgehead Towns & Tier-4 Crossroads Hamlets along the ancient trunk
+    // highways, river bridgeheads, and unserved river valleys, then carve their grids & connect!
+    this.seedSecondaryTownsAlongTrunks();
+  }
+
+  seedSecondaryTownsAlongTrunks() {
+    const targetCount = this.config.townCount || 20;
+    const startCount = this.towns.length;
+    if (startCount >= targetCount) {
+      this.logs.push(
+        `Routed <b>${this.roads.length} regional roads & streets</b> and <b>${this.bridgeCount} bridges</b>.`
+      );
+      return;
+    }
+
+    const usedNames = new Set(this.towns.map(t => t.name));
+    const isIslandHopper = this.config.archetype === 'island-hopper';
+    const landmassTownCount = new Int16Array(Math.max(1, this.landmasses.length));
+    for (const t of this.towns) {
+      if (t.landmassId >= 0 && t.landmassId < landmassTownCount.length) {
+        landmassTownCount[t.landmassId]++;
+      }
+    }
+
+    // 1. Collect river bridgeheads (`roadGrid === 2` within 1..5 tiles of `roadGrid === 3`)
+    //    and rural trunk highway tiles (`roadGrid === 2` outside existing Phase-1 city envelopes)
+    const bridgeheadPts = [];
+    const trunkRoadPts = [];
+    for (let y = 8; y < this.H - 8; y += 2) {
+      for (let x = 8; x < this.W - 8; x += 2) {
+        const id = this.idx(x, y);
+        if (this.roadGrid[id] !== 2 || this.waterMask[id] !== 0) continue;
+        const insidePhase1 = this.towns.some(
+          t => Math.hypot(x - t.x, y - t.y) < t.urbanRadius + 6.5
+        );
+        if (insidePhase1) continue;
+        trunkRoadPts.push({ x, y });
+
+        let nearBridge = false;
+        for (let dy = -4; dy <= 4 && !nearBridge; dy += 2) {
+          for (let dx = -4; dx <= 4; dx += 2) {
+            if (this.inBounds(x + dx, y + dy, 1) && this.roadGrid[this.idx(x + dx, y + dy)] === 3) {
+              nearBridge = true;
+              break;
+            }
+          }
+        }
+        if (nearBridge) {
+          bridgeheadPts.push({ x, y });
+        }
+      }
+    }
+
+    // 2. Collect candidate sites with pre-evaluated distances to bridgeheads and trunk highways
+    const candidateSites = [];
+    for (let y = 16; y < this.H - 16; y += 3) {
+      for (let x = 16; x < this.W - 16; x += 3) {
+        const id = this.idx(x, y);
+        if (this.waterMask[id] > 0 || this.distToWater[id] < 2.8) continue;
+        const lmId = this.landmassId[id];
+        if (lmId < 0) continue;
+        const slope = this.slopeField[id];
+        if (slope > 0.44 || this.elevationField[id] > this.seaLevel + 0.36) continue;
+        if (this.isPointInAirportPad(x, y, 7.5)) continue;
+
+        // Exclude airport low-altitude runway approach cones so secondary towns never spawn under flight paths
+        let inApproachCone = false;
+        for (const ap of this.airports) {
+          const adx = x - ap.x;
+          const ady = y - ap.y;
+          const cosA = Math.cos(ap.angleRad);
+          const sinA = Math.sin(ap.angleRad);
+          const u = Math.abs(adx * cosA + ady * sinA);
+          const v = Math.abs(-adx * sinA + ady * cosA);
+          if (u <= ap.halfLen + ap.approachLen + 4 && v <= ap.halfWid + 5.5) {
+            inApproachCone = true;
+            break;
+          }
+        }
+        if (inApproachCone) continue;
+
+        const dW = this.distToWater[id];
+        candidateSites.push({
+          x,
+          y,
+          lmId,
+          slope,
+          dW,
+          baseSuit: this.urbanSuitability[id] * 0.68,
+          wfBonus13: Math.exp(-Math.pow((dW - 3.0) / 3.8, 2)) * 0.32,
+          wfBonus4: Math.exp(-Math.pow((dW - 6.0) / 7.5, 2)) * 0.16
+        });
+      }
+    }
+
+    const newTowns = [];
+    for (let i = startCount; i < targetCount; i++) {
+      const tier = i < Math.round(targetCount * 0.65) ? 3 : 4;
+      const urbanRadius = tier === 3 ? 8 : 5;
+      const minSpacing = tier === 3 ? 21 : 14;
+
+      let bestScore = -1;
+      let bestPt = null;
+
+      for (let cIdx = 0; cIdx < candidateSites.length; cIdx++) {
+        const site = candidateSites[cIdx];
+        const { x, y, lmId, dW } = site;
+
+        let tooClose = false;
+        for (const t of this.towns) {
+          const reqDist = Math.max(minSpacing, (t.urbanRadius + urbanRadius) * 1.28);
+          const dx = x - t.x;
+          const dy = y - t.y;
+          if (dx * dx + dy * dy < reqDist * reqDist) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (tooClose) continue;
+
+        let minBridgeD = Infinity;
+        for (const bp of bridgeheadPts) {
+          const d = Math.hypot(x - bp.x, y - bp.y);
+          if (d < minBridgeD) minBridgeD = d;
+        }
+        let minTrunkD = Infinity;
+        let nearTrunkPt = null;
+        for (let k = 0; k < trunkRoadPts.length; k++) {
+          const tp = trunkRoadPts[k];
+          const d = Math.hypot(x - tp.x, y - tp.y);
+          if (d < minTrunkD) {
+            minTrunkD = d;
+            nearTrunkPt = tp;
+          }
+        }
+        if (!isIslandHopper && minTrunkD > (tier === 3 ? 52.0 : 14.0)) continue;
+
+        const waterfrontBonus = tier === 3 ? site.wfBonus13 : site.wfBonus4;
+        let score = site.baseSuit + waterfrontBonus + this.rng.range(-0.025, 0.025);
+
+        if (isIslandHopper && landmassTownCount[lmId] === 0 && this.landmasses[lmId].size >= 160) {
+          score += 0.65;
+        } else if (tier === 3) {
+          // Tier 3 Market / Bridgehead Towns strongly nucleate at river bridgeheads, trunk crossroads,
+          // or unserved river valleys within 52 tiles of the growing trunk network!
+          if (minBridgeD <= 12.0) {
+            score += Math.exp(-Math.pow((minBridgeD - 3.5) / 4.8, 2)) * 0.62;
+          }
+          if (minTrunkD <= 12.0) {
+            score += Math.exp(-Math.pow((minTrunkD - 2.5) / 4.5, 2)) * 0.44;
+          } else if (dW <= 6.0 && minTrunkD <= 48.0) {
+            score += 0.18;
+          }
+        } else {
+          // Tier 4 Crossroads / Valley Hamlets nucleate directly along the growing valley trunk & branch network
+          if (minTrunkD <= 8.5) {
+            score += Math.exp(-Math.pow((minTrunkD - 2.0) / 3.6, 2)) * 0.62;
+          }
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestPt = { x, y, score, lmId, nearTrunkPt };
+        }
+      }
+
+      if (bestPt) {
+        landmassTownCount[bestPt.lmId]++;
+        let clusterId = 0;
+        let minCD = Infinity;
+        for (const cl of this.clusters) {
+          const cd = Math.hypot(bestPt.x - cl.x, bestPt.y - cl.y);
+          if (cd < minCD) {
+            minCD = cd;
+            clusterId = cl.clusterId;
+          }
+        }
+        const colorIdx = (clusterId + (i % 2)) % PALETTE.districtColors.length;
+        const tierTitle = tier === 3 ? 'Market Town' : 'Rural Hamlet';
+        const name = this.generateTopographicTownName(bestPt.x, bestPt.y, usedNames);
+        const iata = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
+
+        const townObj = {
+          id: this.towns.length,
+          clusterId,
+          landmassId: bestPt.lmId,
+          name,
+          iata,
+          tier,
+          tierTitle,
+          x: bestPt.x,
+          y: bestPt.y,
+          urbanRadius,
+          colorIdx,
+          palette: PALETTE.districtColors[colorIdx],
+          suitabilityScore: Math.round(Math.min(99, bestPt.score * 100)),
+          housesCount: 0,
+          destinationsCount: 0,
+          airportId: null,
+          _seededInPhase1: false,
+          boroughs: [{ x: bestPt.x, y: bestPt.y, r: urbanRadius }]
+        };
+
+        // Immediately connect this newly nucleated town into the growing trunk road network
+        // so subsequent towns & hamlets can also nucleate along its branch road & river bridges!
+        if (this.roadGrid[this.idx(townObj.x, townObj.y)] === 0) {
+          const tp = bestPt.nearTrunkPt;
+          let path = tp ? this.findRoadPathAStar(townObj.x, townObj.y, tp.x, tp.y, true, null, true) : null;
+          if (!path || path.length < 2) {
+            let nearestTarget = this.towns[0];
+            let minD = Infinity;
+            for (const other of this.towns) {
+              const sameLm = other.landmassId === townObj.landmassId;
+              if (isIslandHopper && !sameLm) continue;
+              const d = Math.hypot(other.x - townObj.x, other.y - townObj.y);
+              if (d < minD) {
+                minD = d;
+                nearestTarget = other;
+              }
+            }
+            if (nearestTarget) {
+              path = this.findRoadPathAStar(townObj.x, townObj.y, nearestTarget.x, nearestTarget.y, true, null, true);
+            }
+          }
+          if (path && path.length >= 2) {
+            this.commitRoadPath(path, 'arterial');
+            for (let pIdx = 0; pIdx < path.length; pIdx += 2) {
+              const pt = path[pIdx];
+              if (!pt.isBridge) {
+                trunkRoadPts.push({ x: pt.x, y: pt.y });
+                if (
+                  (pIdx > 0 && path[pIdx - 1].isBridge) ||
+                  (pIdx + 1 < path.length && path[pIdx + 1].isBridge)
+                ) {
+                  bridgeheadPts.push({ x: pt.x, y: pt.y });
+                }
+              }
+            }
+          }
+        }
+
+        this.towns.push(townObj);
+        newTowns.push(townObj);
+      }
+    }
+
+    // 3. Carve local street grids for the newly nucleated Tier-3 & Tier-4 towns around their trunk connection!
+    this.carveTownStreetGrids(t => !t._seededInPhase1);
+
+    this.logs.push(
+      `Co-evolved <b>${this.towns.length} settlements</b> (${newTowns.length} bridgehead/crossroads towns nucleated along <b>${this.roads.length} trunk roads</b> & <b>${this.bridgeCount} bridges</b>).`
+    );
   }
 
   findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false, options = null) {
@@ -1628,10 +1891,11 @@ export class ProceduralLogisticsWorld {
   /*************************************************************************
    * STAGE 6A & 7: ORGANIC MULTI-BOROUGH GRIDS, VARIED BLOCK SIZES & RCI PACKER
    *************************************************************************/
-  carveTownStreetGrids() {
+  carveTownStreetGrids(filterFn = null) {
     const densityMult = (this.config.buildingDensity || 250) / 100;
 
     for (const town of this.towns) {
+      if (filterFn && !filterFn(town)) continue;
       const R = Math.round(town.urbanRadius * (0.78 + 0.18 * Math.sqrt(densityMult)));
       const townElev = this.elevationField[this.idx(town.x, town.y)];
       town.effectiveR = R;
@@ -5260,11 +5524,11 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
     }
   );
 
-  // Stage 6 & 7: Borough Street Grids, Regional Roads, RCI Building Packing & Landscape Trees
+  // Stage 6 & 7: Borough Street Grids, Regional Roads, Co-Evolved Secondary Towns, RCI Building Packing & Landscape Trees
   const stage6_7_urban = createMemoStage(
-    (cfg, noise, s2b, s3, s4, s5) => [cfg.seed, cfg.archetype, cfg.buildingDensity, noise, s2b, s3, s4, s5],
-    (seed, archetype, buildingDensity, noise, s2b, s3, s4, s5, version) => {
-      w.config = { seed, archetype, buildingDensity };
+    (cfg, noise, s2b, s3, s4, s5) => [cfg.seed, cfg.archetype, cfg.townCount, cfg.buildingDensity, noise, s2b, s3, s4, s5],
+    (seed, archetype, townCount, buildingDensity, noise, s2b, s3, s4, s5, version) => {
+      w.config = { seed, archetype, townCount, buildingDensity };
       w.noise = noise;
       w.logs = [];
       w.houses = [];
@@ -5291,7 +5555,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
       w.syncRoadEdgesFromRoads();
 
       w.setStageRNG('stage6a_grids');
-      w.carveTownStreetGrids();
+      w.carveTownStreetGrids(t => t._seededInPhase1 !== false);
       w.setStageRNG('stage6b_roads');
       w.buildRegionalRoadNetwork();
       const roadLog = w.logs[w.logs.length - 1];

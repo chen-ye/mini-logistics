@@ -1,12 +1,12 @@
 # Plan 2: Two-Phase Historical Settlement & Road Co-Evolution
 
 ## Steps
-- [ ] Prerequisite: Complete Plan 1 (Elevation-Reactive Regional Road & Expressway Routing)
-- [ ] Split `seedSettlements` into Phase 4A (Tier 1 Metropolises & Tier 2 Regional Cities) and Phase 6C (Tier 3 Market Towns & Tier 4 Rural Hamlets)
-- [ ] Route primary inter-capital trunk arterials and bridges between Tier 1 & Tier 2 cities before seeding Tier 3 & Tier 4 settlements
-- [ ] Score Tier 3 & Tier 4 settlement candidates by proximity to committed river bridgeheads, trunk road junctions, and valley passes
-- [ ] Connect newly nucleated Tier 3 & Tier 4 towns into the trunk road network and generate their local borough grids
-- [ ] Update reactive memoized stage DAG in `createWorldPipeline` and verify across benchmark seeds with parallel Targeted + Uncued Holistic subagents
+- [x] Prerequisite: Complete Plan 1 (Elevation-Reactive Regional Road & Expressway Routing)
+- [x] Split `seedSettlements` into Phase 4A (Tier 1 Metropolises & Tier 2 Regional Cities) and Phase 6C (Tier 3 Market Towns & Tier 4 Rural Hamlets)
+- [x] Route primary inter-capital trunk arterials and bridges between Tier 1 & Tier 2 cities before seeding Tier 3 & Tier 4 settlements
+- [x] Score Tier 3 & Tier 4 settlement candidates by proximity to committed river bridgeheads, trunk road junctions, and valley passes
+- [x] Connect newly nucleated Tier 3 & Tier 4 towns into the trunk road network and generate their local borough grids
+- [x] Update reactive memoized stage DAG in `createWorldPipeline` and verify across benchmark seeds with parallel Targeted + Uncued Holistic subagents
 
 ## 1. Why Co-Evolving Capitals, Trunk Roads & Secondary Towns Matters
 
