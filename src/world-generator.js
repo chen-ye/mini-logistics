@@ -1155,15 +1155,13 @@ export class ProceduralLogisticsWorld {
         const isWater = this.waterMask[nid] > 0;
         if (isWater && !allowWaterBridge) continue;
 
-        // Inside urban zones or when joining/leaving existing streets, strictly enforce orthogonal (0°/90°) movement
-        // so A* roads never slice 45° diagonal wedges across orthogonal intersections or building corners!
+        // Inside urban town zones (`zoneColorIdx >= 0`), strictly enforce orthogonal (0°/90°) movement
+        // so city streets never slice 45° diagonal wedges across orthogonal blocks, while rural roads
+        // (`zoneColorIdx === -1`) can freely take 45° diagonal steps and share existing diagonal highways!
         if (
           dx !== 0 &&
           dy !== 0 &&
-          (this.zoneColorIdx[cid] >= 0 ||
-            this.zoneColorIdx[nid] >= 0 ||
-            this.roadGrid[cid] > 0 ||
-            this.roadGrid[nid] > 0)
+          (this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0)
         ) {
           continue;
         }
@@ -1223,10 +1221,11 @@ export class ProceduralLogisticsWorld {
           }
         }
 
-        // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) so A* never generates 1-tile Bresenham staircases!
+        // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) so A* marches in clean octilinear runs
+        // instead of 1-tile staircases or caterpillar zig-zags!
         if (pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
           const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
-          stepCost += inUrban ? 4.2 : 0.75;
+          stepCost += inUrban ? 4.2 : 2.4;
         }
 
         const tentativeG = gScore[cid] + stepCost;
@@ -1242,9 +1241,16 @@ export class ProceduralLogisticsWorld {
   }
 
   commitRoadPath(path, roadType = 'arterial') {
+    if (!path || path.length < 2) return;
     let inBridge = false;
-    for (const pt of path) {
+    const isNewTile = new Uint8Array(path.length);
+
+    for (let i = 0; i < path.length; i++) {
+      const pt = path[i];
       const id = this.idx(pt.x, pt.y);
+      const alreadyRoad = this.roadGrid[id] > 0;
+      isNewTile[i] = alreadyRoad ? 0 : 1;
+
       if (pt.isBridge) {
         if (!inBridge && this.roadGrid[id] !== 3) {
           this.bridgeCount++;
@@ -1256,12 +1262,62 @@ export class ProceduralLogisticsWorld {
         if (this.roadGrid[id] === 0) {
           this.roadGrid[id] = roadType === 'street' ? 1 : 2;
         } else if (this.roadGrid[id] === 1 && roadType === 'arterial') {
-          // Upgrade any town grid street traversed by a regional arterial to an Arterial Boulevard (`2`)!
           this.roadGrid[id] = 2;
         }
       }
     }
-    this.roads.push({ points: path, type: roadType });
+
+    // Collapse 1-tile rural staircase jogs (`pPrev -> pCurr -> pNext` changing direction on consecutive 1-tile steps
+    // outside town grids) so rural highways render as smooth octilinear/diagonal chords without caterpillar bumps!
+    const simplifyRuralStaircase = (pts) => {
+      if (roadType === 'street' || pts.length < 3) return pts;
+      const out = [pts[0]];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const prev = out[out.length - 1];
+        const curr = pts[i];
+        const next = pts[i + 1];
+        const cid = this.idx(curr.x, curr.y);
+        if (
+          !curr.isBridge &&
+          !prev.isBridge &&
+          !next.isBridge &&
+          this.zoneColorIdx[cid] < 0 &&
+          Math.hypot(curr.x - prev.x, curr.y - prev.y) <= 1.5 &&
+          Math.hypot(next.x - curr.x, next.y - curr.y) <= 1.5
+        ) {
+          const dx1 = curr.x - prev.x, dy1 = curr.y - prev.y;
+          const dx2 = next.x - curr.x, dy2 = next.y - curr.y;
+          if (dx1 !== dx2 || dy1 !== dy2) {
+            // Skip `curr` so `prev -> next` forms a clean diagonal/knight chord without a 1-tile bump!
+            continue;
+          }
+        }
+        out.push(curr);
+      }
+      out.push(pts[pts.length - 1]);
+      return out;
+    };
+
+    // Only emit new road sub-paths (including 1 anchor point where a new branch leaves/joins an existing road)
+    // so shared trunk corridors are never double-drawn or offset-scalloped!
+    let seg = [];
+    for (let i = 0; i < path.length; i++) {
+      const keep =
+        isNewTile[i] === 1 ||
+        (i > 0 && isNewTile[i - 1] === 1) ||
+        (i < path.length - 1 && isNewTile[i + 1] === 1);
+      if (keep) {
+        seg.push(path[i]);
+      } else {
+        if (seg.length >= 2) {
+          this.roads.push({ points: simplifyRuralStaircase(seg), type: roadType });
+        }
+        seg = [];
+      }
+    }
+    if (seg.length >= 2) {
+      this.roads.push({ points: simplifyRuralStaircase(seg), type: roadType });
+    }
   }
 
   /*************************************************************************
