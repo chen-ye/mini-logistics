@@ -2268,10 +2268,10 @@ export class ProceduralLogisticsWorld {
         }
       }
 
-      // For `FARM` sites, surround the 2×2 farmstead with a compact, well-proportioned estate of
-      // pure rectangular cadastral strips (`bspParcels`) on flat dry alluvial land (`buildingMask = 5`).
-      // Strips are aligned to the 2×2 farmstead edges and trimmed as whole rectangles against contours/rivers
-      // (while diagonal roads slice them smoothly in the vector renderer with zero 1×1 grid jaggies!).
+      // For `FARM` sites, grow a sprawling, 100% contiguous, gap-free estate of rectangular
+      // cadastral strips (`bspParcels`) outward from the 2×2 farmstead on flat dry alluvial land (`buildingMask = 5`).
+      // Each strip shares exact common edges with its neighbors (zero internal gaps) and diagonal roads/expressways
+      // slice smoothly in vector space in the renderer (zero 1×1 grid jaggies!).
       let bspParcels = [];
       if (chosenCand.resourceType === 'FARM') {
         const fgx = chosenCand.gx;
@@ -2282,15 +2282,16 @@ export class ProceduralLogisticsWorld {
 
         const isTerrainTileValid = (tx, ty) => {
           if (!this.inBounds(tx, ty, 3)) return false;
-          if (tx >= fgx && tx <= fgx + 1 && ty >= fgy && ty <= fgy + 1) return false;
+          // Allow the farmstead's own 2×2 pad inside central strips (masked cleanly in vector space by renderer)
+          if (tx >= fgx && tx <= fgx + 1 && ty >= fgy && ty <= fgy + 1) return true;
           const tid = this.idx(tx, ty);
           if (
             this.waterMask[tid] > 0 ||
             this.buildingMask[tid] > 0 ||
             this.zoneColorIdx[tid] >= 0 ||
-            this.distToWater[tid] < 2.2 ||
-            this.elevationField[tid] >= this.seaLevel + 0.132 ||
-            this.slopeField[tid] > 0.15
+            this.distToWater[tid] < 2.0 ||
+            this.elevationField[tid] >= this.seaLevel + 0.134 ||
+            this.slopeField[tid] > 0.155
           ) {
             return false;
           }
@@ -2303,8 +2304,8 @@ export class ProceduralLogisticsWorld {
               if (bm >= 1 && bm <= 4) return false;
             }
           }
-          // Stay outside the inner urban core of nearby towns so negative space stays clean
-          if (this.towns.some(t => Math.hypot(tx - t.x, ty - t.y) < t.radius * 0.58)) return false;
+          // Stay outside the inner urban core of nearby towns
+          if (this.towns.some(t => Math.hypot(tx - t.x, ty - t.y) < t.radius * 0.54)) return false;
           return true;
         };
 
@@ -2317,13 +2318,14 @@ export class ProceduralLogisticsWorld {
           return true;
         };
 
-        // Trim a candidate rectangle inward from whichever side hits an obstacle until 100% clean
-        const fitCleanRect = (x0, x1, y0, y1) => {
+        // Fit a strip in row `[ry0, ry1)` while keeping its inner X edge locked flush to `lockDir`
+        // (`'left'` locks `x0` and only trims `x1--`; `'right'` locks `x1` and only trims `x0++`; `'center'` trims either outer X edge)
+        const fitRowStrip = (x0, x1, y0, y1, lockXDir, lockYDir) => {
           let rx0 = x0, rx1 = x1, ry0 = y0, ry1 = y1;
-          for (let iter = 0; iter < 8; iter++) {
+          for (let iter = 0; iter < 10; iter++) {
             if (rx1 - rx0 < 3 || ry1 - ry0 < 3) return null;
             if (isRectValid(rx0, rx1, ry0, ry1)) return { x0: rx0, x1: rx1, y0: ry0, y1: ry1 };
-            // Count invalid tiles along each of the 4 edges and trim the most-blocked edge
+
             let badL = 0, badR = 0, badT = 0, badB = 0;
             for (let ty = ry0; ty < ry1; ty++) {
               if (!isTerrainTileValid(rx0, ty)) badL++;
@@ -2333,86 +2335,140 @@ export class ProceduralLogisticsWorld {
               if (!isTerrainTileValid(tx, ry0)) badT++;
               if (!isTerrainTileValid(tx, ry1 - 1)) badB++;
             }
-            const maxBad = Math.max(badL, badR, badT, badB);
-            if (maxBad === 0) break;
-            if (badL === maxBad) rx0++;
-            else if (badR === maxBad) rx1--;
-            else if (badT === maxBad) ry0++;
-            else ry1--;
+
+            // Never trim a locked inner edge (that would create a gap with the neighbor strip!)
+            if (lockXDir === 'left' && badL > 0) return null;
+            if (lockXDir === 'right' && badR > 0) return null;
+            if (lockYDir === 'top' && badT > 0) return null;
+            if (lockYDir === 'bottom' && badB > 0) return null;
+
+            if (lockXDir === 'right' && badL > 0) rx0++;
+            else if (lockXDir === 'left' && badR > 0) rx1--;
+            else if (lockYDir === 'bottom' && badT > 0) ry0++;
+            else if (lockYDir === 'top' && badB > 0) ry1--;
+            else if (badL > 0 && badL >= badR) rx0++;
+            else if (badR > 0) rx1--;
+            else if (badT > 0 && badT >= badB) ry0++;
+            else if (badB > 0) ry1--;
+            else return null;
           }
           return (rx1 - rx0 >= 3 && ry1 - ry0 >= 3 && isRectValid(rx0, rx1, ry0, ry1))
             ? { x0: rx0, x1: rx1, y0: ry0, y1: ry1 }
             : null;
         };
 
-        // Build row bands anchored around `[fgy, fgy + 2]` so strips abut the 2×2 farmstead cleanly
-        const hTop1 = this.rng.pick([4, 5]);
-        const hTop2 = this.rng.pick([4, 5]);
-        const hBot1 = this.rng.pick([4, 5]);
-        const hBot2 = this.rng.pick([4, 5]);
-        const rowBands = [
-          [fgy - hTop1 - hTop2, fgy - hTop1],
-          [fgy - hTop1, fgy],
-          [fgy, fgy + 4],
-          [fgy + 4, fgy + 4 + hBot1],
-          [fgy + 4 + hBot1, fgy + 4 + hBot1 + hBot2]
+        // Build contiguous horizontal row bands outward from the center band `[fgy - 2, fgy + 3)`
+        const cY0 = fgy - 2;
+        const cY1 = fgy + 3;
+        const nH1 = this.rng.pick([4, 5]), nH2 = this.rng.pick([4, 5]), nH3 = this.rng.pick([4, 5]);
+        const sH1 = this.rng.pick([4, 5]), sH2 = this.rng.pick([4, 5]), sH3 = this.rng.pick([4, 5]);
+        const rowSpecs = [
+          { y0: cY0, y1: cY1, lockY: 'none', rIdx: 0 },
+          { y0: cY0 - nH1, y1: cY0, lockY: 'bottom', rIdx: 1 },
+          { y0: cY0 - nH1 - nH2, y1: cY0 - nH1, lockY: 'bottom', rIdx: 2 },
+          { y0: cY0 - nH1 - nH2 - nH3, y1: cY0 - nH1 - nH2, lockY: 'bottom', rIdx: 3 },
+          { y0: cY1, y1: cY1 + sH1, lockY: 'top', rIdx: 4 },
+          { y0: cY1 + sH1, y1: cY1 + sH1 + sH2, lockY: 'top', rIdx: 5 },
+          { y0: cY1 + sH1 + sH2, y1: cY1 + sH1 + sH2 + sH3, lockY: 'top', rIdx: 6 }
         ];
 
-        const rawBoxes = [];
-        for (let r = 0; r < rowBands.length; r++) {
-          const [ry0, ry1] = rowBands[r];
-          if (ry0 === fgy) {
-            // Middle band containing the 2×2 farmstead `[fgx, fgx + 2) × [fgy, fgy + 2)`:
-            // Place clean rectangular strips to the left, right, and directly below the 2×2 barn pad
-            const wL1 = this.rng.pick([5, 6]);
-            const wL2 = this.rng.pick([4, 5]);
-            const wR1 = this.rng.pick([5, 6]);
-            const wR2 = this.rng.pick([4, 5]);
-            rawBoxes.push({ x0: fgx - wL1 - wL2, x1: fgx - wL1, y0: ry0, y1: ry1, r });
-            rawBoxes.push({ x0: fgx - wL1, x1: fgx, y0: ry0, y1: ry1, r });
-            rawBoxes.push({ x0: fgx + 2, x1: fgx + 2 + wR1, y0: ry0, y1: ry1, r });
-            rawBoxes.push({ x0: fgx + 2 + wR1, x1: fgx + 2 + wR1 + wR2, y0: ry0, y1: ry1, r });
-          } else {
-            let xCur = fgx - this.rng.pick([8, 9, 10]);
-            const xEnd = fgx + this.rng.pick([10, 11, 12]);
-            while (xCur < xEnd) {
-              const wStep = this.rng.pick([5, 6, 7]);
-              const xNext = Math.min(xEnd, xCur + wStep);
-              if (xNext - xCur >= 4) {
-                rawBoxes.push({ x0: xCur, x1: xNext, y0: ry0, y1: ry1, r });
-              }
-              xCur = xNext;
-            }
-          }
-        }
-
-        for (let bIdx = 0; bIdx < rawBoxes.length; bIdx++) {
-          const rb = rawBoxes[bIdx];
-          const boxCx = (rb.x0 + rb.x1) * 0.5;
-          const boxCy = (rb.y0 + rb.y1) * 0.5;
-          const boxWarp = this.noise.fbm(boxCx * 0.12 + slotIdx * 3.1, boxCy * 0.12 + 2.7, 2) * 2.6;
-          if (Math.hypot(boxCx - fcx, boxCy - fcy) + boxWarp > 9.4) continue;
-
-          const fitted = fitCleanRect(rb.x0, rb.x1, rb.y0, rb.y1);
-          if (!fitted) continue;
-
-          const tiles = [];
-          for (let ty = fitted.y0; ty < fitted.y1; ty++) {
-            for (let tx = fitted.x0; tx < fitted.x1; tx++) {
-              this.buildingMask[this.idx(tx, ty)] = 5;
-              tiles.push([tx, ty]);
-            }
-          }
-
+        const maxRadius = 13.0;
+        const tryAddStrip = (x0, x1, y0, y1, lockX, lockY, rIdx) => {
+          const boxCx = (x0 + x1) * 0.5;
+          const boxCy = (y0 + y1) * 0.5;
+          const boxWarp = this.noise.fbm(boxCx * 0.11 + slotIdx * 3.1, boxCy * 0.11 + 2.7, 2) * 3.2;
+          if (Math.hypot(boxCx - fcx, boxCy - fcy) + boxWarp > maxRadius) return null;
+          const fitted = fitRowStrip(x0, x1, y0, y1, lockX, lockY);
+          if (!fitted) return null;
           bspParcels.push({
             x0: fitted.x0,
             x1: fitted.x1,
             y0: fitted.y0,
             y1: fitted.y1,
-            crop: cropTypes[(bspParcels.length + slotIdx * 2) % cropTypes.length],
-            furrowDir: (bspParcels.length + rb.r + slotIdx) % 2,
-            tiles
+            crop: cropTypes[(bspParcels.length + rIdx + slotIdx * 2) % cropTypes.length],
+            furrowDir: (bspParcels.length + rIdx + slotIdx) % 2,
+            tiles: []
           });
+          return fitted;
+        };
+
+        for (const rs of rowSpecs) {
+          // Try candidate anchor X windows (starting at `fgx + stag`, then shifting west/east along already-placed strips)
+          // so farms on the edge of a basin (like Farm #2) can grow rows across the open side of the plain!
+          const stag = ((rs.rIdx % 2 === 0) ? 0 : (rs.rIdx % 3 === 0 ? -2 : 2));
+          const cW = this.rng.pick([5, 6, 7]);
+          const baseInitX0 = fgx - Math.floor(cW * 0.5) + stag;
+          const xOffsets = [0, -4, 4, -8, 8];
+          let anchor = null;
+          for (const xOff of xOffsets) {
+            const candX0 = baseInitX0 + xOff;
+            const candX1 = candX0 + cW;
+            // For non-center rows, ensure the candidate anchor overlaps horizontally with at least one existing strip
+            if (bspParcels.length > 0) {
+              const touchesExisting = bspParcels.some(
+                p => (p.y1 === rs.y0 || p.y0 === rs.y1) && Math.min(p.x1, candX1) - Math.max(p.x0, candX0) >= 2
+              );
+              if (!touchesExisting) continue;
+            }
+            anchor = tryAddStrip(candX0, candX1, rs.y0, rs.y1, 'center', rs.lockY, rs.rIdx);
+            if (anchor) break;
+          }
+          if (!anchor) continue;
+
+          // Grow contiguous strips westward (`x1` locked flush to previous strip's `x0`)
+          let curLeft = anchor.x0;
+          const ry0 = anchor.y0, ry1 = anchor.y1;
+          for (let wStepIdx = 0; wStepIdx < 3; wStepIdx++) {
+            const w = this.rng.pick([5, 6, 7]);
+            const nextStrip = tryAddStrip(curLeft - w, curLeft, ry0, ry1, 'right', 'none', rs.rIdx);
+            if (!nextStrip) break;
+            curLeft = nextStrip.x0;
+          }
+
+          // Grow contiguous strips eastward (`x0` locked flush to previous strip's `x1`)
+          let curRight = anchor.x1;
+          for (let eStepIdx = 0; eStepIdx < 3; eStepIdx++) {
+            const w = this.rng.pick([5, 6, 7]);
+            const nextStrip = tryAddStrip(curRight, curRight + w, ry0, ry1, 'left', 'none', rs.rIdx);
+            if (!nextStrip) break;
+            curRight = nextStrip.x1;
+          }
+        }
+
+        // Keep only strips that are edge-connected (4-connected) to the central strip containing the farmstead
+        if (bspParcels.length > 1) {
+          const shareEdge = (a, b) => {
+            const xOverlap = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+            const yOverlap = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+            return (
+              (xOverlap >= 2 && (a.y1 === b.y0 || a.y0 === b.y1)) ||
+              (yOverlap >= 2 && (a.x1 === b.x0 || a.x0 === b.x1)) ||
+              (xOverlap > 0 && yOverlap > 0)
+            );
+          };
+          const visited = new Set([0]);
+          const queue = [0];
+          while (queue.length > 0) {
+            const curr = queue.shift();
+            for (let i = 0; i < bspParcels.length; i++) {
+              if (!visited.has(i) && shareEdge(bspParcels[curr], bspParcels[i])) {
+                visited.add(i);
+                queue.push(i);
+              }
+            }
+          }
+          bspParcels = bspParcels.filter((_, idx) => visited.has(idx));
+        }
+
+        // Mark all background tiles in the connected estate (`buildingMask = 5`) so trees don't spawn inside fields
+        for (const p of bspParcels) {
+          for (let ty = p.y0; ty < p.y1; ty++) {
+            for (let tx = p.x0; tx < p.x1; tx++) {
+              if (tx >= fgx && tx <= fgx + 1 && ty >= fgy && ty <= fgy + 1) continue;
+              this.buildingMask[this.idx(tx, ty)] = 5;
+              p.tiles.push([tx, ty]);
+            }
+          }
         }
       }
 
@@ -5593,46 +5649,47 @@ export class ProceduralLogisticsWorld {
 
     const clipParcelList = (parcels, d) => {
       if (!parcels) return [];
-      const out = [];
-      for (const p of parcels) {
-        let rx0 = p.x0, rx1 = p.x1, ry0 = p.y0, ry1 = p.y1;
-        // Trim rectangle edges inward away from any expressway corridor so strips stay pure rectangles
-        for (let iter = 0; iter < 8; iter++) {
-          if (rx1 - rx0 < 3 || ry1 - ry0 < 3) break;
-          let badL = 0, badR = 0, badT = 0, badB = 0;
-          for (let ty = ry0; ty < ry1; ty++) {
-            if (isBlockedByExpressway(d.x, d.y, rx0 + 0.5, ty + 0.5)) badL++;
-            if (isBlockedByExpressway(d.x, d.y, rx1 - 0.5, ty + 0.5)) badR++;
-          }
-          for (let tx = rx0; tx < rx1; tx++) {
-            if (isBlockedByExpressway(d.x, d.y, tx + 0.5, ry0 + 0.5)) badT++;
-            if (isBlockedByExpressway(d.x, d.y, tx + 0.5, ry1 - 0.5)) badB++;
-          }
-          const maxBad = Math.max(badL, badR, badT, badB);
-          if (maxBad === 0) break;
-          if (badL === maxBad) rx0++;
-          else if (badR === maxBad) rx1--;
-          else if (badT === maxBad) ry0++;
-          else ry1--;
-        }
-        if (rx1 - rx0 < 3 || ry1 - ry0 < 3) continue;
-        // Verify interior is also clear of expressways
-        let allClear = true;
-        const tiles = [];
-        for (let ty = ry0; ty < ry1 && allClear; ty++) {
-          for (let tx = rx0; tx < rx1; tx++) {
-            if (isBlockedByExpressway(d.x, d.y, tx + 0.5, ty + 0.5)) {
-              allClear = false;
-              break;
-            }
-            tiles.push([tx, ty]);
-          }
-        }
-        if (allClear && tiles.length >= 9) {
-          out.push({ ...p, x0: rx0, x1: rx1, y0: ry0, y1: ry1, tiles });
+      // Drop any strip whose centroid lies on the far side of an expressway from `(d.x, d.y)`
+      // while keeping strip boundaries flush (smooth vector expressway slicing happens in renderer!)
+      const kept = parcels.filter(p => {
+        const cx = (p.x0 + p.x1) * 0.5;
+        const cy = (p.y0 + p.y1) * 0.5;
+        return !isBlockedByExpressway(d.x, d.y, cx, cy);
+      });
+      if (kept.length <= 1) return kept;
+
+      const shareEdge = (a, b) => {
+        const xOverlap = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+        const yOverlap = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+        return (
+          (xOverlap >= 2 && (a.y1 === b.y0 || a.y0 === b.y1)) ||
+          (yOverlap >= 2 && (a.x1 === b.x0 || a.x0 === b.x1)) ||
+          (xOverlap > 0 && yOverlap > 0)
+        );
+      };
+      // Find strip closest to `(d.x, d.y)` as BFS root
+      let rootIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < kept.length; i++) {
+        const p = kept[i];
+        const dist = Math.hypot((p.x0 + p.x1) * 0.5 - d.x, (p.y0 + p.y1) * 0.5 - d.y);
+        if (dist < bestDist) {
+          bestDist = dist;
+          rootIdx = i;
         }
       }
-      return out;
+      const visited = new Set([rootIdx]);
+      const queue = [rootIdx];
+      while (queue.length > 0) {
+        const curr = queue.shift();
+        for (let i = 0; i < kept.length; i++) {
+          if (!visited.has(i) && shareEdge(kept[curr], kept[i])) {
+            visited.add(i);
+            queue.push(i);
+          }
+        }
+      }
+      return kept.filter((_, idx) => visited.has(idx));
     };
 
     const beforeDest = this.destinations.length;

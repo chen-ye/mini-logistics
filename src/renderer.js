@@ -649,21 +649,18 @@ export class MiniMotorwaysRenderer {
       const parcels = d.bspParcels || [];
       if (parcels.length === 0) continue;
 
-      const inset = 0.9;
-      const cornerR = 3.8;
-
       for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
         const p = parcels[pIdx];
         const st = cropStyles[p.crop] || cropStyles.wheat;
-        const px = p.x0 * ts + inset;
-        const py = p.y0 * ts + inset;
-        const pw = (p.x1 - p.x0) * ts - inset * 2;
-        const ph = (p.y1 - p.y0) * ts - inset * 2;
+        const px = p.x0 * ts;
+        const py = p.y0 * ts;
+        const pw = (p.x1 - p.x0) * ts;
+        const ph = (p.y1 - p.y0) * ts;
         if (pw <= 4 || ph <= 4) continue;
 
         ctx.save();
         ctx.beginPath();
-        ctx.roundRect(px, py, pw, ph, cornerR);
+        ctx.rect(px - 0.25, py - 0.25, pw + 0.5, ph + 0.5);
         ctx.fillStyle = st.fill;
         ctx.fill();
         ctx.clip();
@@ -687,67 +684,92 @@ export class MiniMotorwaysRenderer {
           ctx.beginPath();
           if (p.furrowDir === 0) {
             for (let fy = py + furrowStep * 0.75; fy < py + ph - 2.0; fy += furrowStep) {
-              ctx.moveTo(px + 2.2, fy);
-              ctx.lineTo(px + pw - 2.2, fy);
+              ctx.moveTo(px + 2.0, fy);
+              ctx.lineTo(px + pw - 2.0, fy);
             }
           } else {
             for (let fx = px + furrowStep * 0.75; fx < px + pw - 2.0; fx += furrowStep) {
-              ctx.moveTo(fx, py + 2.2);
-              ctx.lineTo(fx, py + ph - 2.2);
+              ctx.moveTo(fx, py + 2.0);
+              ctx.lineTo(fx, py + ph - 2.0);
             }
           }
           ctx.stroke();
         }
         ctx.restore();
 
-        // Crisp rounded-rectangle strip perimeter
+        // Crisp shared strip perimeter (zero gap between adjacent strips!)
         ctx.strokeStyle = st.border;
         ctx.lineWidth = 1.1;
-        ctx.beginPath();
-        ctx.roundRect(px, py, pw, ph, cornerR);
-        ctx.stroke();
+        ctx.strokeRect(px, py, pw, ph);
       }
 
-      // Smooth vector road & farmstead slicing inside the union of this farm's cadastral strips:
-      // Any diagonal road crossing a strip carves a smooth, jaggie-free vector corridor
-      // lined with a parallel field border (`#d7cdb8`) and a clean paper verge (`PALETTE.bgPaper`).
+      // Smooth vector road, expressway & farmstead slicing inside the union of this farm's cadastral strips:
+      // Any diagonal road or expressway crossing a strip carves a smooth, jaggie-free vector corridor
+      // lined with a parallel field border (`#d4cab5`) and a clean paper verge (`PALETTE.bgPaper`).
       ctx.save();
       ctx.beginPath();
       for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
         const p = parcels[pIdx];
-        const px = p.x0 * ts + inset;
-        const py = p.y0 * ts + inset;
-        const pw = (p.x1 - p.x0) * ts - inset * 2;
-        const ph = (p.y1 - p.y0) * ts - inset * 2;
+        const px = p.x0 * ts;
+        const py = p.y0 * ts;
+        const pw = (p.x1 - p.x0) * ts;
+        const ph = (p.y1 - p.y0) * ts;
         if (pw > 4 && ph > 4) {
-          ctx.roundRect(px, py, pw, ph, cornerR);
+          ctx.rect(px, py, pw, ph);
         }
       }
       ctx.clip();
 
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      const strokeNearbyRoads = (strokeCol, widthPx) => {
+      const strokeNearbyCorridors = (strokeCol, roadWidthPx, mwayWidthPx) => {
         ctx.strokeStyle = strokeCol;
-        ctx.lineWidth = widthPx;
+        ctx.lineWidth = roadWidthPx;
         ctx.beginPath();
         for (const r of world.roads) {
           const pts = r.points;
           if (!pts || pts.length < 2) continue;
-          // Quick bounding check around farmstead `(d.x, d.y)`
           const p0 = pts[0];
-          if (Math.abs(p0.x - d.x) > 28 && Math.abs(p0.y - d.y) > 28) continue;
+          if (Math.abs(p0.x - d.x) > 32 && Math.abs(p0.y - d.y) > 32) continue;
           ctx.moveTo(p0.x * ts + ts * 0.5, p0.y * ts + ts * 0.5);
           for (let i = 1; i < pts.length; i++) {
             ctx.lineTo(pts[i].x * ts + ts * 0.5, pts[i].y * ts + ts * 0.5);
           }
         }
         ctx.stroke();
+
+        if (world.motorways && world.motorways.length > 0) {
+          ctx.lineWidth = mwayWidthPx;
+          ctx.beginPath();
+          for (const mw of world.motorways) {
+            const samples = mw.samples || [];
+            const tunnels = mw.tunnels || [];
+            if (samples.length < 2) continue;
+            let penDown = false;
+            for (let i = 0; i < samples.length; i++) {
+              const inTunnel = tunnels.some(t => i >= t.i0 && i <= t.i1);
+              if (inTunnel) {
+                penDown = false;
+                continue;
+              }
+              const sx = samples[i].x * ts + ts * 0.5;
+              const sy = samples[i].y * ts + ts * 0.5;
+              if (!penDown) {
+                ctx.moveTo(sx, sy);
+                penDown = true;
+              } else {
+                ctx.lineTo(sx, sy);
+              }
+            }
+          }
+          ctx.stroke();
+        }
       };
 
       const roadCasingW = ts * 0.92;
-      strokeNearbyRoads('#d6ccb6', roadCasingW + 4.4);
-      strokeNearbyRoads(PALETTE.bgPaper, roadCasingW + 2.2);
+      const mwayCasingW = ts * 1.95;
+      strokeNearbyCorridors('#d4cab5', roadCasingW + 4.4, mwayCasingW + 6.4);
+      strokeNearbyCorridors(PALETTE.bgPaper, roadCasingW + 2.2, mwayCasingW + 4.2);
 
       // Frame the 2×2 farmstead yard itself with a clean rounded margin
       const padX = d.gx * ts - 1.6;
@@ -755,7 +777,7 @@ export class MiniMotorwaysRenderer {
       const padW = (d.wTiles || 2) * ts + 3.2;
       const padH = (d.hTiles || 2) * ts + 3.2;
       ctx.fillStyle = PALETTE.bgPaper;
-      ctx.strokeStyle = '#d6ccb6';
+      ctx.strokeStyle = '#d4cab5';
       ctx.lineWidth = 2.2;
       ctx.beginPath();
       ctx.roundRect(padX, padY, padW, padH, 4.2);
