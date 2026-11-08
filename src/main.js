@@ -523,7 +523,8 @@ const layerBadges = {
   rci: 'RCI Zoning & Cargo Chain',
   airport: 'Airport Solver & Cones',
   hierarchy: 'Central Place Graph',
-  hydrology: 'Topography & Suitability'
+  hydrology: 'Topography & Suitability',
+  roadgrid: 'Road Grid & Vector Graph'
 };
 document.querySelectorAll('.layer-btn').forEach(btn => {
   btn.addEventListener('click', () => {

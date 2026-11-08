@@ -509,13 +509,15 @@ export class MiniMotorwaysRenderer {
     // 1. Draw Baked Base Terrain
     ctx.drawImage(this.offscreenTerrain, 0, 0);
 
-    // 2. Optional Diagnostic Overlay Underneath Roads/Buildings (Hydrology / Airport Heatmap / RCI Zones)
+    // 2. Optional Diagnostic Overlay Underneath Roads/Buildings (Hydrology / Airport Heatmap / RCI Zones / Road Grid)
     if (this.activeLayer === 'hydrology') {
       this.drawHydrologyOverlay(ctx, world, ts);
     } else if (this.activeLayer === 'airport') {
       this.drawAirportSolverOverlay(ctx, world, ts);
     } else if (this.activeLayer === 'rci') {
       this.drawRCIZoneUnderlay(ctx, world, ts);
+    } else if (this.activeLayer === 'roadgrid') {
+      this.drawRoadGridUnderlay(ctx, world, ts);
     }
 
     // 2B. Draw Ground-Level Airport Concrete Apron Pads & Landside Parking Islands
@@ -542,11 +544,13 @@ export class MiniMotorwaysRenderer {
     // 7B. Draw Live Elevated Motorway Vehicles on Top of the Motorway Decks
     this.drawCars(ctx, world, sim, ts, 'motorway');
 
-    // 8. Draw Central Place Hierarchy or RCI Cargo Chain Overlay if active
+    // 8. Draw Central Place Hierarchy, RCI Cargo Chain, or Road Grid Vector Graph Overlay if active
     if (this.activeLayer === 'hierarchy') {
       this.drawHierarchyOverlay(ctx, world, ts);
     } else if (this.activeLayer === 'rci') {
       this.drawRCICargoChainOverlay(ctx, world, ts);
+    } else if (this.activeLayer === 'roadgrid') {
+      this.drawRoadGridGraphOverlay(ctx, world, ts);
     }
 
     // 9. Draw Live Aircraft & Flight Corridors
@@ -571,6 +575,8 @@ export class MiniMotorwaysRenderer {
 
     if (this.activeLayer === 'rci') {
       this.drawRCIScreenLegend(ctx, world, canvas);
+    } else if (this.activeLayer === 'roadgrid') {
+      this.drawRoadGridScreenLegend(ctx, world, canvas);
     }
   }
 
@@ -581,9 +587,12 @@ export class MiniMotorwaysRenderer {
     const logCount = world.destinations.filter(d => d.zoneType === 'industrial' && d.subType === 'LOG').length;
 
     ctx.save();
-    const boxW = Math.min(canvas.width - 28, 745);
+    const drawerEl = typeof document !== 'undefined' ? document.getElementById('generatorDrawer') : null;
+    const drawerOpen = canvas.width >= 640 && drawerEl && !drawerEl.classList.contains('hidden');
+    const leftSafe = drawerOpen ? 412 : 14;
+    const boxW = Math.min(canvas.width - leftSafe - 14, 745);
     const boxH = 38;
-    const bx = 14;
+    const bx = leftSafe;
     const by = canvas.height - boxH - 14;
 
     ctx.fillStyle = 'rgba(248, 246, 241, 0.92)';
@@ -793,6 +802,12 @@ export class MiniMotorwaysRenderer {
       ctx.strokeStyle = PALETTE.roadCasing;
       ctx.lineWidth = ts * 0.68;
       ctx.beginPath();
+      for (const ic of world.interchanges) {
+        if (ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
+          ctx.moveTo(ic.termX * ts + ts * 0.5, ic.termY * ts + ts * 0.5);
+          ctx.lineTo(ic.connectX * ts + ts * 0.5, ic.connectY * ts + ts * 0.5);
+        }
+      }
       for (const rb of roundabouts) {
         ctx.moveTo(rb.x + rb.rRing, rb.y);
         ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
@@ -801,20 +816,74 @@ export class MiniMotorwaysRenderer {
     }
 
     // =========================================================================
-    // PASS 2: BRIDGE GUARDRAILS OVER WATER (butt-capped flush at shoreline)
+    // PASS 2: BRIDGE GUARDRAILS OVER WATER (continuous smoothed spans matching `traceSmoothPath`)
     // =========================================================================
+    const ox = ts * 0.5;
+    const oy = ts * 0.5;
     ctx.lineCap = 'butt';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = PALETTE.bridgeRail;
+    ctx.lineWidth = ts * 0.88;
     for (const r of world.roads) {
-      ctx.strokeStyle = PALETTE.bridgeRail;
-      ctx.lineWidth = ts * 0.88;
-      ctx.beginPath();
-      for (let i = 0; i < r.points.length - 1; i++) {
-        if (r.points[i].isBridge || r.points[i + 1].isBridge) {
-          ctx.moveTo(r.points[i].x * ts + ts * 0.5, r.points[i].y * ts + ts * 0.5);
-          ctx.lineTo(r.points[i + 1].x * ts + ts * 0.5, r.points[i + 1].y * ts + ts * 0.5);
+      const pts = r.points;
+      if (!pts || pts.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
+      let i = 0;
+      while (i < pts.length - 1) {
+        if (!(pts[i].isBridge || pts[i + 1].isBridge)) {
+          i++;
+          continue;
         }
+        const eStart = i;
+        while (i + 1 < pts.length - 1 && (pts[i + 1].isBridge || pts[i + 2].isBridge)) {
+          i++;
+        }
+        const eEnd = i;
+        i++;
+
+        ctx.beginPath();
+        // Start of continuous bridge span (`vStart = eStart`) at the shoreline bank (`t = 0.32` from dry tile to water tile)
+        const vStart = eStart;
+        const pS0 = pts[vStart];
+        const pS1 = pts[vStart + 1];
+        const startFrac = !pS0.isBridge && pS1.isBridge ? 0.08 : 0.0;
+        ctx.moveTo(
+          (pS0.x + (pS1.x - pS0.x) * startFrac) * ts + ox,
+          (pS0.y + (pS1.y - pS0.y) * startFrac) * ts + oy
+        );
+
+        // Interior bridge vertices (`eStart + 1 .. eEnd`) rounded with exact `traceSmoothPath` quadratic Beziers
+        for (let v = eStart + 1; v <= eEnd; v++) {
+          const pPrev = pts[v - 1];
+          const pCurr = pts[v];
+          const pNext = pts[v + 1];
+          const dx1 = pCurr.x - pPrev.x, dy1 = pCurr.y - pPrev.y;
+          const dx2 = pNext.x - pCurr.x, dy2 = pNext.y - pCurr.y;
+          if (dx1 === dx2 && dy1 === dy2) {
+            ctx.lineTo(pCurr.x * ts + ox, pCurr.y * ts + oy);
+          } else {
+            const len1 = Math.hypot(dx1, dy1) || 1;
+            const len2 = Math.hypot(dx2, dy2) || 1;
+            const rCorner = Math.min(0.24, len1 * 0.45, len2 * 0.45);
+            const xIn = (pCurr.x - (dx1 / len1) * rCorner) * ts + ox;
+            const yIn = (pCurr.y - (dy1 / len1) * rCorner) * ts + oy;
+            const xOut = (pCurr.x + (dx2 / len2) * rCorner) * ts + ox;
+            const yOut = (pCurr.y + (dy2 / len2) * rCorner) * ts + oy;
+            ctx.lineTo(xIn, yIn);
+            ctx.quadraticCurveTo(pCurr.x * ts + ox, pCurr.y * ts + oy, xOut, yOut);
+          }
+        }
+
+        // End of continuous bridge span (`vEnd = eEnd + 1`) at the shoreline bank (`1 - 0.32` from water tile to dry tile)
+        const vEnd = eEnd + 1;
+        const pE0 = pts[eEnd];
+        const pE1 = pts[vEnd];
+        const endFrac = pE0.isBridge && !pE1.isBridge ? 0.92 : 1.0;
+        ctx.lineTo(
+          (pE0.x + (pE1.x - pE0.x) * endFrac) * ts + ox,
+          (pE0.y + (pE1.y - pE0.y) * endFrac) * ts + oy
+        );
+        ctx.stroke();
       }
-      ctx.stroke();
     }
     ctx.lineCap = 'round';
 
@@ -864,6 +933,12 @@ export class MiniMotorwaysRenderer {
       ctx.strokeStyle = PALETTE.roadAsphalt;
       ctx.lineWidth = ts * 0.50;
       ctx.beginPath();
+      for (const ic of world.interchanges) {
+        if (ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
+          ctx.moveTo(ic.termX * ts + ts * 0.5, ic.termY * ts + ts * 0.5);
+          ctx.lineTo(ic.connectX * ts + ts * 0.5, ic.connectY * ts + ts * 0.5);
+        }
+      }
       for (const rb of roundabouts) {
         ctx.moveTo(rb.x + rb.rRing, rb.y);
         ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
@@ -1901,7 +1976,7 @@ export class MiniMotorwaysRenderer {
       if (ic.type === 'cloverleaf') {
         const cx = ic.x * ts + ts * 0.5;
         const cy = ic.y * ts + ts * 0.5;
-        const span = ts * 1.15;
+        const span = ts * 1.65;
         const bridgeAng = ic.prunedBridgeB ? ic.angleA : ic.angleB;
         const ux = Math.cos(bridgeAng);
         const uy = Math.sin(bridgeAng);
@@ -2032,13 +2107,71 @@ export class MiniMotorwaysRenderer {
         y = (p0.y + (p1.y - p0.y) * frac) * ts + oy;
         ang = Math.atan2((p1.y - p0.y) * car.dir, (p1.x - p0.x) * car.dir);
       } else {
-        const p0 = car.road.points[car.segIdx];
-        const p1 = car.road.points[car.segIdx + 1];
+        const pts = car.road.points;
+        const p0 = pts[car.segIdx];
+        const p1 = pts[car.segIdx + 1];
         if (!p0 || !p1) continue;
-        const t = car.dir > 0 ? car.segT : 1 - car.segT;
-        x = (p0.x + (p1.x - p0.x) * t) * ts + ox;
-        y = (p0.y + (p1.y - p0.y) * t) * ts + oy;
-        ang = Math.atan2((p1.y - p0.y) * car.dir, (p1.x - p0.x) * car.dir);
+        const u = car.dir > 0 ? car.segT : 1 - car.segT;
+        const dx = p1.x - p0.x;
+        const dy = p1.y - p0.y;
+        const len = Math.hypot(dx, dy) || 1;
+
+        let tx = p0.x + dx * u;
+        let ty = p0.y + dy * u;
+        let tanX = dx * car.dir;
+        let tanY = dy * car.dir;
+
+        // Evaluate `traceSmoothPath` quadratic Bezier corner fillet near `p0` (`segIdx > 0`)
+        if (car.segIdx > 0) {
+          const pPrev = pts[car.segIdx - 1];
+          const dxPrev = p0.x - pPrev.x;
+          const dyPrev = p0.y - pPrev.y;
+          if (dxPrev !== dx || dyPrev !== dy) {
+            const lenPrev = Math.hypot(dxPrev, dyPrev) || 1;
+            const r0 = Math.min(0.24, lenPrev * 0.45, len * 0.45);
+            const u0 = r0 / len;
+            if (u < u0 && u0 > 1e-4) {
+              const bT = 0.5 + 0.5 * (u / u0);
+              const mt = 1 - bT;
+              const ax = p0.x - (dxPrev / lenPrev) * r0;
+              const ay = p0.y - (dyPrev / lenPrev) * r0;
+              const cx = p0.x + (dx / len) * r0;
+              const cy = p0.y + (dy / len) * r0;
+              tx = mt * mt * ax + 2 * mt * bT * p0.x + bT * bT * cx;
+              ty = mt * mt * ay + 2 * mt * bT * p0.y + bT * bT * cy;
+              tanX = (mt * (p0.x - ax) + bT * (cx - p0.x)) * car.dir;
+              tanY = (mt * (p0.y - ay) + bT * (cy - p0.y)) * car.dir;
+            }
+          }
+        }
+
+        // Evaluate `traceSmoothPath` quadratic Bezier corner fillet near `p1` (`segIdx + 1 < pts.length - 1`)
+        if (car.segIdx + 1 < pts.length - 1) {
+          const pNext = pts[car.segIdx + 2];
+          const dxNext = pNext.x - p1.x;
+          const dyNext = pNext.y - p1.y;
+          if (dx !== dxNext || dy !== dyNext) {
+            const lenNext = Math.hypot(dxNext, dyNext) || 1;
+            const r1 = Math.min(0.24, len * 0.45, lenNext * 0.45);
+            const u1 = r1 / len;
+            if (u > 1 - u1 && u1 > 1e-4) {
+              const bT = 0.5 * ((u - (1 - u1)) / u1);
+              const mt = 1 - bT;
+              const ax = p1.x - (dx / len) * r1;
+              const ay = p1.y - (dy / len) * r1;
+              const cx = p1.x + (dxNext / lenNext) * r1;
+              const cy = p1.y + (dyNext / lenNext) * r1;
+              tx = mt * mt * ax + 2 * mt * bT * p1.x + bT * bT * cx;
+              ty = mt * mt * ay + 2 * mt * bT * p1.y + bT * bT * cy;
+              tanX = (mt * (p1.x - ax) + bT * (cx - p1.x)) * car.dir;
+              tanY = (mt * (p1.y - ay) + bT * (cy - p1.y)) * car.dir;
+            }
+          }
+        }
+
+        x = tx * ts + ox;
+        y = ty * ts + oy;
+        ang = Math.atan2(tanY, tanX);
       }
 
       // If the vehicle is within a roundabout's footprint, deflect it onto the right-hand
@@ -2427,6 +2560,256 @@ export class MiniMotorwaysRenderer {
       ctx.beginPath();
       ctx.arc(cx, cy, ts * 3.5, 0, Math.PI * 2);
       ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  computeRoadGraphDiagnostics(world) {
+    if (this._roadDiagWorld === world && this._roadDiagCache) {
+      return this._roadDiagCache;
+    }
+
+    const { W, H } = world;
+    const total = W * H;
+    const deg = new Uint8Array(total);
+    const hasVertex = new Uint8Array(total);
+    const edgeSet = new Set();
+    const anomalies = [];
+
+    for (const r of world.roads) {
+      if (!r.points || r.points.length < 2) continue;
+      for (let i = 0; i < r.points.length; i++) {
+        const pt = r.points[i];
+        const gx = Math.round(pt.x);
+        const gy = Math.round(pt.y);
+        if (!world.inBounds(gx, gy, 0)) continue;
+        const id = world.idx(gx, gy);
+        hasVertex[id] = 1;
+
+        if (world.buildingMask[id] === 1 || world.buildingMask[id] === 2) {
+          anomalies.push({ x: gx, y: gy, kind: 'road-building-overlap' });
+        }
+
+        if (i < r.points.length - 1) {
+          const next = r.points[i + 1];
+          const nx = Math.round(next.x);
+          const ny = Math.round(next.y);
+          if (!world.inBounds(nx, ny, 0)) continue;
+          const nid = world.idx(nx, ny);
+          const eKey = id < nid ? id * total + nid : nid * total + id;
+          if (!edgeSet.has(eKey)) {
+            edgeSet.add(eKey);
+            deg[id] = Math.min(255, deg[id] + 1);
+            deg[nid] = Math.min(255, deg[nid] + 1);
+          }
+
+          const dx = nx - gx;
+          const dy = ny - gy;
+          if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) {
+            anomalies.push({ x: (gx + nx) * 0.5, y: (gy + ny) * 0.5, kind: 'non-octilinear-edge' });
+          }
+        }
+      }
+    }
+
+    let streetTiles = 0;
+    let arterialTiles = 0;
+    let bridgeTiles = 0;
+    let junctionCount = 0;
+
+    for (let id = 0; id < total; id++) {
+      const rg = world.roadGrid[id];
+      if (rg === 1) streetTiles++;
+      else if (rg === 2) arterialTiles++;
+      else if (rg === 3) bridgeTiles++;
+
+      if (deg[id] >= 3) junctionCount++;
+      if (rg > 0 && hasVertex[id] === 0) {
+        anomalies.push({ x: id % W, y: Math.floor(id / W), kind: 'orphan-roadgrid-tile' });
+      }
+    }
+
+    this._roadDiagWorld = world;
+    this._roadDiagCache = {
+      deg,
+      edgeCount: edgeSet.size,
+      streetTiles,
+      arterialTiles,
+      bridgeTiles,
+      junctionCount,
+      anomalies
+    };
+    return this._roadDiagCache;
+  }
+
+  drawRoadGridUnderlay(ctx, world, ts) {
+    ctx.save();
+    const { W, H } = world;
+
+    // 1. Building Mask Footprint Outlines (`1 = house`, `2 = commercial/industrial`, `3 = airport`, `4 = transit reserve`)
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const id = world.idx(x, y);
+        const bm = world.buildingMask[id];
+        const rg = world.roadGrid[id];
+
+        if (bm === 1 || bm === 2) {
+          ctx.fillStyle = bm === 1 ? 'rgba(22, 163, 74, 0.14)' : 'rgba(37, 99, 235, 0.16)';
+          ctx.fillRect(x * ts + 0.5, y * ts + 0.5, ts - 1, ts - 1);
+        } else if (bm === 4 && rg === 0) {
+          ctx.fillStyle = 'rgba(139, 92, 246, 0.10)';
+          ctx.fillRect(x * ts + 0.5, y * ts + 0.5, ts - 1, ts - 1);
+        }
+
+        if (rg > 0) {
+          if (rg === 1) {
+            ctx.fillStyle = 'rgba(14, 165, 233, 0.30)';
+            ctx.strokeStyle = 'rgba(2, 132, 199, 0.55)';
+          } else if (rg === 2) {
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.36)';
+            ctx.strokeStyle = 'rgba(217, 119, 6, 0.65)';
+          } else if (rg === 3) {
+            ctx.fillStyle = 'rgba(6, 182, 212, 0.44)';
+            ctx.strokeStyle = 'rgba(8, 145, 178, 0.75)';
+          } else {
+            ctx.fillStyle = 'rgba(139, 92, 246, 0.34)';
+            ctx.strokeStyle = 'rgba(109, 40, 217, 0.65)';
+          }
+          ctx.lineWidth = 1.0;
+          ctx.fillRect(x * ts + 0.5, y * ts + 0.5, ts - 1, ts - 1);
+          ctx.strokeRect(x * ts + 0.5, y * ts + 0.5, ts - 1, ts - 1);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  drawRoadGridGraphOverlay(ctx, world, ts) {
+    ctx.save();
+    const ox = ts * 0.5;
+    const oy = ts * 0.5;
+    const diag = this.computeRoadGraphDiagnostics(world);
+
+    // 1. Driveway Frontage Links (`lotX, lotY -> roadX, roadY`)
+    ctx.strokeStyle = 'rgba(22, 163, 74, 0.65)';
+    ctx.lineWidth = 1.3;
+    ctx.setLineDash([2.5, 2.5]);
+    ctx.beginPath();
+    for (const h of world.houses) {
+      ctx.moveTo(h.x * ts + ox, h.y * ts + oy);
+      ctx.lineTo(h.roadX * ts + ox, h.roadY * ts + oy);
+    }
+    for (const d of world.destinations) {
+      const lx = d.lotX ?? d.x;
+      const ly = d.lotY ?? d.y;
+      ctx.moveTo(lx * ts + ox, ly * ts + oy);
+      ctx.lineTo(d.roadX * ts + ox, d.roadY * ts + oy);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 2. Vector Road Polylines (`world.roads`)
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const r of world.roads) {
+      if (!r.points || r.points.length < 2) continue;
+      ctx.strokeStyle = r.type === 'street' ? '#0284c7' : (r.type === 'airport-spine' ? '#7c3aed' : '#ea580c');
+      ctx.lineWidth = r.type === 'street' ? 1.8 : 2.5;
+      ctx.beginPath();
+      ctx.moveTo(r.points[0].x * ts + ox, r.points[0].y * ts + oy);
+      for (let i = 1; i < r.points.length; i++) {
+        ctx.lineTo(r.points[i].x * ts + ox, r.points[i].y * ts + oy);
+      }
+      ctx.stroke();
+    }
+
+    // 3. Vertex Degree Nodes (`deg 1` terminal, `deg 2` through-node, `deg >= 3` junction)
+    const { W, H } = world;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const d = diag.deg[world.idx(x, y)];
+        if (d === 0) continue;
+        const px = x * ts + ox;
+        const py = y * ts + oy;
+        if (d >= 3) {
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#dc2626';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.arc(px, py, 3.2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else if (d === 1) {
+          ctx.fillStyle = '#475569';
+          ctx.beginPath();
+          ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = '#0f172a';
+          ctx.beginPath();
+          ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    // 4. High-Contrast Callout Rings for Any Topological/Geometric Anomaly
+    for (const anom of diag.anomalies) {
+      const ax = anom.x * ts + ox;
+      const ay = anom.y * ts + oy;
+      ctx.strokeStyle = '#e11d48';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(ax, ay, ts * 0.65, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  drawRoadGridScreenLegend(ctx, world, canvas) {
+    const diag = this.computeRoadGraphDiagnostics(world);
+
+    ctx.save();
+    const drawerEl = typeof document !== 'undefined' ? document.getElementById('generatorDrawer') : null;
+    const drawerOpen = canvas.width >= 640 && drawerEl && !drawerEl.classList.contains('hidden');
+    const leftSafe = drawerOpen ? 412 : 14;
+    const boxW = Math.min(canvas.width - leftSafe - 14, 790);
+    const boxH = 38;
+    const bx = leftSafe;
+    const by = canvas.height - boxH - 14;
+
+    ctx.fillStyle = 'rgba(248, 246, 241, 0.94)';
+    ctx.strokeStyle = 'rgba(54, 56, 62, 0.18)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, boxW, boxH, 11);
+    ctx.fill();
+    ctx.stroke();
+
+    const anomCount = diag.anomalies.length;
+    const items = [
+      { col: '#0284c7', label: `Street Tiles (${diag.streetTiles})` },
+      { col: '#ea580c', label: `Arterial Tiles (${diag.arterialTiles})` },
+      { col: '#0891b2', label: `Bridge Tiles (${diag.bridgeTiles})` },
+      { col: '#334155', label: `Vector Edges (${diag.edgeCount})` },
+      { col: '#dc2626', label: `Junctions deg≥3 (${diag.junctionCount})` },
+      { col: anomCount === 0 ? '#16a34a' : '#e11d48', label: `Anomalies (${anomCount})` }
+    ];
+
+    ctx.font = '700 11px Inter, sans-serif';
+    ctx.textBaseline = 'middle';
+    let curX = bx + 14;
+    const midY = by + boxH * 0.5;
+    for (const it of items) {
+      if (curX + 95 > bx + boxW) break;
+      ctx.fillStyle = it.col;
+      ctx.beginPath();
+      ctx.arc(curX + 4, midY, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#36383e';
+      ctx.fillText(it.label, curX + 13, midY + 0.5);
+      curX += ctx.measureText(it.label).width + 28;
     }
     ctx.restore();
   }
