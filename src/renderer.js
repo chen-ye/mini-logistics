@@ -521,11 +521,15 @@ export class MiniMotorwaysRenderer {
     // 5. Draw Airport Airside & Terminal Structures (Runways, Taxiways, Concourses, Control Towers & Floating Badges)
     this.drawAirports(ctx, world, ts);
 
-    // 6. Draw Live Ground Vehicles (Commuter Cars + Articulated Freight Trucks)
-    this.drawCars(ctx, world, sim, ts);
+    // 6. Draw Live Surface Road Vehicles (Commuter Cars + Articulated Freight Trucks on surface streets & roundabouts)
+    this.drawCars(ctx, world, sim, ts, 'road');
 
     // 7. Draw Sweeping Pink Numbered Motorways Overpasses ([1], [2], [3])
+    // Clipped outside terminal roundabout rings so roundabouts are never drawn in a second pass!
     this.drawMotorways(ctx, world, ts);
+
+    // 7B. Draw Live Elevated Motorway Vehicles on Top of the Motorway Decks
+    this.drawCars(ctx, world, sim, ts, 'motorway');
 
     // 8. Draw Central Place Hierarchy or RCI Cargo Chain Overlay if active
     if (this.activeLayer === 'hierarchy') {
@@ -1662,7 +1666,15 @@ export class MiniMotorwaysRenderer {
         const rbY = sySign * across;
         const rbR = ts * 0.56;
 
-        // 1. Two Smooth Curved Bezier Slip-Ramps Peeling Tangentially Off the Outer Deck Edge
+        // Clip out the roundabout's asphalt ring (`rbR + ts * 0.24`) so the slip-ramps terminate
+        // cleanly at the outer edge of the roundabout without needing a second-pass roundabout redraw!
+        ctx.beginPath();
+        ctx.rect(-ts * 12, -ts * 12, ts * 24, ts * 24);
+        ctx.moveTo(rbR + ts * 0.24, rbY);
+        ctx.arc(0, rbY, rbR + ts * 0.24, 0, Math.PI * 2);
+        ctx.clip('evenodd');
+
+        // Two Smooth Curved Bezier Slip-Ramps Peeling Tangentially Off the Outer Deck Edge
         for (const pass of ['border', 'fill']) {
           ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : '#f48fb1';
           ctx.lineWidth = pass === 'border' ? ts * 0.36 : ts * 0.22;
@@ -1678,15 +1690,6 @@ export class MiniMotorwaysRenderer {
             ctx.stroke();
           }
         }
-
-        // 2. Redraw ONLY the roundabout's white asphalt fill ring and central island over the slip-ramp ends
-        ctx.strokeStyle = PALETTE.roadAsphalt;
-        ctx.lineWidth = ts * 0.50;
-        ctx.beginPath();
-        ctx.arc(0, rbY, rbR, 0, Math.PI * 2);
-        ctx.stroke();
-
-        this.drawRoundaboutCentralIsland(ctx, 0, rbY, ts * 0.30, '#8fa989');
         ctx.restore();
       }
     }
@@ -1709,6 +1712,27 @@ export class MiniMotorwaysRenderer {
       ctx.save();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
+
+      // Clip out the non-pruned terminal roundabout asphalt rings (`rbR + ts * 0.24`) so the pink
+      // expressway stops cleanly at the outer edge of each roundabout without needing a second-pass
+      // roundabout layer that would clip vehicles driving through the roundabout!
+      const termEndpoints = [];
+      if (!mw.prunedStart) termEndpoints.push([sx, sy]);
+      if (!mw.prunedEnd) termEndpoints.push([ex, ey]);
+      if (termEndpoints.length > 0) {
+        ctx.beginPath();
+        ctx.rect(-ts * 50, -ts * 50, (world.W + 100) * ts, (world.H + 100) * ts);
+        for (const [rx, ry] of termEndpoints) {
+          const apGateway = world.airports.find(
+            a => Math.hypot(a.gateX * ts + ts * 0.5 - rx, a.gateY * ts + ts * 0.5 - ry) < 1.0
+          );
+          const rbR = apGateway ? ts * 0.68 : ts * 0.64;
+          const clipR = rbR + ts * 0.24;
+          ctx.moveTo(rx + clipR, ry);
+          ctx.arc(rx, ry, clipR, 0, Math.PI * 2);
+        }
+        ctx.clip('evenodd');
+      }
 
       // Split `samples` into above-ground surface spans and subterranean tunnel spans (`mw.tunnels`)
       // so tunneled motorway sections cast ZERO ground shadows and leave mountain contours/trees untouched!
@@ -1810,33 +1834,6 @@ export class MiniMotorwaysRenderer {
             ctx.restore();
           }
         }
-      }
-
-      // Grade-Separated Annular Roundabout Interchange Rings at non-pruned Street-Stub Terminations:
-      // Redraw ONLY the roundabout's white asphalt fill ring and central island on top of the expressway
-      // endpoint so the outer grey casing and surface road throats from `drawRoadNetwork` remain untouched!
-      const termEndpoints = [];
-      if (!mw.prunedStart) termEndpoints.push([sx, sy]);
-      if (!mw.prunedEnd) termEndpoints.push([ex, ey]);
-      for (const [rx, ry] of termEndpoints) {
-        const apGateway = world.airports.find(
-          a => Math.hypot(a.gateX * ts + ts * 0.5 - rx, a.gateY * ts + ts * 0.5 - ry) < 1.0
-        );
-        const townIc = !apGateway
-          ? world.interchanges.find(ic => ic.type === 'terminal-stub' && Math.hypot(ic.x * ts + ts * 0.5 - rx, ic.y * ts + ts * 0.5 - ry) < 1.5)
-          : null;
-        const town = townIc && townIc.townId !== undefined ? world.towns[townIc.townId] : null;
-        const rbR = apGateway ? ts * 0.68 : ts * 0.64;
-        const rbIslandR = apGateway ? ts * 0.36 : ts * 0.33;
-        const accentColor = apGateway ? apGateway.palette.roof : (town ? town.palette.roof : '#8fa989');
-
-        ctx.strokeStyle = PALETTE.roadAsphalt;
-        ctx.lineWidth = ts * 0.50;
-        ctx.beginPath();
-        ctx.arc(rx, ry, rbR, 0, Math.PI * 2);
-        ctx.stroke();
-
-        this.drawRoundaboutCentralIsland(ctx, rx, ry, rbIslandR, accentColor);
       }
 
       // Choose a clean Highway Shield Badge ([1], [2]) position that maximizes clearance from all interchanges & endpoints
@@ -1987,11 +1984,27 @@ export class MiniMotorwaysRenderer {
     }
   }
 
-  drawCars(ctx, world, sim, ts) {
+  drawCars(ctx, world, sim, ts, modeFilter = null) {
     const ox = ts * 0.5;
     const oy = ts * 0.5;
 
+    // Gather all roundabout centers & radii so vehicles follow the circulatory ring lane
+    // around the central landscaped island rather than driving straight through the island!
+    const roundabouts = [];
+    for (const ap of world.airports) {
+      roundabouts.push({ x: ap.gateX * ts + ox, y: ap.gateY * ts + oy, rRing: ts * 0.68 });
+    }
+    for (const ic of world.interchanges) {
+      if (ic.type === 'terminal-stub' && !ic.isAirportStub) {
+        roundabouts.push({ x: ic.x * ts + ox, y: ic.y * ts + oy, rRing: ts * 0.64 });
+      } else if (ic.type === 'diamond-ramp') {
+        roundabouts.push({ x: ic.termX * ts + ox, y: ic.termY * ts + oy, rRing: ts * 0.56 });
+      }
+    }
+
     for (const car of sim.cars) {
+      if (modeFilter && car.mode !== modeFilter) continue;
+
       let x, y, ang;
       if (car.mode === 'motorway') {
         const samples = car.mw.samples;
@@ -2015,6 +2028,29 @@ export class MiniMotorwaysRenderer {
         x = (p0.x + (p1.x - p0.x) * t) * ts + ox;
         y = (p0.y + (p1.y - p0.y) * t) * ts + oy;
         ang = Math.atan2((p1.y - p0.y) * car.dir, (p1.x - p0.x) * car.dir);
+      }
+
+      // If the vehicle is within a roundabout's footprint, deflect it onto the right-hand
+      // circulatory ring lane (`rRing`) so it orbits the landscaped island instead of clipping through it!
+      for (const rb of roundabouts) {
+        const dx = x - rb.x;
+        const dy = y - rb.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < rb.rRing * 0.98) {
+          const ux = Math.cos(ang);
+          const uy = Math.sin(ang);
+          const rx = -uy; // right-hand perpendicular unit vector
+          const ry = ux;
+          const along = dx * ux + dy * uy;
+          const clampedAlong = Math.max(-rb.rRing * 0.92, Math.min(rb.rRing * 0.92, along));
+          const lateral = Math.sqrt(Math.max(0, rb.rRing * rb.rRing - clampedAlong * clampedAlong));
+          x = rb.x + ux * clampedAlong + rx * lateral;
+          y = rb.y + uy * clampedAlong + ry * lateral;
+          // Tangent angle along the counter-clockwise / right-hand circulatory arc
+          const radAng = Math.atan2(y - rb.y, x - rb.x);
+          ang = radAng + Math.PI * 0.5;
+          break;
+        }
       }
 
       ctx.save();
