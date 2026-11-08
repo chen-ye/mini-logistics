@@ -2063,8 +2063,240 @@ export class ProceduralLogisticsWorld {
       this.tryPlaceNeighborhoodHouses(town, targetHouses, R);
     }
 
+    // 7B-2. Seed Out-of-Town Geographic Resource Niches (`MINE` Quarries, `TIMBER` Forestry Camps, `FARM` Agribusiness)
+    //       with dedicated rural haul roads BEFORE outer street pruning so contacted streets remain anchored!
+    this.seedOutOfTownResourceNiches();
+
     // 7C. Trim far-flung empty street tails while preserving natural neighborhood block loops
     this.pruneEmptyOuterStreets();
+  }
+
+  /**
+   * STAGE 7B-2: OUT-OF-TOWN GEOGRAPHIC RESOURCE NICHES (OpenTTD / Transport Fever 2)
+   * Places primary `RAW` extraction facilities (`MINE`, `TIMBER`, `FARM`) out in their authentic
+   * physical terrain niches outside urban zones and connects each with a short rural haul road
+   * to the regional trunk network so freight trucks haul raw materials into town `MFG` factories.
+   */
+  seedOutOfTownResourceNiches() {
+    const isIslandHopper = this.config.archetype === 'island-hopper';
+    const targetSites = Math.min(10, Math.max(5, Math.round(this.towns.length * 0.36)));
+
+    // Collect rural arterial/street road tiles (`roadGrid >= 1`) as haul-road targets
+    const roadTargets = [];
+    for (let y = 10; y < this.H - 10; y += 2) {
+      for (let x = 10; x < this.W - 10; x += 2) {
+        const id = this.idx(x, y);
+        if ((this.roadGrid[id] === 1 || this.roadGrid[id] === 2) && this.waterMask[id] === 0) {
+          roadTargets.push({ x, y });
+        }
+      }
+    }
+    if (roadTargets.length === 0) return;
+
+    const candidates = [];
+    for (let gy = 14; gy < this.H - 16; gy += 3) {
+      for (let gx = 14; gx < this.W - 16; gx += 3) {
+        // Check a 2×2 building pad + 2-tile clearance margin for dry land, zero roads/buildings, and outside urban blush
+        let padOk = true;
+        for (let dy = -2; dy <= 3 && padOk; dy++) {
+          for (let dx = -2; dx <= 3; dx++) {
+            const px = gx + dx, py = gy + dy;
+            if (!this.inBounds(px, py, 4)) {
+              padOk = false;
+              break;
+            }
+            const pid = this.idx(px, py);
+            if (
+              this.waterMask[pid] > 0 ||
+              this.buildingMask[pid] > 0 ||
+              this.roadGrid[pid] > 0 ||
+              this.zoneColorIdx[pid] >= 0 ||
+              this.distToWater[pid] < 3.2
+            ) {
+              padOk = false;
+              break;
+            }
+          }
+        }
+        if (!padOk) continue;
+
+        const cx = gx + 0.5;
+        const cy = gy + 0.5;
+        if (this.isPointInAirportPad(cx, cy, 7.0)) continue;
+
+        // Require clear rural separation outside town urban radii (`>= urbanRadius + 4.5`)
+        let nearestTown = null;
+        let minTownDist = Infinity;
+        let tooCloseToTown = false;
+        for (const t of this.towns) {
+          const d = Math.hypot(cx - t.x, cy - t.y);
+          if (d < (t.effectiveR || t.urbanRadius) + 4.5) {
+            tooCloseToTown = true;
+            break;
+          }
+          if (d < minTownDist) {
+            minTownDist = d;
+            nearestTown = t;
+          }
+        }
+        if (tooCloseToTown || !nearestTown || minTownDist > 42) continue;
+
+        // Find nearest paved road tile within 5..18 tiles for a crisp rural haul spur
+        let nearestRoadPt = null;
+        let minRoadDist = Infinity;
+        for (let k = 0; k < roadTargets.length; k++) {
+          const rp = roadTargets[k];
+          const d = Math.hypot(cx - rp.x, cy - rp.y);
+          if (d < minRoadDist) {
+            minRoadDist = d;
+            nearestRoadPt = rp;
+          }
+        }
+        if (!nearestRoadPt || minRoadDist < 4.5 || minRoadDist > 17.5) continue;
+
+        const id = this.idx(gx, gy);
+        const hAbove = Math.max(0, this.elevationField[id] - this.seaLevel);
+        const slope = this.slopeField[id];
+        const fert = this.fertilityField[id];
+        const dW = this.distToWater[id];
+
+        // Evaluate fitness for the 3 geographic resource niches:
+        // 1. `MINE` (Foothill Quarry & Mine): elevated ridge toes & canyon mouths (`hAbove >= 0.115`)
+        // 2. `TIMBER` (Upland Forestry Camp): moist wooded hills (`hAbove >= 0.085`, high `fertilityField`)
+        // 3. `FARM` (Alluvial Agribusiness): flat fertile valley floors (`hAbove <= 0.085`, low `slope`)
+        let resourceType = null;
+        let nicheScore = -1;
+
+        if (hAbove >= 0.115 && hAbove <= 0.28 && slope >= 0.06 && slope <= 0.36) {
+          resourceType = 'MINE';
+          nicheScore = 1.0 + (hAbove - 0.115) * 3.5 + slope * 1.4 - minRoadDist * 0.03;
+        } else if (hAbove >= 0.08 && hAbove <= 0.22 && fert >= 0.38 && slope <= 0.28) {
+          resourceType = 'TIMBER';
+          nicheScore = 0.95 + fert * 0.85 + hAbove * 1.8 - minRoadDist * 0.03;
+        } else if (hAbove <= 0.085 && slope <= 0.10 && fert >= 0.40 && dW >= 3.5 && dW <= 16.0) {
+          resourceType = 'FARM';
+          nicheScore = 0.92 + fert * 0.95 + (0.10 - slope) * 2.5 - minRoadDist * 0.03;
+        }
+        if (!resourceType) continue;
+
+        candidates.push({
+          gx,
+          gy,
+          cx,
+          cy,
+          resourceType,
+          nicheScore: nicheScore + this.rng.range(-0.06, 0.06),
+          nearestTown,
+          nearestRoadPt
+        });
+      }
+    }
+
+    candidates.sort((a, b) => b.nicheScore - a.nicheScore);
+
+    const desiredMix = ['MINE', 'TIMBER', 'FARM', 'MINE', 'TIMBER', 'FARM', 'MINE', 'FARM', 'TIMBER', 'MINE'];
+    const placedSites = [];
+
+    for (let slotIdx = 0; slotIdx < targetSites; slotIdx++) {
+      const preferredType = desiredMix[slotIdx % desiredMix.length];
+      let chosenCand = null;
+      let chosenHaulPath = null;
+      let chosenDriveway = null;
+
+      for (const passPrefer of [true, false]) {
+        for (const cand of candidates) {
+          if (passPrefer && cand.resourceType !== preferredType) continue;
+          if (placedSites.some(p => Math.hypot(p.cx - cand.cx, p.cy - cand.cy) < (isIslandHopper ? 18 : 25))) {
+            continue;
+          }
+          // Re-verify 2×2 pad is still clear of any haul road committed in an earlier iteration
+          let stillClear = true;
+          for (let dy = -1; dy <= 2 && stillClear; dy++) {
+            for (let dx = -1; dx <= 2; dx++) {
+              const lid = this.idx(cand.gx + dx, cand.gy + dy);
+              if (this.buildingMask[lid] > 0 || this.roadGrid[lid] > 0) {
+                stillClear = false;
+                break;
+              }
+            }
+          }
+          if (!stillClear) continue;
+
+          // Pick the cardinal perimeter driveway tile facing `nearestRoadPt`
+          const perimeterCandidates = [
+            { lotX: cand.gx,     lotY: cand.gy,     rx: cand.gx - 1, ry: cand.gy },
+            { lotX: cand.gx + 1, lotY: cand.gy,     rx: cand.gx + 2, ry: cand.gy },
+            { lotX: cand.gx,     lotY: cand.gy,     rx: cand.gx,     ry: cand.gy - 1 },
+            { lotX: cand.gx,     lotY: cand.gy + 1, rx: cand.gx,     ry: cand.gy + 2 }
+          ].sort(
+            (a, b) =>
+              Math.hypot(a.rx - cand.nearestRoadPt.x, a.ry - cand.nearestRoadPt.y) -
+              Math.hypot(b.rx - cand.nearestRoadPt.x, b.ry - cand.nearestRoadPt.y)
+          );
+
+          const drv = perimeterCandidates[0];
+          const blockLotFn = (nx, ny) =>
+            nx >= cand.gx && nx <= cand.gx + 1 && ny >= cand.gy && ny <= cand.gy + 1;
+          const haulPath = this.findRoadPathAStar(
+            drv.rx,
+            drv.ry,
+            cand.nearestRoadPt.x,
+            cand.nearestRoadPt.y,
+            false,
+            blockLotFn,
+            true
+          );
+          if (haulPath && haulPath.length >= 2 && haulPath.length <= 24) {
+            chosenCand = cand;
+            chosenHaulPath = haulPath;
+            chosenDriveway = drv;
+            break;
+          }
+        }
+        if (chosenCand) break;
+      }
+
+      if (!chosenCand) continue;
+
+      this.commitRoadPath(chosenHaulPath, 'arterial');
+      const contactPt = chosenHaulPath[chosenHaulPath.length - 1];
+      this.anchorStreetToArterialCore(Math.round(contactPt.x), Math.round(contactPt.y));
+
+      for (let dy = 0; dy < 2; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          this.buildingMask[this.idx(chosenCand.gx + dx, chosenCand.gy + dy)] = 2;
+        }
+      }
+
+      const hostTown = chosenCand.nearestTown;
+      const colorIdx = (hostTown.colorIdx + 1) % PALETTE.districtColors.length;
+      this.destinations.push({
+        id: this.destinations.length,
+        x: chosenCand.cx,
+        y: chosenCand.cy,
+        gx: chosenCand.gx,
+        gy: chosenCand.gy,
+        wTiles: 2,
+        hTiles: 2,
+        lotX: chosenDriveway.lotX,
+        lotY: chosenDriveway.lotY,
+        roadX: chosenDriveway.rx,
+        roadY: chosenDriveway.ry,
+        townId: hostTown.id,
+        zoneType: 'industrial',
+        subType: 'RAW',
+        resourceType: chosenCand.resourceType, // 'MINE' | 'TIMBER' | 'FARM'
+        isRuralNiche: true,
+        isCircular: false,
+        hasUrgentPin: false,
+        pinsCount: 4,
+        colorIdx,
+        palette: PALETTE.districtColors[colorIdx]
+      });
+      hostTown.destinationsCount++;
+      hostTown.industrialCount++;
+      placedSites.push(chosenCand);
+    }
   }
 
   pruneEmptyOuterStreets() {
@@ -3065,7 +3297,7 @@ export class ProceduralLogisticsWorld {
     const gy = Math.round(y);
     if (!this.inBounds(gx, gy, 6)) return false;
     const cid = this.idx(gx, gy);
-    if (this.waterMask[cid] > 0 || this.distToWater[cid] < 6.0) return false;
+    if (this.waterMask[cid] > 0 || this.distToWater[cid] < 4.5) return false;
     if (this.isPointInAirportPad(x, y, 3.8)) return false;
     // Never place a Trumpet interchange inside a town's dense core (`< urbanRadius * 0.85`)
     for (const t of this.towns) {
@@ -3927,7 +4159,7 @@ export class ProceduralLogisticsWorld {
 
         const chord = Math.hypot(hitPt.x - originX, hitPt.y - originY);
         const scaleSpan = Math.max(1, this.W / 360);
-        const maxChord = (ap ? (ap.isHub ? 115 : 64) : 165) * scaleSpan;
+        const maxChord = (ap ? (ap.isHub ? 165 : 85) : 165) * scaleSpan;
         if (chord < 11 || chord > maxChord) continue;
 
         // Ensure the origin lies beside the trunk (not collinearly far beyond its endpoints)
@@ -3978,11 +4210,18 @@ export class ProceduralLogisticsWorld {
               spurCandidates.push({ waypoints: [p0, p1Lat, p2, p3], isValley: false });
             }
           }
-          // For medium/long spurs (chord >= 24, every 2nd trunk sample), also test terrain-following Valley A* paths into `p2 -> p3`!
+          // For medium/long spurs (chord >= 24, every 2nd trunk sample), also test terrain-following Valley A* paths
+          // terminating in a compact 8.5-tile perpendicular throat `p2Valley -> p3`!
           if (chord >= 24 && i % 2 === 0) {
-            const vStart = ap ? p1 : p0;
+            const vStart = ap
+              ? { x: originX + ap.landNx * Math.min(8.5, chord * 0.14), y: originY + ap.landNy * Math.min(8.5, chord * 0.14) }
+              : p0;
+            const p2Valley = {
+              x: hitPt.x + outNx * Math.min(9.5, Math.max(6.5, chord * 0.12)),
+              y: hitPt.y + outNy * Math.min(9.5, Math.max(6.5, chord * 0.12))
+            };
             for (const bias of [0, 10, -10]) {
-              const valleyWps = this.findValleyMotorwayWaypoints(vStart.x, vStart.y, p2.x, p2.y, airportId, bias);
+              const valleyWps = this.findValleyMotorwayWaypoints(vStart.x, vStart.y, p2Valley.x, p2Valley.y, airportId, bias);
               if (valleyWps && valleyWps.length >= 3) {
                 const fullWps = ap ? [p0, ...valleyWps, p3] : [...valleyWps, p3];
                 spurCandidates.push({ waypoints: fullWps, isValley: true });
@@ -4888,7 +5127,9 @@ export class ProceduralLogisticsWorld {
         // 2A. Try a 3-way Trumpet Spur from this Cluster Metropolis (or any Tier-1/2 city in its cluster) into an existing trunk
         const clusterTowns = [
           metro,
-          ...this.towns.filter(t => t.clusterId === metro.clusterId && t.id !== metro.id && isMajorMotorwayHub(t))
+          ...this.towns
+            .filter(t => t.clusterId === metro.clusterId && t.id !== metro.id && t.tier <= 3)
+            .sort((a, b) => a.tier - b.tier)
         ];
         let linkedCluster = false;
 
@@ -4906,27 +5147,35 @@ export class ProceduralLogisticsWorld {
             }
           }
 
-          const mEnd = resolveTownOrHubEndpoint(cTown, bestTargetPt.x, bestTargetPt.y, true);
-          const spurRes = this.tryBuildTrumpetSpurToTrunk(
-            mwayNumber,
-            mEnd.stub.x,
-            mEnd.stub.y,
-            mEnd.usedHubGate ? mEnd.ap.id : null,
-            cTown.id
-          );
-          if (spurRes) {
-            if (mEnd.usedHubGate) mEnd.ap.motorwayId = mwayNumber;
-            mwayNumber++;
-            this.motorways.push(spurRes.mw);
-            this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 5.2);
-            this.displaceAndRerouteRoadsAtInterchange(spurRes.trumpetIc, false);
-            this.interchanges.push(spurRes.trumpetIc);
-            townMotorwayDegree[cTown.id]++;
-            connectedClusters.add(metro.clusterId);
-            linkedCluster = true;
-            break;
-          } else if (!mEnd.usedHubGate) {
-            this.removeOrphanedTerminalStub(mEnd.stub.x, mEnd.stub.y);
+          for (const tryHub of [true, false]) {
+            if (linkedCluster) break;
+            const mEnd = resolveTownOrHubEndpoint(cTown, bestTargetPt.x, bestTargetPt.y, tryHub);
+            if (!tryHub && mEnd.usedHubGate) continue;
+            const spurRes = this.tryBuildTrumpetSpurToTrunk(
+              mwayNumber,
+              mEnd.stub.x,
+              mEnd.stub.y,
+              mEnd.usedHubGate ? mEnd.ap.id : null,
+              cTown.id
+            );
+            if (spurRes) {
+              if (mEnd.usedHubGate) mEnd.ap.motorwayId = mwayNumber;
+              mwayNumber++;
+              this.motorways.push(spurRes.mw);
+              this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 5.2);
+              this.displaceAndRerouteRoadsAtInterchange(spurRes.trumpetIc, false);
+              this.interchanges.push(spurRes.trumpetIc);
+              townMotorwayDegree[cTown.id]++;
+              connectedClusters.add(metro.clusterId);
+              linkedCluster = true;
+              break;
+            } else if (!mEnd.usedHubGate) {
+              this.removeOrphanedTerminalStub(mEnd.stub.x, mEnd.stub.y);
+            } else {
+              this.interchanges = this.interchanges.filter(
+                ic => !(ic.type === 'terminal-stub' && ic.isAirportStub && ic.airportId === mEnd.ap.id)
+              );
+            }
           }
         }
         if (linkedCluster) continue;
@@ -5129,6 +5378,7 @@ export class ProceduralLogisticsWorld {
   finalizeExpresswayRampsAndTunnels() {
     this.buildIntermediateExpresswayRamps();
     this.detectMountainExpresswayTunnels();
+    this.displaceBuildingsAlongMotorwayCorridors();
     this.pruneEmptyOuterStreets();
 
     const cloverCount = this.interchanges.filter(i => i.type === 'cloverleaf' || i.type === 'trumpet').length;
@@ -5137,6 +5387,69 @@ export class ProceduralLogisticsWorld {
     this.logs.push(
       `Built <b>${this.motorways.length} expressways</b>, <b>${cloverCount} system interchanges</b>, <b>${rampCount} ramps</b>${tunnelCount > 0 ? ` & <b>${tunnelCount} mountain tunnels</b>` : ''} (displaced ${this.displacedBuildingsCount} buildings).`
     );
+  }
+
+  /**
+   * Clears any houses or urban commercial/industrial building lots whose footprints intersect
+   * the surface right-of-way of a numbered expressway (excluding subterranean mountain tunnel spans)
+   * so elevated expressway decks never overlap underlying building roofs in close-up zoom.
+   */
+  displaceBuildingsAlongMotorwayCorridors() {
+    const surfacePts = [];
+    for (const mw of this.motorways) {
+      const samples = mw.samples || [];
+      const tunnels = mw.tunnels || [];
+      for (let i = 0; i < samples.length; i++) {
+        const inTunnel = tunnels.some(t => i >= t.i0 && i <= t.i1);
+        if (!inTunnel) {
+          surfacePts.push(samples[i]);
+        }
+      }
+    }
+    if (surfacePts.length === 0) return;
+
+    const beforeHouses = this.houses.length;
+    this.houses = this.houses.filter(h => {
+      const hit = surfacePts.some(p => (h.x - p.x) * (h.x - p.x) + (h.y - p.y) * (h.y - p.y) <= 1.65 * 1.65);
+      if (hit) {
+        const hid = this.idx(h.x, h.y);
+        if (this.buildingMask[hid] === 1) this.buildingMask[hid] = 0;
+        const t = this.towns[h.townId];
+        if (t && t.housesCount > 0) t.housesCount--;
+        return false;
+      }
+      return true;
+    });
+
+    const beforeDest = this.destinations.length;
+    this.destinations = this.destinations.filter(d => {
+      if (d.isRuralNiche) return true;
+      const wT = d.wTiles || 2;
+      const hT = d.hTiles || 2;
+      const xMin = d.gx - 1.15;
+      const xMax = d.gx + wT - 1 + 1.15;
+      const yMin = d.gy - 1.15;
+      const yMax = d.gy + hT - 1 + 1.15;
+      const hit = surfacePts.some(p => p.x >= xMin && p.x <= xMax && p.y >= yMin && p.y <= yMax);
+      if (hit) {
+        for (let dy = 0; dy < hT; dy++) {
+          for (let dx = 0; dx < wT; dx++) {
+            const lid = this.idx(d.gx + dx, d.gy + dy);
+            if (this.buildingMask[lid] === 2) this.buildingMask[lid] = 0;
+          }
+        }
+        const t = this.towns[d.townId];
+        if (t) {
+          if (t.destinationsCount > 0) t.destinationsCount--;
+          if (d.zoneType === 'commercial' && t.commercialCount > 0) t.commercialCount--;
+          if (d.zoneType === 'industrial' && t.industrialCount > 0) t.industrialCount--;
+        }
+        return false;
+      }
+      return true;
+    });
+
+    this.displacedBuildingsCount += (beforeHouses - this.houses.length) + (beforeDest - this.destinations.length);
   }
 
   /**
@@ -5274,6 +5587,27 @@ export class ProceduralLogisticsWorld {
           x: tx,
           y: ty,
           r: this.rng.range(0.52, 0.84),
+          color: this.rng.pick(PALETTE.treeDots)
+        });
+      }
+    }
+
+    // Nestle out-of-town `TIMBER` Forestry Camps inside a lush woodland grove!
+    for (const d of this.destinations) {
+      if (d.resourceType !== 'TIMBER') continue;
+      for (let g = 0; g < 10; g++) {
+        const ang = (g / 10) * Math.PI * 2 + this.rng.range(-0.28, 0.28);
+        const rad = this.rng.range(2.1, 4.4);
+        const tx = d.x + Math.cos(ang) * rad;
+        const ty = d.y + Math.sin(ang) * rad;
+        const gx = Math.round(tx), gy = Math.round(ty);
+        if (!this.inBounds(gx, gy, 3)) continue;
+        const gid = this.idx(gx, gy);
+        if (this.waterMask[gid] > 0 || this.buildingMask[gid] > 0 || this.roadGrid[gid] > 0 || this.zoneColorIdx[gid] >= 0) continue;
+        this.trees.push({
+          x: tx,
+          y: ty,
+          r: this.rng.range(0.48, 0.78),
           color: this.rng.pick(PALETTE.treeDots)
         });
       }

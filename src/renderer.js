@@ -1181,27 +1181,100 @@ export class MiniMotorwaysRenderer {
         ctx.fill();
 
         if (d.subType === 'RAW') {
-          // Primary Extraction (`RAW`): Hopper Headhouse + Twin Cylindrical Storage Silos
-          ctx.fillStyle = baseCol;
-          ctx.beginPath();
-          ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.52, bldH * 0.84, 2.5);
-          ctx.fill();
-
-          ctx.fillStyle = roofCol;
-          ctx.beginPath();
-          ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.44, bldH * 0.65, 2);
-          ctx.fill();
-
-          const siloR = Math.min(bldW, bldH) * 0.20;
-          for (const syOff of [-bldH * 0.22, bldH * 0.18]) {
-            ctx.fillStyle = '#6b7078';
+          if (d.resourceType === 'MINE') {
+            // Foothill Quarry & Mine (`MINE`): Stepped Stone Excavation Pit + Ore Crusher Hopper
+            ctx.fillStyle = '#a8a29e';
             ctx.beginPath();
-            ctx.arc(cx + bldW * 0.25, cy + syOff, siloR, 0, Math.PI * 2);
+            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.50, bldH * 0.84, 3);
             ctx.fill();
-            ctx.fillStyle = '#e5e2dc';
+            ctx.fillStyle = '#78716c';
             ctx.beginPath();
-            ctx.arc(cx + bldW * 0.25, cy + syOff - 1, siloR * 0.75, 0, Math.PI * 2);
+            ctx.roundRect(cx - bldW * 0.40, cy - bldH * 0.32, bldW * 0.34, bldH * 0.60, 2);
             ctx.fill();
+            ctx.fillStyle = '#57534e';
+            ctx.beginPath();
+            ctx.roundRect(cx - bldW * 0.32, cy - bldH * 0.20, bldW * 0.18, bldH * 0.36, 1.5);
+            ctx.fill();
+
+            // Ore crusher headhouse & hopper cylinder on right half
+            ctx.fillStyle = baseCol;
+            ctx.beginPath();
+            ctx.roundRect(cx + bldW * 0.06, cy - bldH * 0.42, bldW * 0.40, bldH * 0.80, 2.5);
+            ctx.fill();
+            ctx.fillStyle = roofCol;
+            ctx.beginPath();
+            ctx.roundRect(cx + bldW * 0.10, cy - bldH * 0.38, bldW * 0.32, bldH * 0.62, 2);
+            ctx.fill();
+          } else if (d.resourceType === 'TIMBER') {
+            // Upland Forestry Camp (`TIMBER`): Cedar Sawmill Shed + Stacked Timber Log Bunks
+            ctx.fillStyle = baseCol;
+            ctx.beginPath();
+            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.48, bldH * 0.84, 2.5);
+            ctx.fill();
+            ctx.fillStyle = roofCol;
+            ctx.beginPath();
+            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.40, bldH * 0.66, 2);
+            ctx.fill();
+
+            // 3 Stacked Cedar Log Bunks on right half of timber yard
+            for (const lyOff of [-bldH * 0.26, 0, bldH * 0.26]) {
+              ctx.fillStyle = '#78350f';
+              ctx.beginPath();
+              ctx.roundRect(cx + bldW * 0.06, cy + lyOff - bldH * 0.09, bldW * 0.38, bldH * 0.18, 2);
+              ctx.fill();
+              ctx.fillStyle = '#fde68a';
+              ctx.beginPath();
+              ctx.arc(cx + bldW * 0.41, cy + lyOff, bldH * 0.06, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          } else if (d.resourceType === 'FARM') {
+            // Alluvial Agribusiness Farm (`FARM`): Cultivated Field Rows + Barn & Twin Grain Silos
+            ctx.fillStyle = '#d9f99d';
+            ctx.beginPath();
+            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.50, bldH * 0.84, 2.5);
+            ctx.fill();
+            ctx.fillStyle = '#84cc16';
+            for (let r = -2; r <= 2; r++) {
+              ctx.fillRect(cx - bldW * 0.43, cy + r * (bldH * 0.15) - 1.2, bldW * 0.40, 2.4);
+            }
+            ctx.fillStyle = baseCol;
+            ctx.beginPath();
+            ctx.roundRect(cx + bldW * 0.06, cy - bldH * 0.42, bldW * 0.40, bldH * 0.46, 2);
+            ctx.fill();
+            const siloR = Math.min(bldW, bldH) * 0.16;
+            for (const sxOff of [cx + bldW * 0.16, cx + bldW * 0.36]) {
+              ctx.fillStyle = '#6b7078';
+              ctx.beginPath();
+              ctx.arc(sxOff, cy + bldH * 0.24, siloR, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.fillStyle = '#f5f5f4';
+              ctx.beginPath();
+              ctx.arc(sxOff, cy + bldH * 0.24 - 0.8, siloR * 0.76, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          } else {
+            // Urban Primary Extraction (`RAW`): Hopper Headhouse + Twin Cylindrical Storage Silos
+            ctx.fillStyle = baseCol;
+            ctx.beginPath();
+            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.52, bldH * 0.84, 2.5);
+            ctx.fill();
+
+            ctx.fillStyle = roofCol;
+            ctx.beginPath();
+            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.44, bldH * 0.65, 2);
+            ctx.fill();
+
+            const siloR = Math.min(bldW, bldH) * 0.20;
+            for (const syOff of [-bldH * 0.22, bldH * 0.18]) {
+              ctx.fillStyle = '#6b7078';
+              ctx.beginPath();
+              ctx.arc(cx + bldW * 0.25, cy + syOff, siloR, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.fillStyle = '#e5e2dc';
+              ctx.beginPath();
+              ctx.arc(cx + bldW * 0.25, cy + syOff - 1, siloR * 0.75, 0, Math.PI * 2);
+              ctx.fill();
+            }
           }
         } else if (d.subType === 'LOG') {
           // Logistics Distribution Center (`LOG`): Elongated Cross-Dock Freight Terminal
@@ -2476,11 +2549,15 @@ export class MiniMotorwaysRenderer {
       if (d.zoneType === 'industrial') {
         const cx = d.x * ts + ox;
         const cy = d.y * ts + oy - ts * 1.25;
-        const tag = d.subType || 'MFG';
-        const bg = tag === 'RAW' ? '#d97706' : (tag === 'LOG' ? '#7c3aed' : '#ea580c');
+        const rawLabel = d.resourceType === 'MINE'
+          ? 'MINE'
+          : (d.resourceType === 'TIMBER' ? 'WOOD' : (d.resourceType === 'FARM' ? 'FARM' : 'RAW'));
+        const tag = d.subType === 'RAW' ? rawLabel : (d.subType || 'MFG');
+        const bg = d.subType === 'RAW' ? '#d97706' : (tag === 'LOG' ? '#7c3aed' : '#ea580c');
+        const bw = tag.length >= 4 ? 30 : 26;
         ctx.fillStyle = bg;
         ctx.beginPath();
-        ctx.roundRect(cx - 13, cy - 6.5, 26, 13, 3.5);
+        ctx.roundRect(cx - bw * 0.5, cy - 6.5, bw, 13, 3.5);
         ctx.fill();
         ctx.fillStyle = '#ffffff';
         ctx.fillText(tag, cx, cy + 0.5);

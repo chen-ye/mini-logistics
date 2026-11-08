@@ -1,12 +1,12 @@
 # Plan 3: Out-of-Town Geographic Resource Niches (Mines, Timber Camps & Alluvial Farms)
 
 ## Steps
-- [ ] Prerequisite: Complete Plan 1 (Elevation-Reactive Routing) and Plan 2 (Two-Phase Historical Seeding)
-- [ ] Classify `RAW` primary extraction facilities into 3 geographic subtypes: `RAW_MINE` (Foothill Quarry/Mine), `RAW_TIMBER` (Upland Forestry Camp), and `RAW_FARM` (Alluvial Agribusiness)
-- [ ] Seed out-of-town rural resource extraction sites in authentic terrain niches during Stage 7 and route dedicated rural haul roads to the regional trunk network
-- [ ] Render distinct cartographic icons/footprints for Mines, Timber Camps, and Alluvial Farms in `Mini Motorways` and `RCI & Cargo Chain` views
-- [ ] Wire rural `RAW` extraction sites into `buildIndustrialCargoChain()` (`RAW -> Town MFG -> LOG -> CBD COM`) and entity inspector cards
-- [ ] Verify across benchmark seeds and review with parallel Targeted + Uncued Holistic subagents
+- [x] Prerequisite: Complete Plan 1 (Elevation-Reactive Routing) and Plan 2 (Two-Phase Historical Seeding)
+- [x] Classify `RAW` primary extraction facilities into 3 geographic subtypes: `RAW_MINE` (Foothill Quarry/Mine), `RAW_TIMBER` (Upland Forestry Camp), and `RAW_FARM` (Alluvial Agribusiness)
+- [x] Seed out-of-town rural resource extraction sites in authentic terrain niches during Stage 7 and route dedicated rural haul roads to the regional trunk network
+- [x] Render distinct cartographic icons/footprints for Mines, Timber Camps, and Alluvial Farms in `Mini Motorways` and `RCI & Cargo Chain` views
+- [x] Wire rural `RAW` extraction sites into `buildIndustrialCargoChain()` (`RAW -> Town MFG -> LOG -> CBD COM`) and entity inspector cards
+- [x] Verify across benchmark seeds and review with parallel Targeted + Uncued Holistic subagents
 
 ## 1. Geologically Grounded Primary Industry Placement (OpenTTD / Transport Fever 2)
 

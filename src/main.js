@@ -232,6 +232,37 @@ function openEntityInspector(type, entity) {
         Served by a dedicated <b>Landside Curbside Terminal Loop Road</b> and dual-carriageway access spine stub anchored directly into <b>Motorway [${entity.motorwayId || 1}]</b> near <b>${entity.hostTownName}</b>.
       </p>
     `;
+  } else if (type === 'resource') {
+    const labelMap = {
+      MINE: 'Foothill Quarry & Mine',
+      TIMBER: 'Upland Forestry Camp',
+      FARM: 'Alluvial Agribusiness Farm'
+    };
+    const hostTown = currentWorld.towns[entity.townId];
+    const linksOut = currentWorld.cargoLinks.filter(l => l.from.id === entity.id);
+    badge.textContent = `RAW · ${entity.resourceType}`;
+    badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-600 text-white';
+    code.textContent = `HOST: ${hostTown ? hostTown.name.toUpperCase() : 'REGIONAL'}`;
+    title.textContent = labelMap[entity.resourceType] || 'Primary Resource Extraction';
+    body.innerHTML = `
+      <div class="grid grid-cols-3 gap-1.5 text-center bg-stone-200/50 p-2 rounded-xl">
+        <div>
+          <div class="mono font-extrabold text-amber-700">${entity.resourceType}</div>
+          <div class="text-[10px] text-stone-500">Niche Type</div>
+        </div>
+        <div>
+          <div class="mono font-extrabold text-[#36383e]">${linksOut.length}</div>
+          <div class="text-[10px] text-stone-500">Haul Routes</div>
+        </div>
+        <div>
+          <div class="mono font-extrabold text-emerald-700">2×2</div>
+          <div class="text-[10px] text-stone-500">Footprint</div>
+        </div>
+      </div>
+      <p class="text-[11px] leading-relaxed">
+        Geologically sited out-of-town <b>${labelMap[entity.resourceType] || 'RAW'}</b> connected via a dedicated rural haul road into <b>${hostTown ? hostTown.name : 'the regional trunk network'}</b>, supplying raw materials to town <b>MFG</b> factories.
+      </p>
+    `;
   } else {
     badge.textContent = `TIER ${entity.tier} ${entity.tierTitle.toUpperCase()}`;
     badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-[#36383e] text-white';
@@ -364,6 +395,16 @@ function handlePointerEnd(e) {
             document.getElementById('generatorDrawer').classList.add('hidden');
           }
           openEntityInspector('airport', ap);
+          return;
+        }
+      }
+      for (const d of currentWorld.destinations) {
+        if (d.isRuralNiche && Math.hypot(wx - d.x, wy - d.y) <= 2.4 + touchPad) {
+          renderer.selectedEntity = d;
+          if (window.innerWidth < 640) {
+            document.getElementById('generatorDrawer').classList.add('hidden');
+          }
+          openEntityInspector('resource', d);
           return;
         }
       }
