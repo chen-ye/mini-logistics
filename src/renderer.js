@@ -644,10 +644,52 @@ export class MiniMotorwaysRenderer {
       orchard: { fill: '#e4ebdd', furrow: '#9fb38e', border: '#d2dcc8' }
     };
 
+    if (
+      !this._cachedArablePaths ||
+      this._cachedArablePaths.elevRef !== world.elevationField ||
+      this._cachedArablePaths.waterRef !== world.waterMask ||
+      this._cachedArablePaths.ts !== ts
+    ) {
+      const arableStrokePath = new Path2D();
+      const arableFillPath = this.buildVignelliWaterPath(
+        world,
+        ts,
+        (cx, cy) => {
+          const id = cy * world.W + cx;
+          return (
+            world.waterMask[id] === 0 &&
+            world.distToWater[id] >= 1.8 &&
+            world.elevationField[id] < world.seaLevel + 0.13
+          );
+        },
+        arableStrokePath
+      );
+      this._cachedArablePaths = {
+        elevRef: world.elevationField,
+        waterRef: world.waterMask,
+        ts,
+        arableFillPath,
+        arableStrokePath
+      };
+    }
+    const { arableFillPath, arableStrokePath } = this._cachedArablePaths;
+
     for (const d of world.destinations) {
       if (d.resourceType !== 'FARM') continue;
       const parcels = d.bspParcels || [];
       if (parcels.length === 0) continue;
+
+      // (#3 & #4) Clip to the exact boolean intersection of:
+      // 1) The union of pure 0°/90° rectangular BSP parcels (`parcels`), AND
+      // 2) The exact 45°/90° octilinear Marching-Squares `arableFillPath` (`dh < 0.13` contour & riverbank setback)!
+      ctx.save();
+      ctx.beginPath();
+      for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
+        const p = parcels[pIdx];
+        ctx.rect(p.x0 * ts - 1.0, p.y0 * ts - 1.0, (p.x1 - p.x0) * ts + 2.0, (p.y1 - p.y0) * ts + 2.0);
+      }
+      ctx.clip();
+      ctx.clip(arableFillPath);
 
       for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
         const p = parcels[pIdx];
@@ -666,17 +708,22 @@ export class MiniMotorwaysRenderer {
         ctx.clip();
 
         if (p.crop === 'orchard') {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(px + 2.4, py + 2.4, Math.max(1, pw - 4.8), Math.max(1, ph - 4.8));
+          ctx.clip();
           const step = 6.6;
           let rowIdx = 0;
           ctx.fillStyle = st.furrow;
-          for (let oy = py + 4.2; oy < py + ph - 3.2; oy += step, rowIdx++) {
+          for (let oy = py + 4.5; oy < py + ph - 3.5; oy += step, rowIdx++) {
             const xShift = (rowIdx % 2) * (step * 0.45);
-            for (let ox = px + 4.2 + xShift; ox < px + pw - 3.2; ox += step) {
+            for (let ox = px + 4.5 + xShift; ox < px + pw - 3.5; ox += step) {
               ctx.beginPath();
               ctx.arc(ox, oy, 1.55, 0, Math.PI * 2);
               ctx.fill();
             }
           }
+          ctx.restore();
         } else {
           const furrowStep = 4.8;
           ctx.strokeStyle = st.furrow;
@@ -697,29 +744,32 @@ export class MiniMotorwaysRenderer {
         }
         ctx.restore();
 
-        // Crisp shared strip perimeter (zero gap between adjacent strips!)
+        // (#4) Crisp shared recursive BSP parcel boundary (forming X & Y T-junctions inside the estate)
         ctx.strokeStyle = st.border;
         ctx.lineWidth = 1.1;
         ctx.strokeRect(px, py, pw, ph);
       }
 
-      // Smooth vector road, expressway & farmstead slicing inside the union of this farm's cadastral strips:
-      // Any diagonal road or expressway crossing a strip carves a smooth, jaggie-free vector corridor
-      // lined with a parallel field border (`#d4cab5`) and a clean paper verge (`PALETTE.bgPaper`).
-      ctx.save();
-      ctx.beginPath();
-      for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
-        const p = parcels[pIdx];
-        const px = p.x0 * ts;
-        const py = p.y0 * ts;
-        const pw = (p.x1 - p.x0) * ts;
-        const ph = (p.y1 - p.y0) * ts;
-        if (pw > 4 && ph > 4) {
-          ctx.rect(px, py, pw, ph);
-        }
-      }
-      ctx.clip();
+      // (#6a) Internal Unpaved Tractor Spine branching from the 2×2 barn yard along the primary BSP seam
+      if (d.tractorSpine) {
+        const sp = d.tractorSpine;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#d4cab5';
+        ctx.lineWidth = 3.8;
+        ctx.beginPath();
+        ctx.moveTo(sp.x0 * ts, sp.y0 * ts);
+        ctx.lineTo(sp.x1 * ts, sp.y1 * ts);
+        ctx.stroke();
 
+        ctx.strokeStyle = PALETTE.bgPaper;
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.moveTo(sp.x0 * ts, sp.y0 * ts);
+        ctx.lineTo(sp.x1 * ts, sp.y1 * ts);
+        ctx.stroke();
+      }
+
+      // Smooth vector road, expressway & farmstead slicing inside the clipped estate:
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       const strokeNearbyCorridors = (strokeCol, roadWidthPx, mwayWidthPx) => {
@@ -771,6 +821,11 @@ export class MiniMotorwaysRenderer {
       strokeNearbyCorridors('#d4cab5', roadCasingW + 4.4, mwayCasingW + 6.4);
       strokeNearbyCorridors(PALETTE.bgPaper, roadCasingW + 2.2, mwayCasingW + 4.2);
 
+      // Stroke the octilinear Marching-Squares contour/riverbank clip boundary inside the estate
+      ctx.strokeStyle = '#d4cab5';
+      ctx.lineWidth = 1.8;
+      ctx.stroke(arableStrokePath);
+
       // Frame the 2×2 farmstead yard itself with a clean rounded margin
       const padX = d.gx * ts - 1.6;
       const padY = d.gy * ts - 1.6;
@@ -785,6 +840,22 @@ export class MiniMotorwaysRenderer {
       ctx.fill();
 
       ctx.restore();
+
+      // (#6b) Sparse Foothill Windbreak Poplar Row along the upland outer boundary edge
+      if (d.windbreakPts && d.windbreakPts.length > 0) {
+        for (let i = 0; i < d.windbreakPts.length; i++) {
+          const wx = d.windbreakPts[i][0] * ts;
+          const wy = d.windbreakPts[i][1] * ts;
+          ctx.fillStyle = 'rgba(182, 200, 170, 0.55)';
+          ctx.beginPath();
+          ctx.arc(wx, wy, 3.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#97ae89';
+          ctx.beginPath();
+          ctx.arc(wx, wy, 2.0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
     }
   }
 
