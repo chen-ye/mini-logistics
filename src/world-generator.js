@@ -67,6 +67,7 @@ export class ProceduralLogisticsWorld {
     this.urbanSuitability = new Float32Array(size);
     this.airportHeatmap = new Float32Array(size);
     this.roadGrid = new Uint8Array(size);
+    this.roadEdges = new Set();
     this.buildingMask = new Uint8Array(size);
     this.zoneColorIdx = new Int8Array(size).fill(-1);
     this.landmassId = new Int16Array(size).fill(-1);
@@ -82,6 +83,124 @@ export class ProceduralLogisticsWorld {
 
   idx(x, y) {
     return y * this.W + x;
+  }
+
+  edgeKey(x1, y1, x2, y2) {
+    const total = this.W * this.H;
+    const a = this.idx(x1, y1);
+    const b = this.idx(x2, y2);
+    return a < b ? a * total + b : b * total + a;
+  }
+
+  hasRoadEdge(x1, y1, x2, y2) {
+    if (!this.roadEdges) this.syncRoadEdgesFromRoads();
+    return this.roadEdges.has(this.edgeKey(x1, y1, x2, y2));
+  }
+
+  addRoadEdge(x1, y1, x2, y2) {
+    if (!this.roadEdges) this.roadEdges = new Set();
+    this.roadEdges.add(this.edgeKey(x1, y1, x2, y2));
+  }
+
+  syncRoadEdgesFromRoads() {
+    if (!this.roadEdges) this.roadEdges = new Set();
+    else this.roadEdges.clear();
+    for (const r of this.roads) {
+      if (!r.points || r.points.length < 2) continue;
+      for (let i = 0; i < r.points.length - 1; i++) {
+        const p0 = r.points[i];
+        const p1 = r.points[i + 1];
+        this.addRoadEdge(Math.round(p0.x), Math.round(p0.y), Math.round(p1.x), Math.round(p1.y));
+      }
+    }
+  }
+
+  rebuildRoadGridAndEdges() {
+    this.roadGrid.fill(0);
+    if (!this.roadEdges) this.roadEdges = new Set();
+    else this.roadEdges.clear();
+    this.bridgeCount = 0;
+    for (const r of this.roads) {
+      if (!r.points || r.points.length < 2) continue;
+      let inBridge = false;
+      for (let i = 0; i < r.points.length; i++) {
+        const pt = r.points[i];
+        const gx = Math.round(pt.x);
+        const gy = Math.round(pt.y);
+        if (!this.inBounds(gx, gy, 0)) continue;
+        const id = this.idx(gx, gy);
+        if (pt.isBridge) {
+          if (!inBridge && this.roadGrid[id] !== 3) {
+            this.bridgeCount++;
+            inBridge = true;
+          }
+          this.roadGrid[id] = 3;
+        } else {
+          inBridge = false;
+          const code = r.type === 'street' ? 1 : 2;
+          if (this.roadGrid[id] === 0 || (this.roadGrid[id] === 1 && code === 2)) {
+            this.roadGrid[id] = code;
+          }
+        }
+        if (i < r.points.length - 1) {
+          const next = r.points[i + 1];
+          this.addRoadEdge(gx, gy, Math.round(next.x), Math.round(next.y));
+        }
+      }
+    }
+  }
+
+  /**
+   * When an arterial or connector terminates on an existing town street tile (`roadGrid === 1`),
+   * traces the shortest path along committed `this.roadEdges` from `(sx, sy)` to the town's
+   * arterial core (`roadGrid >= 2`) and upgrades every tile along that street path to `roadGrid = 2`
+   * so `pruneEmptyOuterStreets()` never severs the street between the connector and the town core.
+   */
+  anchorStreetToArterialCore(sx, sy) {
+    if (!this.inBounds(sx, sy, 1)) return;
+    const startId = this.idx(sx, sy);
+    if (this.roadGrid[startId] !== 1) return;
+
+    const { W } = this;
+    const gen = ++this._astarGen;
+    const seenGen = this._astarSeenGen;
+    const parent = this._astarParent;
+    const queue = [startId];
+    seenGen[startId] = gen;
+    parent[startId] = -1;
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+
+    let head = 0;
+    let foundCoreId = -1;
+    while (head < queue.length) {
+      const cid = queue[head++];
+      const cx = cid % W;
+      const cy = Math.floor(cid / W);
+      for (const [dx, dy] of dirs) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (!this.inBounds(nx, ny, 1)) continue;
+        if (!this.hasRoadEdge(cx, cy, nx, ny)) continue;
+        const nid = this.idx(nx, ny);
+        if (seenGen[nid] === gen) continue;
+        seenGen[nid] = gen;
+        parent[nid] = cid;
+        if (this.roadGrid[nid] >= 2) {
+          foundCoreId = nid;
+          break;
+        }
+        queue.push(nid);
+      }
+      if (foundCoreId !== -1) break;
+    }
+
+    if (foundCoreId !== -1) {
+      let cur = parent[foundCoreId];
+      while (cur !== -1) {
+        if (this.roadGrid[cur] === 1) this.roadGrid[cur] = 2;
+        cur = parent[cur];
+      }
+    }
   }
 
   inBounds(x, y, margin = 0) {
@@ -931,23 +1050,32 @@ export class ProceduralLogisticsWorld {
       }
     }
 
-    // Rasterize the airport access avenue spine on roadGrid for vehicle navigation
-    const spineSteps = Math.max(2, Math.round(Math.hypot(ap.gateX - ap.curbX, ap.gateY - ap.curbY)));
+    // Rasterize the airport access avenue spine on roadGrid & roadEdges for vehicle navigation
+    const stubPts = [];
+    const dxSpine = ap.gateX - ap.curbX;
+    const dySpine = ap.gateY - ap.curbY;
+    const spineSteps = Math.max(Math.abs(dxSpine), Math.abs(dySpine));
+    const uxSpine = Math.sign(dxSpine);
+    const uySpine = Math.sign(dySpine);
     for (let s = 0; s <= spineSteps; s++) {
-      const sx = Math.round(ap.curbX + (ap.gateX - ap.curbX) * (s / spineSteps));
-      const sy = Math.round(ap.curbY + (ap.gateY - ap.curbY) * (s / spineSteps));
+      const sx = ap.curbX + uxSpine * Math.min(s, Math.abs(dxSpine));
+      const sy = ap.curbY + uySpine * Math.min(s, Math.abs(dySpine));
       if (this.inBounds(sx, sy, 2)) {
         this.roadGrid[this.idx(sx, sy)] = 2;
         this.buildingMask[this.idx(sx, sy)] = 4;
+        if (stubPts.length === 0 || stubPts[stubPts.length - 1].x !== sx || stubPts[stubPts.length - 1].y !== sy) {
+          stubPts.push({ x: sx, y: sy, isBridge: false });
+        }
       }
     }
+    for (let i = 0; i < stubPts.length - 1; i++) {
+      this.addRoadEdge(stubPts[i].x, stubPts[i].y, stubPts[i + 1].x, stubPts[i + 1].y);
+    }
 
-    const stubPts = [
-      { x: ap.curbX, y: ap.curbY, isBridge: false },
-      { x: ap.gateX, y: ap.gateY, isBridge: false }
-    ];
     ap.accessStubPts = stubPts;
-    this.roads.push({ points: stubPts, type: 'airport-spine' });
+    if (stubPts.length >= 2) {
+      this.roads.push({ points: stubPts, type: 'airport-spine', airportId: ap.id });
+    }
 
     // Always register the Airport Gateway Entrance Roundabout Interchange at `(gateX, gateY)`
     this.interchanges.push({
@@ -1186,32 +1314,39 @@ export class ProceduralLogisticsWorld {
         if (closedGen[nid] === gen) continue;
 
         // Never tunnel through any placed building (house, commercial/industrial lot, or airport runway!)
-        if (
-          (this.buildingMask[nid] === 1 || this.buildingMask[nid] === 2 || this.buildingMask[nid] === 3) &&
-          nid !== startId &&
-          nid !== endId
-        ) {
+        if (this.buildingMask[nid] >= 1 && this.buildingMask[nid] <= 3) {
           continue;
         }
-        if (blockedFn && nid !== startId && nid !== endId && blockedFn(nx, ny)) continue;
+        if (blockedFn && nid !== startId && blockedFn(nx, ny, cx, cy)) continue;
 
         const isWater = this.waterMask[nid] > 0;
         if (isWater && !allowWaterBridge) continue;
 
-        // Inside urban town zones (`zoneColorIdx >= 0`), strictly enforce orthogonal (0°/90°) movement
-        // so city streets never slice 45° diagonal wedges across orthogonal blocks, while rural roads
-        // (`zoneColorIdx === -1`) can freely take 45° diagonal steps and share existing diagonal highways!
+        // Inside urban town zones (`zoneColorIdx >= 0`) or adjacent to buildings, strictly enforce
+        // orthogonal (0°/90°) movement so city streets never slice 45° diagonal wedges across orthogonal
+        // blocks or clip building corners, while rural roads (`zoneColorIdx === -1`) can freely take 45°
+        // diagonal steps and share existing diagonal highways!
+        const c1Id = this.idx(cx + dx, cy);
+        const c2Id = this.idx(cx, cy + dy);
         if (
           dx !== 0 &&
           dy !== 0 &&
-          (this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0)
+          !this.hasRoadEdge(cx, cy, nx, ny) &&
+          (this.zoneColorIdx[cid] >= 0 ||
+            this.zoneColorIdx[nid] >= 0 ||
+            this.zoneColorIdx[c1Id] >= 0 ||
+            this.zoneColorIdx[c2Id] >= 0 ||
+            (this.buildingMask[c1Id] >= 1 && this.buildingMask[c1Id] <= 3) ||
+            (this.buildingMask[c2Id] >= 1 && this.buildingMask[c2Id] <= 3))
         ) {
           continue;
         }
 
         let stepCost = baseStep;
-        if (this.roadGrid[nid] > 0) {
-          stepCost *= 0.12;
+        if (this.hasRoadEdge(cx, cy, nx, ny)) {
+          stepCost *= 0.10;
+        } else if (this.roadGrid[nid] > 0) {
+          stepCost *= this.roadGrid[cid] === 0 ? 0.35 : 0.65;
         } else if (isWater) {
           // River bridges (`waterMask === 1`) must cross from bank to bank (dry land within 1..5 steps ahead along `dx, dy`),
           // NEVER walk lengthwise down the middle of a river channel!
@@ -1225,12 +1360,12 @@ export class ProceduralLogisticsWorld {
                 break;
               }
             }
-            stepCost *= crossesToBank ? 2.4 : 45.0;
+            stepCost *= crossesToBank ? 8.5 : 65.0;
           } else {
             stepCost *= 19.5;
           }
           if (currIsWater && pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
-            stepCost += 34.0;
+            stepCost += 85.0;
           }
         } else {
           // Never wrap a road in a tight U-loop around an interior mountain spring headwater (`r.headwaterPt`)!
@@ -1284,17 +1419,127 @@ export class ProceduralLogisticsWorld {
     return null;
   }
 
-  commitRoadPath(path, roadType = 'arterial') {
+  commitRoadPath(path, roadType = 'arterial', extraProps = null) {
     if (!path || path.length < 2) return;
+
+    const isNearAnyTownEnvelope = (x, y) => {
+      for (const t of this.towns) {
+        const envR = (t.effectiveR || t.urbanRadius || 12) + 3.5;
+        if (Math.hypot(x - t.x, y - t.y) <= envR) return true;
+        if (t.boroughs) {
+          for (const br of t.boroughs) {
+            if (Math.hypot(x - br.x, y - br.y) <= envR) return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    // Collapse 1-tile rural staircase jogs BEFORE writing `this.roadGrid`:
+    // Only collapse two perpendicular 1-tile cardinal steps (`|dx1|+|dy1| === 1`, `|dx2|+|dy2| === 1`,
+    // `dx1*dx2 + dy1*dy2 === 0`) outside town envelopes where `roadGrid === 0` and `buildingMask === 0`,
+    // guaranteeing that `prev -> next` is strictly a 1-tile 45° diagonal step and never chains into a 2:1 knight's move!
+    const simplifyRuralStaircase = (pts) => {
+      if (roadType === 'street' || pts.length < 3) return pts;
+      const out = [pts[0]];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const prev = out[out.length - 1];
+        const curr = pts[i];
+        const next = pts[i + 1];
+
+        const isKeyNode =
+          this.airports.some(a => a.gateX === curr.x && a.gateY === curr.y) ||
+          this.interchanges.some(ic => ic.x === curr.x && ic.y === curr.y);
+        if (isKeyNode) {
+          out.push(curr);
+          continue;
+        }
+
+        const dx1 = curr.x - prev.x;
+        const dy1 = curr.y - prev.y;
+        const dx2 = next.x - curr.x;
+        const dy2 = next.y - curr.y;
+
+        if (
+          Math.abs(dx1) + Math.abs(dy1) === 1 &&
+          Math.abs(dx2) + Math.abs(dy2) === 1 &&
+          dx1 * dx2 + dy1 * dy2 === 0 &&
+          !prev.isBridge &&
+          !curr.isBridge &&
+          !next.isBridge
+        ) {
+          const pid = this.idx(prev.x, prev.y);
+          const cid = this.idx(curr.x, curr.y);
+          const nid = this.idx(next.x, next.y);
+          const c1Id = this.idx(prev.x, next.y);
+          const c2Id = this.idx(next.x, prev.y);
+
+          if (
+            this.roadGrid[cid] === 0 &&
+            this.zoneColorIdx[pid] < 0 &&
+            this.zoneColorIdx[cid] < 0 &&
+            this.zoneColorIdx[nid] < 0 &&
+            this.zoneColorIdx[c1Id] < 0 &&
+            this.zoneColorIdx[c2Id] < 0 &&
+            this.buildingMask[pid] === 0 &&
+            this.buildingMask[cid] === 0 &&
+            this.buildingMask[nid] === 0 &&
+            this.buildingMask[c1Id] === 0 &&
+            this.buildingMask[c2Id] === 0 &&
+            this.waterMask[c1Id] === 0 &&
+            this.waterMask[c2Id] === 0 &&
+            !isNearAnyTownEnvelope(prev.x, prev.y) &&
+            !isNearAnyTownEnvelope(curr.x, curr.y) &&
+            !isNearAnyTownEnvelope(next.x, next.y)
+          ) {
+            continue;
+          }
+        }
+        out.push(curr);
+      }
+      out.push(pts[pts.length - 1]);
+      return out;
+    };
+
+    const pts = simplifyRuralStaircase(path);
+    if (pts.length < 2) return;
+
+    // If an arterial starts or terminates on an existing town street (`roadGrid === 1`),
+    // anchor the connecting street path into the town's arterial core (`roadGrid = 2`) BEFORE
+    // overwriting `pts` on `roadGrid` so `pruneEmptyOuterStreets()` never severs the street!
+    if (roadType === 'arterial') {
+      this.anchorStreetToArterialCore(Math.round(pts[0].x), Math.round(pts[0].y));
+      this.anchorStreetToArterialCore(Math.round(pts[pts.length - 1].x), Math.round(pts[pts.length - 1].y));
+    }
+
+    // Emit contiguous spans of new edges (`!this.hasRoadEdge(p0, p1)`) so every new step
+    // between two existing roads is preserved while shared trunk edges are never double-drawn!
+    let seg = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i];
+      const p1 = pts[i + 1];
+      const x0 = Math.round(p0.x), y0 = Math.round(p0.y);
+      const x1 = Math.round(p1.x), y1 = Math.round(p1.y);
+      if (!this.hasRoadEdge(x0, y0, x1, y1)) {
+        if (seg.length === 0) seg.push({ ...p0, x: x0, y: y0 });
+        seg.push({ ...p1, x: x1, y: y1 });
+        this.addRoadEdge(x0, y0, x1, y1);
+      } else {
+        if (seg.length >= 2) {
+          this.roads.push({ points: seg, type: roadType, ...(extraProps || {}) });
+        }
+        seg = [];
+      }
+    }
+    if (seg.length >= 2) {
+      this.roads.push({ points: seg, type: roadType, ...(extraProps || {}) });
+    }
+
+    // Populate `this.roadGrid` exclusively from the simplified vertices (`pts`) so zero ghost road tiles exist!
     let inBridge = false;
-    const isNewTile = new Uint8Array(path.length);
-
-    for (let i = 0; i < path.length; i++) {
-      const pt = path[i];
-      const id = this.idx(pt.x, pt.y);
-      const alreadyRoad = this.roadGrid[id] > 0;
-      isNewTile[i] = alreadyRoad ? 0 : 1;
-
+    for (let i = 0; i < pts.length; i++) {
+      const pt = pts[i];
+      const id = this.idx(Math.round(pt.x), Math.round(pt.y));
       if (pt.isBridge) {
         if (!inBridge && this.roadGrid[id] !== 3) {
           this.bridgeCount++;
@@ -1309,76 +1554,6 @@ export class ProceduralLogisticsWorld {
           this.roadGrid[id] = 2;
         }
       }
-    }
-
-    // Collapse 1-tile rural staircase jogs (`pPrev -> pCurr -> pNext` changing direction on consecutive 1-tile steps
-    // outside town grids) so rural highways render as smooth octilinear/diagonal chords without caterpillar bumps!
-    const simplifyRuralStaircase = (pts) => {
-      if (roadType === 'street' || pts.length < 3) return pts;
-      const out = [pts[0]];
-      for (let i = 1; i < pts.length - 1; i++) {
-        const prev = out[out.length - 1];
-        const curr = pts[i];
-        const next = pts[i + 1];
-
-        // Never skip an airport gateway plaza or interchange node!
-        const isKeyNode = this.airports.some(a => a.gateX === curr.x && a.gateY === curr.y) ||
-                          this.interchanges.some(ic => ic.x === curr.x && ic.y === curr.y);
-        if (isKeyNode) {
-          out.push(curr);
-          continue;
-        }
-
-        const cid = this.idx(curr.x, curr.y);
-        if (
-          !curr.isBridge &&
-          !prev.isBridge &&
-          !next.isBridge &&
-          this.zoneColorIdx[cid] < 0 &&
-          Math.hypot(curr.x - prev.x, curr.y - prev.y) <= 1.5 &&
-          Math.hypot(next.x - curr.x, next.y - curr.y) <= 1.5
-        ) {
-          const dx1 = curr.x - prev.x, dy1 = curr.y - prev.y;
-          const dx2 = next.x - curr.x, dy2 = next.y - curr.y;
-          if (dx1 !== dx2 || dy1 !== dy2) {
-            // Skip `curr` so `prev -> next` forms a clean diagonal/knight chord without a 1-tile bump!
-            continue;
-          }
-        }
-        out.push(curr);
-      }
-      out.push(pts[pts.length - 1]);
-      return out;
-    };
-
-    // Always preserve start/end points if they are an airport gateway plaza or interchange!
-    const isStartKey = this.airports.some(a => a.gateX === path[0].x && a.gateY === path[0].y) ||
-                       this.interchanges.some(ic => ic.x === path[0].x && ic.y === path[0].y);
-    const lastIdx = path.length - 1;
-    const isEndKey = this.airports.some(a => a.gateX === path[lastIdx].x && a.gateY === path[lastIdx].y) ||
-                     this.interchanges.some(ic => ic.x === path[lastIdx].x && ic.y === path[lastIdx].y);
-    if (isStartKey) isNewTile[0] = 1;
-    if (isEndKey) isNewTile[lastIdx] = 1;
-
-    // Only emit new road sub-paths (including 1 anchor point where a new branch leaves/joins an existing road)
-    // so shared trunk corridors are never double-drawn or offset-scalloped!
-    let seg = [];
-    for (let i = 0; i < path.length; i++) {
-      const keep =
-        isNewTile[i] === 1 ||
-        (i > 0 && isNewTile[i - 1] === 1) ||
-        (i < path.length - 1 && isNewTile[i + 1] === 1);
-      if (keep) {
-        seg.push(path[i]);
-      } else {
-        if (seg.length >= 2) {
-          this.roads.push({ points: simplifyRuralStaircase(seg), type: roadType });
-        }
-        seg = [];
-      }
-    }
-    if (seg.length >= 2) {
-      this.roads.push({ points: simplifyRuralStaircase(seg), type: roadType });
     }
   }
 
@@ -1561,46 +1736,154 @@ export class ProceduralLogisticsWorld {
   }
 
   pruneEmptyOuterStreets() {
-    const hasNearbyBuilding = (x, y) => {
-      for (let dy = -3; dy <= 3; dy++) {
-        for (let dx = -3; dx <= 3; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (!this.inBounds(nx, ny, 1)) continue;
-          const bm = this.buildingMask[this.idx(nx, ny)];
-          if (bm === 1 || bm === 2 || bm === 3) return true;
+    const { W, H } = this;
+    const size = W * H;
+    const frontageMask = new Uint8Array(size);
+
+    for (const h of this.houses) {
+      const rx = Math.round(h.roadX), ry = Math.round(h.roadY);
+      if (this.inBounds(rx, ry, 1)) frontageMask[this.idx(rx, ry)] = 1;
+    }
+    for (const d of this.destinations) {
+      const rx = Math.round(d.roadX), ry = Math.round(d.roadY);
+      if (this.inBounds(rx, ry, 1)) frontageMask[this.idx(rx, ry)] = 1;
+      const wT = d.wTiles || 2;
+      const hT = d.hTiles || 2;
+      for (let dy = -1; dy <= hT; dy++) {
+        for (let dx = -1; dx <= wT; dx++) {
+          const px = d.gx + dx, py = d.gy + dy;
+          if (this.inBounds(px, py, 1)) frontageMask[this.idx(px, py)] = 1;
         }
       }
-      return false;
+    }
+
+    const hasNearbyBuilding = (x, y) => {
+      if (!this.inBounds(x, y, 1)) return false;
+      return frontageMask[this.idx(x, y)] === 1;
     };
 
+    // Multi-source BFS from town centers & main boulevards along `this.roadEdges`
+    // so every street vertex serving a building OR touched by an arterial/stub connector traces
+    // its entire street path (`keepMask[cur] = 1`) back to the town core!
+    const keepMask = new Uint8Array(size);
+    const arterialTouch = new Uint8Array(size);
+    const parent = this._astarParent;
+    const seenGen = this._astarSeenGen;
+    const gen = ++this._astarGen;
+    const queue = [];
+
+    const seedRoot = (gx, gy) => {
+      if (!this.inBounds(gx, gy, 1)) return;
+      const id = this.idx(gx, gy);
+      if (seenGen[id] !== gen) {
+        seenGen[id] = gen;
+        parent[id] = -1;
+        keepMask[id] = 1;
+        queue.push(id);
+      }
+    };
+
+    for (const t of this.towns) {
+      seedRoot(t.x, t.y);
+    }
+    for (let id = 0; id < size; id++) {
+      if (this.roadGrid[id] >= 2) {
+        arterialTouch[id] = 1;
+      }
+    }
+    for (const ic of this.interchanges) {
+      if (ic.type === 'terminal-stub') {
+        const gx = Math.round(ic.x), gy = Math.round(ic.y);
+        if (this.inBounds(gx, gy, 1)) arterialTouch[this.idx(gx, gy)] = 1;
+      } else if (ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
+        const gx = Math.round(ic.connectX), gy = Math.round(ic.connectY);
+        if (this.inBounds(gx, gy, 1)) arterialTouch[this.idx(gx, gy)] = 1;
+      }
+    }
+    for (const r of this.roads) {
+      if (r.type !== 'street') {
+        for (const pt of r.points) {
+          const gx = Math.round(pt.x), gy = Math.round(pt.y);
+          if (this.inBounds(gx, gy, 1)) {
+            arterialTouch[this.idx(gx, gy)] = 1;
+          }
+          if (r.isMainBoulevard) {
+            seedRoot(gx, gy);
+          }
+        }
+      }
+    }
+
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+    let head = 0;
+    while (head < queue.length) {
+      const cid = queue[head++];
+      const cx = cid % W;
+      const cy = Math.floor(cid / W);
+      for (const [dx, dy] of dirs) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (!this.inBounds(nx, ny, 1)) continue;
+        if (!this.hasRoadEdge(cx, cy, nx, ny)) continue;
+        const nid = this.idx(nx, ny);
+        if (seenGen[nid] === gen) continue;
+        seenGen[nid] = gen;
+        parent[nid] = cid;
+        queue.push(nid);
+      }
+    }
+
+    for (const r of this.roads) {
+      if (r.type !== 'street') continue;
+      for (const pt of r.points) {
+        const gx = Math.round(pt.x);
+        const gy = Math.round(pt.y);
+        if (!this.inBounds(gx, gy, 1)) continue;
+        const id = this.idx(gx, gy);
+        if ((hasNearbyBuilding(gx, gy) || arterialTouch[id] === 1) && seenGen[id] === gen) {
+          let cur = id;
+          while (cur !== -1) {
+            keepMask[cur] = 1;
+            cur = parent[cur];
+          }
+        }
+      }
+    }
+
+    // End-only trimming (`firstKeep .. lastKeep`): never punch holes in the middle of a street!
     const cleanedRoads = [];
     for (const r of this.roads) {
       if (r.type !== 'street') {
         cleanedRoads.push(r);
         continue;
       }
-      let currentSeg = [];
-      for (const pt of r.points) {
-        const id = this.idx(pt.x, pt.y);
-        if (this.roadGrid[id] >= 2 || hasNearbyBuilding(pt.x, pt.y)) {
-          currentSeg.push(pt);
-        } else {
-          if (this.roadGrid[id] === 1) this.roadGrid[id] = 0;
-          if (currentSeg.length >= 2) {
-            cleanedRoads.push({ points: currentSeg, type: 'street' });
-          }
-          currentSeg = [];
+      const pts = r.points;
+      const isVertexAnchored = (pt) => {
+        const gx = Math.round(pt.x);
+        const gy = Math.round(pt.y);
+        const id = this.idx(gx, gy);
+        return keepMask[id] === 1 || arterialTouch[id] === 1 || hasNearbyBuilding(gx, gy);
+      };
+
+      let firstKeep = -1;
+      let lastKeep = -1;
+      for (let i = 0; i < pts.length; i++) {
+        if (isVertexAnchored(pts[i])) {
+          if (firstKeep === -1) firstKeep = i;
+          lastKeep = i;
         }
       }
-      if (currentSeg.length >= 2) {
-        cleanedRoads.push({ points: currentSeg, type: 'street' });
-      } else if (currentSeg.length === 1) {
-        const id = this.idx(currentSeg[0].x, currentSeg[0].y);
-        if (this.roadGrid[id] === 1) this.roadGrid[id] = 0;
+
+      if (firstKeep !== -1 && lastKeep > firstKeep) {
+        cleanedRoads.push({
+          ...r,
+          points: pts.slice(firstKeep, lastKeep + 1)
+        });
       }
     }
+
     this.roads = cleanedRoads;
+    this.rebuildRoadGridAndEdges();
   }
 
   /**
@@ -1650,7 +1933,7 @@ export class ProceduralLogisticsWorld {
     const isPassable = (x, y) => {
       if (!this.inBounds(x, y, 3)) return false;
       const id = this.idx(x, y);
-      if (this.waterMask[id] !== 0 || this.buildingMask[id] !== 0 || this.distToWater[id] < 2.1) return false;
+      if (this.waterMask[id] !== 0 || this.buildingMask[id] !== 0 || this.distToWater[id] < 2.35) return false;
       if (this.slopeField[id] > (isIH ? 0.58 : 0.46) || this.elevationField[id] - baseElev > (isIH ? 0.22 : 0.14)) return false;
       if (hasParallelNeighbor(x, y)) return false;
       return true;
@@ -1676,15 +1959,19 @@ export class ProceduralLogisticsWorld {
 
     const pts = [...negPts, { x: cx, y: cy, isBridge: false }, ...posPts];
     if (pts.length >= 3) {
-      for (const pt of pts) {
+      for (let i = 0; i < pts.length; i++) {
+        const pt = pts[i];
         const id = this.idx(pt.x, pt.y);
         if (isMainBoulevard) {
           this.roadGrid[id] = 2;
         } else if (this.roadGrid[id] === 0) {
           this.roadGrid[id] = 1;
         }
+        if (i < pts.length - 1) {
+          this.addRoadEdge(pt.x, pt.y, pts[i + 1].x, pts[i + 1].y);
+        }
       }
-      this.roads.push({ points: pts, type: isMainBoulevard ? 'arterial' : 'street' });
+      this.roads.push({ points: pts, type: isMainBoulevard ? 'arterial' : 'street', isMainBoulevard });
     }
   }
 
@@ -1721,7 +2008,7 @@ export class ProceduralLogisticsWorld {
             this.waterMask[id] > 0 ||
             this.buildingMask[id] > 0 ||
             this.roadGrid[id] > 0 ||
-            this.distToWater[id] < 2.0 ||
+            this.distToWater[id] < 2.35 ||
             this.isPointInAirportPad(gx + dx, gy + dy, 2.0)
           ) {
             return null;
@@ -1853,7 +2140,9 @@ export class ProceduralLogisticsWorld {
     const commitLot = (cand, zoneType, subType, isCircular) => {
       for (let dy = 0; dy < cand.hTiles; dy++) {
         for (let dx = 0; dx < cand.wTiles; dx++) {
-          this.buildingMask[this.idx(cand.gx + dx, cand.gy + dy)] = 2;
+          const lid = this.idx(cand.gx + dx, cand.gy + dy);
+          this.buildingMask[lid] = 2;
+          this.zoneColorIdx[lid] = town.colorIdx;
         }
       }
       const colorIdx = zoneType === 'commercial'
@@ -1979,7 +2268,7 @@ export class ProceduralLogisticsWorld {
       for (let gx = town.x - scanR; gx <= town.x + scanR; gx++) {
         if (!this.inBounds(gx, gy, 3)) continue;
         const id = this.idx(gx, gy);
-        if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0 || this.distToWater[id] < 1.9) continue;
+        if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0 || this.distToWater[id] < 2.35) continue;
         if (this.zoneColorIdx[id] !== town.colorIdx) continue;
 
         let driveway = null;
@@ -2076,14 +2365,14 @@ export class ProceduralLogisticsWorld {
       const sy = Math.round(src.roadY || src.y);
       const ex = Math.round(dst.roadX || dst.x);
       const ey = Math.round(dst.roadY || dst.y);
-      // Strictly route freight trucks along existing paved roads & bridges (`roadGrid > 0`)!
+      // Strictly route freight trucks along committed road edges (`this.roadEdges`)!
       const roadPath = this.findRoadPathAStar(
         sx,
         sy,
         ex,
         ey,
         true,
-        (nx, ny) => this.roadGrid[this.idx(nx, ny)] === 0
+        (nx, ny, cx, cy) => !this.hasRoadEdge(cx, cy, nx, ny)
       );
       if (!roadPath || roadPath.length < 2 || roadPath.length > crowD * 3.4 + 35) return false;
 
@@ -2180,6 +2469,8 @@ export class ProceduralLogisticsWorld {
     this.houses = this.houses.filter(h => {
       const keep = (h.x - cx) * (h.x - cx) + (h.y - cy) * (h.y - cy) > r2;
       if (!keep) {
+        const hid = this.idx(h.x, h.y);
+        if (this.buildingMask[hid] === 1) this.buildingMask[hid] = 4;
         const t = this.towns[h.townId];
         if (t && t.housesCount > 0) t.housesCount--;
       }
@@ -2190,6 +2481,12 @@ export class ProceduralLogisticsWorld {
     this.destinations = this.destinations.filter(d => {
       const keep = (d.x - cx) * (d.x - cx) + (d.y - cy) * (d.y - cy) > (radius + 1.2) * (radius + 1.2);
       if (!keep) {
+        for (let dy = 0; dy < (d.hTiles || 1); dy++) {
+          for (let dx = 0; dx < (d.wTiles || 1); dx++) {
+            const did = this.idx(d.gx + dx, d.gy + dy);
+            if (this.buildingMask[did] === 2) this.buildingMask[did] = 4;
+          }
+        }
         const t = this.towns[d.townId];
         if (t) {
           if (t.destinationsCount > 0) t.destinationsCount--;
@@ -2272,6 +2569,7 @@ export class ProceduralLogisticsWorld {
         const cid = this.idx(candX, candY);
 
         if (this.waterMask[cid] > 0 || this.distToWater[cid] < 3.0) continue;
+        if (this.buildingMask[cid] >= 1 && this.buildingMask[cid] <= 3) continue;
         if (this.isPointInAirportPad(candX, candY, 2.5)) continue;
 
         const tooCloseStub = this.interchanges.some(
@@ -2292,13 +2590,32 @@ export class ProceduralLogisticsWorld {
     }
 
     if (!chosenTiePath) {
-      chosenTiePath = this.findRoadPathAStar(chosenAx, chosenAy, town.x, town.y, true, null, true);
+      for (const rScale of [0.7, 1.0, 1.3]) {
+        for (const aOff of angleOffsets) {
+          const ang = baseAngle + aOff;
+          const r = baseRadius * rScale;
+          const candX = Math.max(5, Math.min(this.W - 6, Math.round(town.x + Math.cos(ang) * r)));
+          const candY = Math.max(5, Math.min(this.H - 6, Math.round(town.y + Math.sin(ang) * r)));
+          const cid = this.idx(candX, candY);
+          if (this.waterMask[cid] > 0 || this.distToWater[cid] < 1.8) continue;
+          if (this.buildingMask[cid] >= 1 && this.buildingMask[cid] <= 3) continue;
+          if (this.isPointInAirportPad(candX, candY, 2.2)) continue;
+          const tiePath = this.findRoadPathAStar(candX, candY, town.x, town.y, true, null, true);
+          if (tiePath && tiePath.length >= 2) {
+            chosenAx = candX;
+            chosenAy = candY;
+            chosenTiePath = tiePath;
+            chosenAngle = ang;
+            break;
+          }
+        }
+        if (chosenTiePath) break;
+      }
     }
-    if (chosenTiePath) {
-      this.commitRoadPath(chosenTiePath, 'arterial');
-    }
-    this.roadGrid[this.idx(chosenAx, chosenAy)] = 2;
     this.displaceBuildingsInRadius(chosenAx, chosenAy, 3.0);
+    if (chosenTiePath && chosenTiePath.length >= 2) {
+      this.commitRoadPath(chosenTiePath, 'arterial', { stubOriginX: chosenAx, stubOriginY: chosenAy });
+    }
 
     const secondPt = chosenTiePath && chosenTiePath.length > 1 ? chosenTiePath[1] : { x: town.x, y: town.y };
     this.interchanges.push({
@@ -3010,6 +3327,13 @@ export class ProceduralLogisticsWorld {
       this.interchanges = this.interchanges.filter(
         ic => !(ic.type === 'terminal-stub' && !ic.isAirportStub && Math.hypot(ic.x - x, ic.y - y) < 1.5)
       );
+      const beforeLen = this.roads.length;
+      this.roads = this.roads.filter(
+        r => !(r.stubOriginX !== undefined && Math.hypot(r.stubOriginX - x, r.stubOriginY - y) < 1.5)
+      );
+      if (this.roads.length !== beforeLen) {
+        this.rebuildRoadGridAndEdges();
+      }
     }
   }
 
@@ -3223,55 +3547,99 @@ export class ProceduralLogisticsWorld {
   }
 
   /**
-   * Prunes any pre-existing surface street / arterial segments that cross underneath
-   * the expressway or poke under the slip-ramps at a one-sided intermediate ramp
-   * so only a single clean connector stub enters the roundabout terminal.
+   * Reroutes any surface street / arterial segment that passes through the one-sided slip-ramp
+   * wing of a diamond-ramp interchange around the wing (or through the roundabout terminal
+   * `(startX, startY)`). Returns `false` without severing any road if a clean detour cannot be built.
    */
-  pruneUnderpassRoadsAtRamp(cx, cy, angleRad, connSide) {
+  rerouteRoadsAroundDiamondRamp(cx, cy, angleRad, connSide, startX, startY) {
     const cosA = Math.cos(angleRad);
     const sinA = Math.sin(angleRad);
     const nx = -sinA;
     const ny = cosA;
 
-    const isInsideRampPruneBox = (px, py) => {
+    const isInsideRampWing = (px, py) => {
+      const gx = Math.round(px);
+      const gy = Math.round(py);
+      if (gx === startX && gy === startY) return false;
       const dx = px - cx;
       const dy = py - cy;
       const u = dx * cosA + dy * sinA;
       const v = (dx * nx + dy * ny) * connSide;
-      return Math.abs(u) <= 4.2 && v >= -3.8 && v < 2.65;
+      return Math.abs(u) <= 3.6 && v >= 0.2 && v < 2.55;
     };
+
+    const hasAnyRoadOverlap = this.roads.some(
+      r => r.type !== 'airport-loop' && r.points.some(pt => isInsideRampWing(pt.x, pt.y))
+    );
+    if (!hasAnyRoadOverlap) return true;
 
     const updatedRoads = [];
     for (const r of this.roads) {
-      if (r.type === 'airport-loop') {
+      if (r.type === 'airport-loop' || r.type === 'airport-spine') {
+        if (r.points.some(pt => isInsideRampWing(pt.x, pt.y))) return false;
         updatedRoads.push(r);
         continue;
       }
-      let currentSeg = [];
+
+      let firstIn = -1;
+      let lastIn = -1;
       for (let i = 0; i < r.points.length; i++) {
-        const pt = r.points[i];
-        if (isInsideRampPruneBox(pt.x, pt.y)) {
-          const gx = Math.round(pt.x);
-          const gy = Math.round(pt.y);
-          if (this.inBounds(gx, gy, 1) && this.roadGrid[this.idx(gx, gy)] !== 3) {
-            this.roadGrid[this.idx(gx, gy)] = 0;
-          }
-          if (currentSeg.length >= 2) {
-            updatedRoads.push({ points: currentSeg, type: r.type });
-          }
-          currentSeg = [];
-        } else {
-          currentSeg.push(pt);
+        if (isInsideRampWing(r.points[i].x, r.points[i].y)) {
+          if (firstIn === -1) firstIn = i;
+          lastIn = i;
         }
       }
-      if (currentSeg.length >= 2) {
-        updatedRoads.push({ points: currentSeg, type: r.type });
+      if (firstIn === -1) {
+        updatedRoads.push(r);
+        continue;
       }
-    }
-    this.roads = updatedRoads;
 
-    // Remove any houses whose driveway road tile was pruned inside the ramp box
-    this.houses = this.houses.filter(h => !isInsideRampPruneBox(h.roadX, h.roadY));
+      if (firstIn === 0 && lastIn === r.points.length - 1) {
+        return false;
+      }
+
+      const pEntry = firstIn > 0 ? r.points[firstIn - 1] : { x: startX, y: startY, isBridge: false };
+      const pExit = lastIn < r.points.length - 1 ? r.points[lastIn + 1] : { x: startX, y: startY, isBridge: false };
+      const detour = this.findRoadPathAStar(
+        Math.round(pEntry.x),
+        Math.round(pEntry.y),
+        Math.round(pExit.x),
+        Math.round(pExit.y),
+        false,
+        isInsideRampWing,
+        false
+      );
+      if (!detour || detour.length < 2) {
+        return false;
+      }
+
+      const prefix = firstIn > 0 ? r.points.slice(0, firstIn - 1) : [];
+      const suffix = lastIn < r.points.length - 1 ? r.points.slice(lastIn + 2) : [];
+      const mergedPts = [...prefix, ...detour, ...suffix];
+      const dedupPts = [];
+      for (const pt of mergedPts) {
+        const prev = dedupPts[dedupPts.length - 1];
+        if (!prev || prev.x !== pt.x || prev.y !== pt.y) {
+          dedupPts.push(pt);
+        }
+      }
+      if (dedupPts.length < 2) return false;
+      updatedRoads.push({ ...r, points: dedupPts });
+    }
+
+    this.roads = updatedRoads;
+    this.houses = this.houses.filter(h => {
+      const keep = !isInsideRampWing(h.roadX, h.roadY);
+      if (!keep) {
+        const hid = this.idx(h.x, h.y);
+        if (this.buildingMask[hid] === 1) this.buildingMask[hid] = 0;
+        const t = this.towns[h.townId];
+        if (t && t.housesCount > 0) t.housesCount--;
+      }
+      return keep;
+    });
+    this.rebuildRoadGridAndEdges();
+    return true;
   }
 
   buildIntermediateExpresswayRamps() {
@@ -3334,8 +3702,10 @@ export class ProceduralLogisticsWorld {
           const pPrev = samples[Math.max(0, i - 1)];
           const pNext = samples[Math.min(samples.length - 1, i + 1)];
           const angleRad = Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x);
-          const nx = -Math.sin(angleRad);
-          const ny = Math.cos(angleRad);
+          const cosA = Math.cos(angleRad);
+          const sinA = Math.sin(angleRad);
+          const nx = -sinA;
+          const ny = cosA;
           const crossHalf = 2.65;
 
           const c1x = pt.x + nx * crossHalf;
@@ -3349,11 +3719,23 @@ export class ProceduralLogisticsWorld {
           const termY = connSide > 0 ? c1y : c2y;
           const startX = Math.max(5, Math.min(this.W - 6, Math.round(termX)));
           const startY = Math.max(5, Math.min(this.H - 6, Math.round(termY)));
+          const startId = this.idx(startX, startY);
 
-          if (this.waterMask[this.idx(startX, startY)] > 0 || this.distToWater[this.idx(startX, startY)] < 2.5) continue;
+          if (this.waterMask[startId] > 0 || this.distToWater[startId] < 2.5) continue;
+          if (this.buildingMask[startId] >= 1 && this.buildingMask[startId] <= 3) continue;
           if (this.isPointInAirportPad(termX, termY, 2.5)) continue;
 
-          const score = 50 - minTownDist;
+          const wingClear = !this.roads.some(r =>
+            r.points.some(rp => {
+              const rdx = rp.x - pt.x;
+              const rdy = rp.y - pt.y;
+              const ru = rdx * cosA + rdy * sinA;
+              const rv = (rdx * nx + rdy * ny) * connSide;
+              return Math.abs(ru) <= 3.6 && rv >= 0.2 && rv < 2.55;
+            })
+          );
+
+          const score = 50 - minTownDist + (wingClear ? 25 : 0);
           if (score > bestScore) {
             bestScore = score;
             bestCandidate = {
@@ -3377,8 +3759,6 @@ export class ProceduralLogisticsWorld {
           const nx = -sinA;
           const ny = cosA;
 
-          this.pruneUnderpassRoadsAtRamp(x, y, angleRad, connSide);
-
           const blockUnderpassFn = (tx, ty) => {
             const dx = tx - x;
             const dy = ty - y;
@@ -3394,11 +3774,15 @@ export class ProceduralLogisticsWorld {
           const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false, blockUnderpassFn, true);
           if (!connectorPath || connectorPath.length < 2) continue;
 
+          if (!this.rerouteRoadsAroundDiamondRamp(x, y, angleRad, connSide, startX, startY)) {
+            continue;
+          }
+
           this.displaceBuildingsInRadius(x, y, 3.4);
           this.displaceBuildingsInRadius(termX, termY, 2.5);
 
-          const fullStubPath = [{ x: termX, y: termY, isBridge: false }, ...connectorPath];
-          this.commitRoadPath(fullStubPath, 'arterial');
+          this.commitRoadPath(connectorPath, 'arterial');
+          this.roadGrid[this.idx(startX, startY)] = 2;
 
           this.interchanges.push({
             type: 'diamond-ramp',
@@ -3650,7 +4034,6 @@ export class ProceduralLogisticsWorld {
             mwayNumber++;
             this.motorways.push(spurRes.mw);
             this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
-            this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
             this.interchanges.push(spurRes.trumpetIc);
             townMotorwayDegree[cTown.id]++;
             connectedClusters.add(metro.clusterId);
@@ -3737,7 +4120,6 @@ export class ProceduralLogisticsWorld {
         this.motorways.push(spurRes.mw);
         if (host) townMotorwayDegree[host.id]++;
         this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
-        this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
         this.interchanges.push(spurRes.trumpetIc);
         builtApMotorway = true;
       }
@@ -3846,7 +4228,6 @@ export class ProceduralLogisticsWorld {
         mwayNumber++;
         this.motorways.push(spurRes.mw);
         this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
-        this.pruneUnderpassRoadsAtRamp(spurRes.trumpetIc.x, spurRes.trumpetIc.y, spurRes.trumpetIc.angleMain, -spurRes.trumpetIc.sideSign);
         this.interchanges.push(spurRes.trumpetIc);
         townMotorwayDegree[uTown.id]++;
       } else {
@@ -4041,7 +4422,7 @@ const cloneTown = (t) => ({
 });
 
 const cloneRoad = (r) => ({
-  type: r.type,
+  ...r,
   points: r.points.map(p => ({ ...p }))
 });
 
@@ -4221,8 +4602,10 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
       w.noise = noise;
       w.logs = [];
       w.airports = [];
+      w.interchanges = [];
       w.roads = [];
       w.roadGrid.fill(0);
+      w.roadEdges.clear();
       w.buildingMask.fill(0);
       w.airportHeatmap.fill(0);
       w.bridgeCount = 0;
@@ -4280,6 +4663,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
       w.roadGrid.set(s5.roadGrid);
       w.buildingMask.set(s5.buildingMask);
       w.roads = s5.roads.map(cloneRoad);
+      w.syncRoadEdgesFromRoads();
 
       w.setStageRNG('stage6a_grids');
       w.carveTownStreetGrids();
@@ -4331,6 +4715,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
       w.buildingMask.set(s67.buildingMask);
       w.zoneColorIdx.set(s67.zoneColorIdx);
       w.roads = s67.roads.map(cloneRoad);
+      w.syncRoadEdgesFromRoads();
       w.houses = s67.houses.map(h => ({ ...h }));
       w.destinations = s67.destinations.map(cloneDestination);
       w.trees = s67.trees.map(tr => ({ ...tr }));
@@ -4381,6 +4766,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
       w.buildingMask.set(s8.buildingMask);
       w.zoneColorIdx.set(s67.zoneColorIdx);
       w.roads = s8.roads.map(cloneRoad);
+      w.syncRoadEdgesFromRoads();
       w.houses = s8.houses.map(h => ({ ...h }));
       w.destinations = s8.destinations.map(cloneDestination);
       w.trees = s8.trees.map(tr => ({ ...tr }));
@@ -4415,6 +4801,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
         interchanges: w.interchanges,
         cargoLinks: w.cargoLinks,
         displacedBuildingsCount: w.displacedBuildingsCount,
+        bridgeCount: w.bridgeCount,
         mwayLog,
         cargoLog
       };
@@ -4488,12 +4875,13 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
     out.clusters = s4.value.clusters;
     out.airportHeatmap = s5.value.airportHeatmap;
     out.zoneColorIdx = s67.value.zoneColorIdx;
-    out.bridgeCount = s67.value.bridgeCount;
+    out.bridgeCount = s9.value.bridgeCount;
     out.towns = s9.value.towns;
     out.airports = s9.value.airports;
     out.roadGrid = s9.value.roadGrid;
     out.buildingMask = s9.value.buildingMask;
     out.roads = s9.value.roads;
+    out.syncRoadEdgesFromRoads();
     out.houses = s9.value.houses;
     out.destinations = s9.value.destinations;
     out.trees = s9.value.trees;
@@ -4522,6 +4910,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
 export function extractWorldTransferables(world) {
   delete world.rng;
   delete world.noise;
+  delete world.roadEdges;
   delete world._astarG;
   delete world._astarParent;
   delete world._astarSeenGen;

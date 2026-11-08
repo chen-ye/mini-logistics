@@ -131,7 +131,11 @@ export class LogisticsSimulator {
           this.tripsCompleted++;
         }
       } else {
-        car.segT += car.speed * effDt;
+        const pts = car.road.points;
+        const p0 = pts[car.segIdx];
+        const p1 = pts[car.segIdx + 1];
+        const segLen = p0 && p1 ? Math.max(0.5, Math.hypot(p1.x - p0.x, p1.y - p0.y)) : 1.0;
+        car.segT += (car.speed / segLen) * effDt;
         if (car.segT >= 1.0) {
           car.segT -= 1.0;
           car.segIdx += car.dir;
