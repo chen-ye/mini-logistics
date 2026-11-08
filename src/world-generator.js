@@ -2268,176 +2268,152 @@ export class ProceduralLogisticsWorld {
         }
       }
 
-      // For `FARM` sites, claim a sprawling background-tile agricultural estate (`radius ~ 15` tiles)
-      // on flat dry alluvial land around the 2×2 farmstead, partitioned into both:
-      // 1) Staggered rectilinear cadastral strips (`bspParcels`) and
-      // 2) Organic Voronoi bocage polygons (`voronoiParcels`),
-      // with individual tiles clipped around roads, rivers, contour toes & expressways!
+      // For `FARM` sites, surround the 2×2 farmstead with a compact, well-proportioned estate of
+      // pure rectangular cadastral strips (`bspParcels`) on flat dry alluvial land (`buildingMask = 5`).
+      // Strips are aligned to the 2×2 farmstead edges and trimmed as whole rectangles against contours/rivers
+      // (while diagonal roads slice them smoothly in the vector renderer with zero 1×1 grid jaggies!).
       let bspParcels = [];
-      let voronoiParcels = [];
       if (chosenCand.resourceType === 'FARM') {
         const fgx = chosenCand.gx;
         const fgy = chosenCand.gy;
         const fcx = chosenCand.cx;
         const fcy = chosenCand.cy;
-        const span = 15;
         const cropTypes = ['wheat', 'pasture', 'ochre', 'loam', 'orchard'];
 
-        // Build staggered rectilinear row/column partitions across `[-span .. span]`
-        const rowBounds = [-span];
-        while (rowBounds[rowBounds.length - 1] < span) {
-          const step = this.rng.pick([4, 5, 6, 7]);
-          rowBounds.push(Math.min(span + 1, rowBounds[rowBounds.length - 1] + step));
-        }
-        const bspBoxes = [];
-        for (let r = 0; r < rowBounds.length - 1; r++) {
-          const y0 = rowBounds[r], y1 = rowBounds[r + 1];
-          let xCur = -span;
-          while (xCur < span) {
-            const wStep = this.rng.pick([5, 6, 7, 8]);
-            const xNext = Math.min(span + 1, xCur + wStep);
-            const boxCx = fgx + (xCur + xNext) * 0.5;
-            const boxCy = fgy + (y0 + y1) * 0.5;
-            const boxWarp = this.noise.fbm(boxCx * 0.10 + slotIdx * 3.1, boxCy * 0.10 + 2.7, 2) * 3.8;
-            if (Math.hypot(boxCx - fcx, boxCy - fcy) + boxWarp <= 13.2) {
-              bspBoxes.push({
-                x0: fgx + xCur,
-                x1: fgx + xNext,
-                y0: fgy + y0,
-                y1: fgy + y1,
-                crop: cropTypes[(bspBoxes.length * 2 + r + slotIdx) % cropTypes.length],
-                furrowDir: (xNext - xCur >= y1 - y0 ? 0 : 1),
-                tiles: []
-              });
-            }
-            xCur = xNext;
+        const isTerrainTileValid = (tx, ty) => {
+          if (!this.inBounds(tx, ty, 3)) return false;
+          if (tx >= fgx && tx <= fgx + 1 && ty >= fgy && ty <= fgy + 1) return false;
+          const tid = this.idx(tx, ty);
+          if (
+            this.waterMask[tid] > 0 ||
+            this.buildingMask[tid] > 0 ||
+            this.zoneColorIdx[tid] >= 0 ||
+            this.distToWater[tid] < 2.2 ||
+            this.elevationField[tid] >= this.seaLevel + 0.132 ||
+            this.slopeField[tid] > 0.15
+          ) {
+            return false;
           }
-        }
-
-        // Build jittered Voronoi bocage seeds across `[-span .. span]` and compute exact convex Voronoi polygons
-        const vorSeeds = [];
-        for (let vy = -12; vy <= 12; vy += 5) {
-          for (let vx = -12; vx <= 12; vx += 5) {
-            const sx = fcx + vx + this.rng.range(-1.55, 1.55);
-            const sy = fcy + vy + this.rng.range(-1.55, 1.55);
-            const sWarp = this.noise.fbm(sx * 0.10 + slotIdx * 3.1, sy * 0.10 + 2.7, 2) * 3.8;
-            if (Math.hypot(sx - fcx, sy - fcy) + sWarp > 14.2) continue;
-            vorSeeds.push({
-              sx,
-              sy,
-              crop: cropTypes[(vorSeeds.length * 3 + slotIdx) % cropTypes.length],
-              furrowDir: (vorSeeds.length + slotIdx) % 4,
-              tiles: [],
-              poly: []
-            });
-          }
-        }
-
-        // Sutherland-Hodgman half-plane bisector clipping for exact diagonal Voronoi polygons
-        const clipPolyHalfPlane = (poly, mx, my, nx, ny) => {
-          const out = [];
-          for (let i = 0; i < poly.length; i++) {
-            const a = poly[i];
-            const b = poly[(i + 1) % poly.length];
-            const da = (a[0] - mx) * nx + (a[1] - my) * ny;
-            const db = (b[0] - mx) * nx + (b[1] - my) * ny;
-            if (da <= 0) {
-              out.push(a);
-              if (db > 0) {
-                const t = da / (da - db);
-                out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
-              }
-            } else if (db <= 0) {
-              const t = da / (da - db);
-              out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+          // Keep a 1-tile buffer from urban buildings/houses (excluding this farmstead's own 2×2 pad)
+          for (let by = -1; by <= 1; by++) {
+            for (let bx = -1; bx <= 1; bx++) {
+              const nx = tx + bx, ny = ty + by;
+              if (nx >= fgx && nx <= fgx + 1 && ny >= fgy && ny <= fgy + 1) continue;
+              const bm = this.buildingMask[this.idx(nx, ny)];
+              if (bm >= 1 && bm <= 4) return false;
             }
           }
-          return out;
+          // Stay outside the inner urban core of nearby towns so negative space stays clean
+          if (this.towns.some(t => Math.hypot(tx - t.x, ty - t.y) < t.radius * 0.58)) return false;
+          return true;
         };
 
-        const bMinX = fgx - span - 1, bMaxX = fgx + span + 2;
-        const bMinY = fgy - span - 1, bMaxY = fgy + span + 2;
-        for (let i = 0; i < vorSeeds.length; i++) {
-          const si = vorSeeds[i];
-          let poly = [[bMinX, bMinY], [bMaxX, bMinY], [bMaxX, bMaxY], [bMinX, bMaxY]];
-          for (let j = 0; j < vorSeeds.length; j++) {
-            if (i === j) continue;
-            const sj = vorSeeds[j];
-            const mx = (si.sx + sj.sx) * 0.5;
-            const my = (si.sy + sj.sy) * 0.5;
-            poly = clipPolyHalfPlane(poly, mx, my, sj.sx - si.sx, sj.sy - si.sy);
-            if (poly.length === 0) break;
+        const isRectValid = (x0, x1, y0, y1) => {
+          for (let ty = y0; ty < y1; ty++) {
+            for (let tx = x0; tx < x1; tx++) {
+              if (!isTerrainTileValid(tx, ty)) return false;
+            }
           }
-          si.poly = poly;
-        }
+          return true;
+        };
 
-        for (let dy = -span; dy <= span; dy++) {
-          for (let dx = -span; dx <= span; dx++) {
-            const tx = fgx + dx;
-            const ty = fgy + dy;
-            if (!this.inBounds(tx, ty, 3)) continue;
-            // Skip the 2×2 farmstead building pad itself
-            if (tx >= fgx && tx <= fgx + 1 && ty >= fgy && ty <= fgy + 1) continue;
-
-            const tid = this.idx(tx, ty);
-            if (
-              this.waterMask[tid] > 0 ||
-              this.buildingMask[tid] > 0 ||
-              this.roadGrid[tid] > 0 ||
-              this.zoneColorIdx[tid] >= 0 ||
-              this.distToWater[tid] < 2.0 ||
-              this.elevationField[tid] >= this.seaLevel + 0.135 ||
-              this.slopeField[tid] > 0.16
-            ) {
-              continue;
+        // Trim a candidate rectangle inward from whichever side hits an obstacle until 100% clean
+        const fitCleanRect = (x0, x1, y0, y1) => {
+          let rx0 = x0, rx1 = x1, ry0 = y0, ry1 = y1;
+          for (let iter = 0; iter < 8; iter++) {
+            if (rx1 - rx0 < 3 || ry1 - ry0 < 3) return null;
+            if (isRectValid(rx0, rx1, ry0, ry1)) return { x0: rx0, x1: rx1, y0: ry0, y1: ry1 };
+            // Count invalid tiles along each of the 4 edges and trim the most-blocked edge
+            let badL = 0, badR = 0, badT = 0, badB = 0;
+            for (let ty = ry0; ty < ry1; ty++) {
+              if (!isTerrainTileValid(rx0, ty)) badL++;
+              if (!isTerrainTileValid(rx1 - 1, ty)) badR++;
             }
+            for (let tx = rx0; tx < rx1; tx++) {
+              if (!isTerrainTileValid(tx, ry0)) badT++;
+              if (!isTerrainTileValid(tx, ry1 - 1)) badB++;
+            }
+            const maxBad = Math.max(badL, badR, badT, badB);
+            if (maxBad === 0) break;
+            if (badL === maxBad) rx0++;
+            else if (badR === maxBad) rx1--;
+            else if (badT === maxBad) ry0++;
+            else ry1--;
+          }
+          return (rx1 - rx0 >= 3 && ry1 - ry0 >= 3 && isRectValid(rx0, rx1, ry0, ry1))
+            ? { x0: rx0, x1: rx1, y0: ry0, y1: ry1 }
+            : null;
+        };
 
-            // Keep a 1-tile buffer from urban buildings/houses (excluding this farmstead's own 2×2 pad)
-            let touchesUrbanBld = false;
-            for (let by = -1; by <= 1 && !touchesUrbanBld; by++) {
-              for (let bx = -1; bx <= 1; bx++) {
-                const nx = tx + bx, ny = ty + by;
-                if (nx >= fgx && nx <= fgx + 1 && ny >= fgy && ny <= fgy + 1) continue;
-                const bm = this.buildingMask[this.idx(nx, ny)];
-                if (bm >= 1 && bm <= 4) {
-                  touchesUrbanBld = true;
-                  break;
-                }
+        // Build row bands anchored around `[fgy, fgy + 2]` so strips abut the 2×2 farmstead cleanly
+        const hTop1 = this.rng.pick([4, 5]);
+        const hTop2 = this.rng.pick([4, 5]);
+        const hBot1 = this.rng.pick([4, 5]);
+        const hBot2 = this.rng.pick([4, 5]);
+        const rowBands = [
+          [fgy - hTop1 - hTop2, fgy - hTop1],
+          [fgy - hTop1, fgy],
+          [fgy, fgy + 4],
+          [fgy + 4, fgy + 4 + hBot1],
+          [fgy + 4 + hBot1, fgy + 4 + hBot1 + hBot2]
+        ];
+
+        const rawBoxes = [];
+        for (let r = 0; r < rowBands.length; r++) {
+          const [ry0, ry1] = rowBands[r];
+          if (ry0 === fgy) {
+            // Middle band containing the 2×2 farmstead `[fgx, fgx + 2) × [fgy, fgy + 2)`:
+            // Place clean rectangular strips to the left, right, and directly below the 2×2 barn pad
+            const wL1 = this.rng.pick([5, 6]);
+            const wL2 = this.rng.pick([4, 5]);
+            const wR1 = this.rng.pick([5, 6]);
+            const wR2 = this.rng.pick([4, 5]);
+            rawBoxes.push({ x0: fgx - wL1 - wL2, x1: fgx - wL1, y0: ry0, y1: ry1, r });
+            rawBoxes.push({ x0: fgx - wL1, x1: fgx, y0: ry0, y1: ry1, r });
+            rawBoxes.push({ x0: fgx + 2, x1: fgx + 2 + wR1, y0: ry0, y1: ry1, r });
+            rawBoxes.push({ x0: fgx + 2 + wR1, x1: fgx + 2 + wR1 + wR2, y0: ry0, y1: ry1, r });
+          } else {
+            let xCur = fgx - this.rng.pick([8, 9, 10]);
+            const xEnd = fgx + this.rng.pick([10, 11, 12]);
+            while (xCur < xEnd) {
+              const wStep = this.rng.pick([5, 6, 7]);
+              const xNext = Math.min(xEnd, xCur + wStep);
+              if (xNext - xCur >= 4) {
+                rawBoxes.push({ x0: xCur, x1: xNext, y0: ry0, y1: ry1, r });
               }
+              xCur = xNext;
             }
-            if (touchesUrbanBld) continue;
-
-            // Stay outside the inner urban blush core of nearby towns
-            if (this.towns.some(t => Math.hypot(tx - t.x, ty - t.y) < t.radius * 0.55)) continue;
-
-            let inAnyBspBox = false;
-            for (const bBox of bspBoxes) {
-              if (tx >= bBox.x0 && tx < bBox.x1 && ty >= bBox.y0 && ty < bBox.y1) {
-                bBox.tiles.push([tx, ty]);
-                inAnyBspBox = true;
-                break;
-              }
-            }
-            if (!inAnyBspBox) continue;
-
-            // Reserve as farmland background tile (`buildingMask = 5`) so trees don't spawn inside fields
-            this.buildingMask[tid] = 5;
-
-            let bestV = vorSeeds[0];
-            let minVD = Infinity;
-            for (const vs of vorSeeds) {
-              const vd = (tx + 0.5 - vs.sx) * (tx + 0.5 - vs.sx) + (ty + 0.5 - vs.sy) * (ty + 0.5 - vs.sy);
-              if (vd < minVD) {
-                minVD = vd;
-                bestV = vs;
-              }
-            }
-            if (bestV) bestV.tiles.push([tx, ty]);
           }
         }
 
-        bspParcels = bspBoxes.filter(b => b.tiles.length >= 6);
-        voronoiParcels = vorSeeds.filter(v => v.tiles.length >= 4 && v.poly.length >= 3);
+        for (let bIdx = 0; bIdx < rawBoxes.length; bIdx++) {
+          const rb = rawBoxes[bIdx];
+          const boxCx = (rb.x0 + rb.x1) * 0.5;
+          const boxCy = (rb.y0 + rb.y1) * 0.5;
+          const boxWarp = this.noise.fbm(boxCx * 0.12 + slotIdx * 3.1, boxCy * 0.12 + 2.7, 2) * 2.6;
+          if (Math.hypot(boxCx - fcx, boxCy - fcy) + boxWarp > 9.4) continue;
+
+          const fitted = fitCleanRect(rb.x0, rb.x1, rb.y0, rb.y1);
+          if (!fitted) continue;
+
+          const tiles = [];
+          for (let ty = fitted.y0; ty < fitted.y1; ty++) {
+            for (let tx = fitted.x0; tx < fitted.x1; tx++) {
+              this.buildingMask[this.idx(tx, ty)] = 5;
+              tiles.push([tx, ty]);
+            }
+          }
+
+          bspParcels.push({
+            x0: fitted.x0,
+            x1: fitted.x1,
+            y0: fitted.y0,
+            y1: fitted.y1,
+            crop: cropTypes[(bspParcels.length + slotIdx * 2) % cropTypes.length],
+            furrowDir: (bspParcels.length + rb.r + slotIdx) % 2,
+            tiles
+          });
+        }
       }
 
       const hostTown = chosenCand.nearestTown;
@@ -2459,7 +2435,6 @@ export class ProceduralLogisticsWorld {
         subType: 'RAW',
         resourceType: chosenCand.resourceType, // 'MINE' | 'TIMBER' | 'FARM'
         bspParcels,
-        voronoiParcels,
         isRuralNiche: true,
         isCircular: false,
         hasUrgentPin: false,
@@ -5618,21 +5593,51 @@ export class ProceduralLogisticsWorld {
 
     const clipParcelList = (parcels, d) => {
       if (!parcels) return [];
-      return parcels
-        .map(p => ({
-          ...p,
-          tiles: p.tiles.filter(([tx, ty]) => {
-            if (this.roadGrid[this.idx(tx, ty)] > 0) return false;
-            return !isBlockedByExpressway(d.x, d.y, tx + 0.5, ty + 0.5);
-          })
-        }))
-        .filter(p => p.tiles.length >= 4);
+      const out = [];
+      for (const p of parcels) {
+        let rx0 = p.x0, rx1 = p.x1, ry0 = p.y0, ry1 = p.y1;
+        // Trim rectangle edges inward away from any expressway corridor so strips stay pure rectangles
+        for (let iter = 0; iter < 8; iter++) {
+          if (rx1 - rx0 < 3 || ry1 - ry0 < 3) break;
+          let badL = 0, badR = 0, badT = 0, badB = 0;
+          for (let ty = ry0; ty < ry1; ty++) {
+            if (isBlockedByExpressway(d.x, d.y, rx0 + 0.5, ty + 0.5)) badL++;
+            if (isBlockedByExpressway(d.x, d.y, rx1 - 0.5, ty + 0.5)) badR++;
+          }
+          for (let tx = rx0; tx < rx1; tx++) {
+            if (isBlockedByExpressway(d.x, d.y, tx + 0.5, ry0 + 0.5)) badT++;
+            if (isBlockedByExpressway(d.x, d.y, tx + 0.5, ry1 - 0.5)) badB++;
+          }
+          const maxBad = Math.max(badL, badR, badT, badB);
+          if (maxBad === 0) break;
+          if (badL === maxBad) rx0++;
+          else if (badR === maxBad) rx1--;
+          else if (badT === maxBad) ry0++;
+          else ry1--;
+        }
+        if (rx1 - rx0 < 3 || ry1 - ry0 < 3) continue;
+        // Verify interior is also clear of expressways
+        let allClear = true;
+        const tiles = [];
+        for (let ty = ry0; ty < ry1 && allClear; ty++) {
+          for (let tx = rx0; tx < rx1; tx++) {
+            if (isBlockedByExpressway(d.x, d.y, tx + 0.5, ty + 0.5)) {
+              allClear = false;
+              break;
+            }
+            tiles.push([tx, ty]);
+          }
+        }
+        if (allClear && tiles.length >= 9) {
+          out.push({ ...p, x0: rx0, x1: rx1, y0: ry0, y1: ry1, tiles });
+        }
+      }
+      return out;
     };
 
     const beforeDest = this.destinations.length;
     this.destinations = this.destinations.filter(d => {
       if (d.bspParcels) d.bspParcels = clipParcelList(d.bspParcels, d);
-      if (d.voronoiParcels) d.voronoiParcels = clipParcelList(d.voronoiParcels, d);
       if (d.isRuralNiche) return true;
       const wT = d.wTiles || 2;
       const hT = d.hTiles || 2;

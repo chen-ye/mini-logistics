@@ -634,372 +634,135 @@ export class MiniMotorwaysRenderer {
   }
 
   drawFarmBackgroundFields(ctx, world, ts) {
-    const styleMode = this.farmFieldStyle || 'cadastral'; // 'cadastral' | 'bocage' | 'terraced'
+    // Whisper-soft warm paper washes (~5–9% tonal shift from `#f2efe9`) so fields preserve
+    // the calm Mini Motorways negative-space ambiance while reading clearly as agricultural strips.
     const cropStyles = {
-      wheat:   { fill: '#eadcb6', furrow: '#d2bb84', border: '#bda56c', bale: '#f5e8b0' },
-      pasture: { fill: '#d6e3be', furrow: '#bfd0a2', border: '#a4b786' },
-      ochre:   { fill: '#e6cfa8', furrow: '#cfa978', border: '#b89262' },
-      loam:    { fill: '#dcd0bc', furrow: '#c0b096', border: '#a6967c' },
-      orchard: { fill: '#d9e6c9', furrow: '#759260', border: '#9eb388' }
+      wheat:   { fill: '#eee7d6', furrow: '#e4dcc7', border: '#dcd2ba' },
+      pasture: { fill: '#e6ecdd', furrow: '#dce4d1', border: '#d4ddc7' },
+      ochre:   { fill: '#eee2d2', furrow: '#e4d5c1', border: '#dccab4' },
+      loam:    { fill: '#eae4d9', furrow: '#dfd8cc', border: '#d6cec0' },
+      orchard: { fill: '#e4ebdd', furrow: '#9fb38e', border: '#d2dcc8' }
     };
 
     for (const d of world.destinations) {
       if (d.resourceType !== 'FARM') continue;
-      const bspList = d.bspParcels || [];
-      if (bspList.length === 0) continue;
+      const parcels = d.bspParcels || [];
+      if (parcels.length === 0) continue;
 
-      if (styleMode === 'bocage' && d.voronoiParcels && d.voronoiParcels.length > 0) {
-        // Mode 2 ('bocage'): Exact Diagonal Voronoi Polygons Clipped to the Estate's Valid Farmland Tile Union
-        const estateTileSet = new Set();
-        const estateTiles = [];
-        for (const bp of bspList) {
-          for (const t of bp.tiles) {
-            const key = t[0] * 10000 + t[1];
-            if (!estateTileSet.has(key)) {
-              estateTileSet.add(key);
-              estateTiles.push(t);
-            }
-          }
-        }
-        if (estateTiles.length === 0) continue;
-
-        ctx.save();
-        ctx.beginPath();
-        for (let i = 0; i < estateTiles.length; i++) {
-          ctx.rect(estateTiles[i][0] * ts - 0.35, estateTiles[i][1] * ts - 0.35, ts + 0.7, ts + 0.7);
-        }
-        ctx.clip();
-
-        const angles = [0, Math.PI * 0.5, 0.62, -0.62];
-        for (let vIdx = 0; vIdx < d.voronoiParcels.length; vIdx++) {
-          const vp = d.voronoiParcels[vIdx];
-          if (!vp.poly || vp.poly.length < 3 || !vp.tiles || vp.tiles.length === 0) continue;
-          const st = cropStyles[vp.crop] || cropStyles.wheat;
-
-          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-          ctx.save();
-          ctx.beginPath();
-          for (let k = 0; k < vp.poly.length; k++) {
-            const px = vp.poly[k][0] * ts;
-            const py = vp.poly[k][1] * ts;
-            if (px < minX) minX = px;
-            if (px > maxX) maxX = px;
-            if (py < minY) minY = py;
-            if (py > maxY) maxY = py;
-            if (k === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          }
-          ctx.closePath();
-          ctx.fillStyle = st.fill;
-          ctx.fill();
-          ctx.clip();
-
-          const bw = maxX - minX;
-          const bh = maxY - minY;
-          const midX = (minX + maxX) * 0.5;
-          const midY = (minY + maxY) * 0.5;
-
-          if (vp.crop === 'orchard') {
-            const step = 6.2;
-            let rowIdx = 0;
-            for (let oy = minY + 3.5; oy < maxY - 2.5; oy += step, rowIdx++) {
-              const xShift = (rowIdx % 2) * (step * 0.45);
-              for (let ox = minX + 3.5 + xShift; ox < maxX - 2.5; ox += step) {
-                ctx.fillStyle = 'rgba(54, 56, 62, 0.14)';
-                ctx.beginPath();
-                ctx.arc(ox + 0.9, oy + 0.9, 2.05, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = st.furrow;
-                ctx.beginPath();
-                ctx.arc(ox, oy, 2.0, 0, Math.PI * 2);
-                ctx.fill();
-              }
-            }
-          } else {
-            const ang = angles[vp.furrowDir % angles.length];
-            const diag = Math.hypot(bw, bh) * 0.65;
-            ctx.save();
-            ctx.translate(midX, midY);
-            ctx.rotate(ang);
-            ctx.strokeStyle = st.furrow;
-            ctx.lineWidth = 1.25;
-            ctx.beginPath();
-            for (let fy = -diag; fy <= diag; fy += 4.0) {
-              ctx.moveTo(-diag, fy);
-              ctx.lineTo(diag, fy);
-            }
-            ctx.stroke();
-            ctx.restore();
-
-            if (vp.crop === 'wheat') {
-              for (let i = 0; i < vp.tiles.length; i += 5) {
-                const bx = (vp.tiles[i][0] + 0.52) * ts;
-                const by = (vp.tiles[i][1] + 0.48) * ts;
-                ctx.fillStyle = st.bale;
-                ctx.strokeStyle = '#bfa56c';
-                ctx.lineWidth = 0.8;
-                ctx.beginPath();
-                ctx.arc(bx, by, 1.9, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.stroke();
-              }
-            }
-          }
-          ctx.restore();
-
-          // Stroke true diagonal Voronoi polygon seam with stone wall & hedgerow shrubs
-          ctx.strokeStyle = '#968d7f';
-          ctx.lineWidth = 1.65;
-          ctx.beginPath();
-          for (let k = 0; k < vp.poly.length; k++) {
-            const px = vp.poly[k][0] * ts;
-            const py = vp.poly[k][1] * ts;
-            if (k === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          }
-          ctx.closePath();
-          ctx.stroke();
-
-          for (let k = 0; k < vp.poly.length; k++) {
-            const a = vp.poly[k];
-            const b = vp.poly[(k + 1) % vp.poly.length];
-            const edgeLen = Math.hypot(b[0] - a[0], b[1] - a[1]);
-            const steps = Math.max(1, Math.floor(edgeLen / 1.8));
-            for (let s = 0; s < steps; s++) {
-              const t = s / steps;
-              const hx = (a[0] + t * (b[0] - a[0])) * ts;
-              const hy = (a[1] + t * (b[1] - a[1])) * ts;
-              const hr = 2.3 + (((vIdx + k + s) % 3) * 0.45);
-              ctx.fillStyle = ((k + s) % 2 === 0) ? '#5f7856' : '#78926d';
-              ctx.beginPath();
-              ctx.arc(hx, hy, hr, 0, Math.PI * 2);
-              ctx.fill();
-            }
-          }
-        }
-        ctx.restore();
-
-        // Also stroke the outer estate boundary (along roads, rivers & open plains)
-        ctx.strokeStyle = '#968d7f';
-        ctx.lineWidth = 1.65;
-        ctx.beginPath();
-        const outerHedges = [];
-        for (let i = 0; i < estateTiles.length; i++) {
-          const tx = estateTiles[i][0], ty = estateTiles[i][1];
-          const xL = tx * ts, xR = (tx + 1) * ts;
-          const yT = ty * ts, yB = (ty + 1) * ts;
-          if (!estateTileSet.has(tx * 10000 + (ty - 1))) {
-            ctx.moveTo(xL, yT); ctx.lineTo(xR, yT);
-            if ((tx + ty) % 2 === 0) outerHedges.push([xL + ts * 0.5, yT]);
-          }
-          if (!estateTileSet.has(tx * 10000 + (ty + 1))) {
-            ctx.moveTo(xL, yB); ctx.lineTo(xR, yB);
-            if ((tx + ty) % 2 === 0) outerHedges.push([xL + ts * 0.5, yB]);
-          }
-          if (!estateTileSet.has((tx - 1) * 10000 + ty)) {
-            ctx.moveTo(xL, yT); ctx.lineTo(xL, yB);
-            if ((tx + ty) % 2 === 0) outerHedges.push([xL, yT + ts * 0.5]);
-          }
-          if (!estateTileSet.has((tx + 1) * 10000 + ty)) {
-            ctx.moveTo(xR, yT); ctx.lineTo(xR, yB);
-            if ((tx + ty) % 2 === 0) outerHedges.push([xR, yT + ts * 0.5]);
-          }
-        }
-        ctx.stroke();
-        for (let h = 0; h < outerHedges.length; h++) {
-          ctx.fillStyle = (h % 2 === 0) ? '#5f7856' : '#78926d';
-          ctx.beginPath();
-          ctx.arc(outerHedges[h][0], outerHedges[h][1], 2.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        continue;
-      }
-
-      const parcels = bspList;
+      const inset = 0.9;
+      const cornerR = 3.8;
 
       for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
         const p = parcels[pIdx];
-        const tiles = p.tiles;
-        if (!tiles || tiles.length === 0) continue;
         const st = cropStyles[p.crop] || cropStyles.wheat;
+        const px = p.x0 * ts + inset;
+        const py = p.y0 * ts + inset;
+        const pw = (p.x1 - p.x0) * ts - inset * 2;
+        const ph = (p.y1 - p.y0) * ts - inset * 2;
+        if (pw <= 4 || ph <= 4) continue;
 
-        // Build fast tile membership set for perimeter edge detection & bounding box
-        const tileSet = new Set();
-        let minTx = Infinity, maxTx = -Infinity, minTy = Infinity, maxTy = -Infinity;
-        for (let i = 0; i < tiles.length; i++) {
-          const tx = tiles[i][0], ty = tiles[i][1];
-          tileSet.add(tx * 10000 + ty);
-          if (tx < minTx) minTx = tx;
-          if (tx > maxTx) maxTx = tx;
-          if (ty < minTy) minTy = ty;
-          if (ty > maxTy) maxTy = ty;
-        }
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(px, py, pw, ph, cornerR);
+        ctx.fillStyle = st.fill;
+        ctx.fill();
+        ctx.clip();
 
-        if (styleMode === 'terraced') {
-          // Mode 3: Classic OpenTTD Per-Tile Patchwork Grid (visible 1×1 background tiles with micro-furrows)
-          for (let i = 0; i < tiles.length; i++) {
-            const tx = tiles[i][0], ty = tiles[i][1];
-            const px = tx * ts + 0.7;
-            const py = ty * ts + 0.7;
-            const pw = ts - 1.4;
-            const ph = ts - 1.4;
-
-            ctx.fillStyle = st.fill;
-            ctx.strokeStyle = st.furrow;
-            ctx.lineWidth = 0.75;
-            ctx.beginPath();
-            ctx.roundRect(px, py, pw, ph, 2.0);
-            ctx.fill();
-            ctx.stroke();
-
-            if (p.crop === 'orchard') {
-              ctx.fillStyle = st.furrow;
-              for (const oy of [0.32, 0.68]) {
-                for (const ox of [0.32, 0.68]) {
-                  ctx.beginPath();
-                  ctx.arc(px + pw * ox, py + ph * oy, 1.55, 0, Math.PI * 2);
-                  ctx.fill();
-                }
-              }
-            } else {
-              ctx.strokeStyle = st.furrow;
-              ctx.lineWidth = 1.05;
+        if (p.crop === 'orchard') {
+          const step = 6.6;
+          let rowIdx = 0;
+          ctx.fillStyle = st.furrow;
+          for (let oy = py + 4.2; oy < py + ph - 3.2; oy += step, rowIdx++) {
+            const xShift = (rowIdx % 2) * (step * 0.45);
+            for (let ox = px + 4.2 + xShift; ox < px + pw - 3.2; ox += step) {
               ctx.beginPath();
-              if (p.furrowDir % 2 === 0) {
-                for (const ry of [0.28, 0.52, 0.76]) {
-                  ctx.moveTo(px + 2.0, py + ph * ry);
-                  ctx.lineTo(px + pw - 2.0, py + ph * ry);
-                }
-              } else {
-                for (const rx of [0.28, 0.52, 0.76]) {
-                  ctx.moveTo(px + pw * rx, py + 2.0);
-                  ctx.lineTo(px + pw * rx, py + ph - 2.0);
-                }
-              }
-              ctx.stroke();
+              ctx.arc(ox, oy, 1.55, 0, Math.PI * 2);
+              ctx.fill();
             }
           }
         } else {
-          // Mode 1 ('cadastral') & Mode 2 ('bocage'): Seamless Free-Form Tile-Union Fill + Clipped Continuous Furrows
-          ctx.save();
+          const furrowStep = 4.8;
+          ctx.strokeStyle = st.furrow;
+          ctx.lineWidth = 0.95;
           ctx.beginPath();
-          for (let i = 0; i < tiles.length; i++) {
-            ctx.rect(tiles[i][0] * ts - 0.35, tiles[i][1] * ts - 0.35, ts + 0.7, ts + 0.7);
-          }
-          ctx.fillStyle = st.fill;
-          ctx.fill();
-          ctx.clip();
-
-          const x0 = minTx * ts;
-          const y0 = minTy * ts;
-          const bw = (maxTx - minTx + 1) * ts;
-          const bh = (maxTy - minTy + 1) * ts;
-          const midX = x0 + bw * 0.5;
-          const midY = y0 + bh * 0.5;
-
-          if (p.crop === 'orchard') {
-            const step = 6.2;
-            let rowIdx = 0;
-            for (let oy = y0 + 3.5; oy < y0 + bh - 2.5; oy += step, rowIdx++) {
-              const xShift = (rowIdx % 2) * (step * 0.45);
-              for (let ox = x0 + 3.5 + xShift; ox < x0 + bw - 2.5; ox += step) {
-                ctx.fillStyle = 'rgba(54, 56, 62, 0.14)';
-                ctx.beginPath();
-                ctx.arc(ox + 0.9, oy + 0.9, 2.05, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = st.furrow;
-                ctx.beginPath();
-                ctx.arc(ox, oy, 2.0, 0, Math.PI * 2);
-                ctx.fill();
-              }
+          if (p.furrowDir === 0) {
+            for (let fy = py + furrowStep * 0.75; fy < py + ph - 2.0; fy += furrowStep) {
+              ctx.moveTo(px + 2.2, fy);
+              ctx.lineTo(px + pw - 2.2, fy);
             }
           } else {
-            const angles = styleMode === 'bocage'
-              ? [0, Math.PI * 0.5, 0.62, -0.62]
-              : [0, Math.PI * 0.5];
-            const ang = angles[p.furrowDir % angles.length];
-            const diag = Math.hypot(bw, bh) * 0.65;
-            const furrowStep = 4.0;
-
-            ctx.save();
-            ctx.translate(midX, midY);
-            ctx.rotate(ang);
-            ctx.strokeStyle = st.furrow;
-            ctx.lineWidth = 1.25;
-            ctx.beginPath();
-            for (let fy = -diag; fy <= diag; fy += furrowStep) {
-              ctx.moveTo(-diag, fy);
-              ctx.lineTo(diag, fy);
-            }
-            ctx.stroke();
-            ctx.restore();
-
-            // Scatter golden cylindrical hay bales on wheat fields
-            if (p.crop === 'wheat') {
-              for (let i = 0; i < tiles.length; i += 5) {
-                const bx = (tiles[i][0] + 0.52) * ts;
-                const by = (tiles[i][1] + 0.48) * ts;
-                ctx.fillStyle = 'rgba(54, 56, 62, 0.18)';
-                ctx.beginPath();
-                ctx.arc(bx + 1.0, by + 1.0, 2.0, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.fillStyle = st.bale;
-                ctx.strokeStyle = '#bfa56c';
-                ctx.lineWidth = 0.8;
-                ctx.beginPath();
-                ctx.arc(bx, by, 1.9, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.stroke();
-              }
+            for (let fx = px + furrowStep * 0.75; fx < px + pw - 2.0; fx += furrowStep) {
+              ctx.moveTo(fx, py + 2.2);
+              ctx.lineTo(fx, py + ph - 2.2);
             }
           }
-          ctx.restore();
+          ctx.stroke();
         }
+        ctx.restore();
 
-        // Draw True Outer Perimeter Boundary Edges (Fences / Irrigation Ditches / Bocage Hedgerows)
-        ctx.strokeStyle = styleMode === 'bocage' ? '#968d7f' : st.border;
-        ctx.lineWidth = styleMode === 'bocage' ? 1.65 : 1.35;
+        // Crisp rounded-rectangle strip perimeter
+        ctx.strokeStyle = st.border;
+        ctx.lineWidth = 1.1;
         ctx.beginPath();
-        const hedgePts = [];
-        for (let i = 0; i < tiles.length; i++) {
-          const tx = tiles[i][0], ty = tiles[i][1];
-          const xL = tx * ts, xR = (tx + 1) * ts;
-          const yT = ty * ts, yB = (ty + 1) * ts;
-          if (!tileSet.has(tx * 10000 + (ty - 1))) {
-            ctx.moveTo(xL, yT);
-            ctx.lineTo(xR, yT);
-            if ((tx + ty + pIdx) % 2 === 0) hedgePts.push([xL + ts * 0.5, yT]);
-          }
-          if (!tileSet.has(tx * 10000 + (ty + 1))) {
-            ctx.moveTo(xL, yB);
-            ctx.lineTo(xR, yB);
-            if ((tx + ty + pIdx) % 2 === 0) hedgePts.push([xL + ts * 0.5, yB]);
-          }
-          if (!tileSet.has((tx - 1) * 10000 + ty)) {
-            ctx.moveTo(xL, yT);
-            ctx.lineTo(xL, yB);
-            if ((tx + ty + pIdx) % 2 === 0) hedgePts.push([xL, yT + ts * 0.5]);
-          }
-          if (!tileSet.has((tx + 1) * 10000 + ty)) {
-            ctx.moveTo(xR, yT);
-            ctx.lineTo(xR, yB);
-            if ((tx + ty + pIdx) % 2 === 0) hedgePts.push([xR, yT + ts * 0.5]);
+        ctx.roundRect(px, py, pw, ph, cornerR);
+        ctx.stroke();
+      }
+
+      // Smooth vector road & farmstead slicing inside the union of this farm's cadastral strips:
+      // Any diagonal road crossing a strip carves a smooth, jaggie-free vector corridor
+      // lined with a parallel field border (`#d7cdb8`) and a clean paper verge (`PALETTE.bgPaper`).
+      ctx.save();
+      ctx.beginPath();
+      for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
+        const p = parcels[pIdx];
+        const px = p.x0 * ts + inset;
+        const py = p.y0 * ts + inset;
+        const pw = (p.x1 - p.x0) * ts - inset * 2;
+        const ph = (p.y1 - p.y0) * ts - inset * 2;
+        if (pw > 4 && ph > 4) {
+          ctx.roundRect(px, py, pw, ph, cornerR);
+        }
+      }
+      ctx.clip();
+
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      const strokeNearbyRoads = (strokeCol, widthPx) => {
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth = widthPx;
+        ctx.beginPath();
+        for (const r of world.roads) {
+          const pts = r.points;
+          if (!pts || pts.length < 2) continue;
+          // Quick bounding check around farmstead `(d.x, d.y)`
+          const p0 = pts[0];
+          if (Math.abs(p0.x - d.x) > 28 && Math.abs(p0.y - d.y) > 28) continue;
+          ctx.moveTo(p0.x * ts + ts * 0.5, p0.y * ts + ts * 0.5);
+          for (let i = 1; i < pts.length; i++) {
+            ctx.lineTo(pts[i].x * ts + ts * 0.5, pts[i].y * ts + ts * 0.5);
           }
         }
         ctx.stroke();
+      };
 
-        // Render perimeter hedgerow shrubs (dense along seams in 'bocage', sparse corner windbreaks in 'cadastral')
-        const stride = styleMode === 'bocage' ? 1 : (styleMode === 'cadastral' ? 4 : 999);
-        for (let h = 0; h < hedgePts.length; h += stride) {
-          const hx = hedgePts[h][0];
-          const hy = hedgePts[h][1];
-          const hr = styleMode === 'bocage' ? 2.4 + ((h % 3) * 0.45) : 2.1;
-          ctx.fillStyle = (h % 2 === 0) ? '#637c5a' : '#7b9470';
-          ctx.beginPath();
-          ctx.arc(hx, hy, hr, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
+      const roadCasingW = ts * 0.92;
+      strokeNearbyRoads('#d6ccb6', roadCasingW + 4.4);
+      strokeNearbyRoads(PALETTE.bgPaper, roadCasingW + 2.2);
+
+      // Frame the 2×2 farmstead yard itself with a clean rounded margin
+      const padX = d.gx * ts - 1.6;
+      const padY = d.gy * ts - 1.6;
+      const padW = (d.wTiles || 2) * ts + 3.2;
+      const padH = (d.hTiles || 2) * ts + 3.2;
+      ctx.fillStyle = PALETTE.bgPaper;
+      ctx.strokeStyle = '#d6ccb6';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(padX, padY, padW, padH, 4.2);
+      ctx.stroke();
+      ctx.fill();
+
+      ctx.restore();
     }
   }
 
