@@ -623,7 +623,7 @@ export class MiniMotorwaysRenderer {
 
     // Pass B: Road Outer Casing (Grey)
     for (const r of world.roads) {
-      if (r.points.length < 2) continue;
+      if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadCasing;
       ctx.lineWidth = r.type === 'street' ? ts * 0.58 : (r.type === 'airport-loop' ? ts * 0.66 : ts * 0.74);
       this.traceSmoothPath(ctx, r.points, ts);
@@ -663,7 +663,7 @@ export class MiniMotorwaysRenderer {
     ctx.stroke();
 
     for (const r of world.roads) {
-      if (r.points.length < 2) continue;
+      if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadAsphalt;
       ctx.lineWidth = r.type === 'street' ? ts * 0.42 : (r.type === 'airport-loop' ? ts * 0.48 : ts * 0.56);
       this.traceSmoothPath(ctx, r.points, ts);
@@ -997,38 +997,6 @@ export class MiniMotorwaysRenderer {
       ctx.fill();
       ctx.stroke();
 
-      // 1B. Landside Curbside Terminal Loop Road & Access Avenue Stub (drawn on top of pad)
-      const loopHalfW = (ap.isHub ? 3.0 : 2.1) * ts;
-      const loopInnerY = side * (ap.isHub ? 2.05 : 1.60) * ts;
-      const loopOuterY = side * (ap.isHub ? 3.45 : 2.65) * ts;
-      const loopTopY = Math.min(loopInnerY, loopOuterY);
-      const loopBoxH = Math.abs(loopOuterY - loopInnerY);
-      const stubEndY = side * (ap.stubDist || (ap.isHub ? 5.8 : 4.6)) * ts;
-
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      for (const [stroke, lw] of [[PALETTE.roadCasing, ts * 0.58], [PALETTE.roadAsphalt, ts * 0.40]]) {
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = lw;
-        ctx.beginPath();
-        ctx.roundRect(-loopHalfW, loopTopY, loopHalfW * 2, loopBoxH, loopBoxH * 0.48);
-        ctx.moveTo(0, loopOuterY);
-        ctx.lineTo(0, stubEndY);
-        ctx.stroke();
-      }
-
-      // Short-Term Parking & Transit Plaza Island inside the Curbside Loop
-      const plazaMidY = (loopInnerY + loopOuterY) * 0.5;
-      const plazaW = loopHalfW * 1.22;
-      const plazaH = Math.max(ts * 0.45, loopBoxH * 0.45);
-      ctx.fillStyle = '#d8d5ce';
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.roundRect(-plazaW * 0.5, plazaMidY - plazaH * 0.5, plazaW, plazaH, 4);
-      ctx.fill();
-      ctx.stroke();
-
       if (ap.isHub) {
         // =================================================================
         // TIER 1: INTERNATIONAL DUAL-RUNWAY HUB (Parallel Runways L & R)
@@ -1224,22 +1192,125 @@ export class MiniMotorwaysRenderer {
         this.drawAirportTower(ctx, towerX, termY, ts, ap.palette.roof);
       }
 
+      // 3. Landside Terminal Curbside Loop, Parking Plaza, Access Spine & Gateway Roundabout
+      const termW = (ap.isHub ? rwyLen * 0.46 : rwyLen * 0.40);
+      const termH = ts * (ap.isHub ? 1.15 : 1.02);
+      const termY = side * ts * (ap.isHub ? 1.32 : 1.18);
+      const termOuterY = termY + side * (termH * 0.5);
+
+      const loopW = termW * (ap.isHub ? 0.82 : 0.88);
+      const loopHalfW = loopW * 0.5;
+      const loopInnerY = termOuterY + side * (ts * 0.22);
+      const loopOuterY = loopInnerY + side * (ts * 1.06);
+      const loopTopY = Math.min(loopInnerY, loopOuterY);
+      const loopBoxH = Math.abs(loopOuterY - loopInnerY);
+      const loopR = loopBoxH * 0.48;
+
+      // Transit / Parking Plaza Island inside the Curbside Loop
+      const plazaMidY = (loopInnerY + loopOuterY) * 0.5;
+      const plazaW = loopW * 0.74;
+      const plazaH = loopBoxH * 0.45;
+      ctx.fillStyle = '#d8d5ce';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(-plazaW * 0.5, plazaMidY - plazaH * 0.5, plazaW, plazaH, 3.5);
+      ctx.fill();
+      ctx.stroke();
+
+      // Project the exact Gateway Roundabout location into local airport coordinates
+      const cosA = Math.cos(ap.angleRad);
+      const sinA = Math.sin(ap.angleRad);
+      const gatePx = ap.gateX * ts + ts * 0.5;
+      const gatePy = ap.gateY * ts + ts * 0.5;
+      const gdx = gatePx - cx;
+      const gdy = gatePy - cy;
+      const localGateX = gdx * cosA + gdy * sinA;
+      const localGateY = -gdx * sinA + gdy * cosA;
+
+      const spineStartY = loopOuterY;
+
+      // PASS 1: Road Grey Casing for BOTH Curbside Loop AND Access Spine
+      // Stroking both together in Pass 1 guarantees the outer grey casing wraps continuously
+      // around the entire landside loop and spine without any inner casing lines cutting across!
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = PALETTE.roadCasing;
+      ctx.lineWidth = ts * 0.68;
+      ctx.beginPath();
+      ctx.roundRect(-loopHalfW, loopTopY, loopW, loopBoxH, loopR);
+      ctx.moveTo(0, spineStartY);
+      ctx.lineTo(localGateX, localGateY);
+      ctx.stroke();
+
+      // PASS 2: Crisp White Road Asphalt Fill for BOTH Curbside Loop AND Access Spine
+      // Drawing both fills together in Pass 2 seamlessly fuses the loop and spine into a single
+      // continuous white roadway, completely eliminating any protruding round caps or line cuts!
+      ctx.strokeStyle = PALETTE.roadAsphalt;
+      ctx.lineWidth = ts * 0.50;
+      ctx.beginPath();
+      ctx.roundRect(-loopHalfW, loopTopY, loopW, loopBoxH, loopR);
+      ctx.moveTo(0, spineStartY);
+      ctx.lineTo(localGateX, localGateY);
+      ctx.stroke();
+
+      // Airport Gateway Entrance Roundabout Interchange at (localGateX, localGateY)
+      // Perfectly anchors and caps the access spine and any incoming municipal arterial or motorway!
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#36383e';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(localGateX, localGateY, ts * 0.48, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Decorative central island branded with the airport town's palette roof color
+      ctx.fillStyle = ap.palette.roof;
+      ctx.beginPath();
+      ctx.arc(localGateX, localGateY, ts * 0.18, 0, Math.PI * 2);
+      ctx.fill();
+
       ctx.restore();
 
-      // Floating Minimalist IATA & Tier Pill Tag
+      // Floating Minimalist IATA & Tier Pill Tag (floating cleanly above the northernmost facility bounds)
+      const corners = [
+        [-padLen * 0.5, -padWid * 0.5],
+        [padLen * 0.5, -padWid * 0.5],
+        [padLen * 0.5, padWid * 0.5],
+        [-padLen * 0.5, padWid * 0.5]
+      ];
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      for (const [u, v] of corners) {
+        const wx = cx + u * cosA - v * sinA;
+        const wy = cy + u * sinA + v * cosA;
+        if (wy < minY) minY = wy;
+        if (wy > maxY) maxY = wy;
+        if (wx < minX) minX = wx;
+        if (wx > maxX) maxX = wx;
+      }
+      if (gatePy < minY) minY = gatePy;
+      if (gatePy > maxY) maxY = gatePy;
+
       ctx.save();
       ctx.font = '800 10px Inter, sans-serif';
       const badgePrefix = ap.airportClass === 'HUB' ? '✈ HUB' : (ap.airportClass === 'CRG' ? '📦 CRG' : '✈ REG');
       const tagText = `${badgePrefix} • ${ap.iata}`;
       const tw = ctx.measureText(tagText).width + 14;
+
+      const badgeX = Math.max(tw * 0.5 + 10, Math.min(world.W * ts - tw * 0.5 - 10, (minX + maxX) * 0.5));
+      const badgeY = minY >= 36 ? minY - 15 : maxY + 20;
+
       ctx.fillStyle = ap.isHub ? '#e85c90' : '#36383e';
       ctx.beginPath();
-      ctx.roundRect(cx - tw * 0.5, cy - ts * (ap.isHub ? 3.2 : 2.5), tw, 18, 9);
+      ctx.roundRect(badgeX - tw * 0.5, badgeY - 9, tw, 18, 9);
       ctx.fill();
       ctx.fillStyle = '#f2efe9';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(tagText, cx, cy - ts * (ap.isHub ? 3.2 : 2.5) + 9);
+      ctx.fillText(tagText, badgeX, badgeY);
       ctx.restore();
     }
   }
@@ -1609,13 +1680,23 @@ export class MiniMotorwaysRenderer {
       if (!mw.prunedStart) termEndpoints.push([sx, sy]);
       if (!mw.prunedEnd) termEndpoints.push([ex, ey]);
       for (const [rx, ry] of termEndpoints) {
+        const apGateway = world.airports.find(
+          a => Math.hypot(a.gateX * ts + ts * 0.5 - rx, a.gateY * ts + ts * 0.5 - ry) < 1.0
+        );
         ctx.fillStyle = '#ffffff';
         ctx.strokeStyle = '#36383e';
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 2.4;
         ctx.beginPath();
-        ctx.arc(rx, ry, ts * 0.44, 0, Math.PI * 2);
+        ctx.arc(rx, ry, ts * 0.48, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+
+        if (apGateway) {
+          ctx.fillStyle = apGateway.palette.roof;
+          ctx.beginPath();
+          ctx.arc(rx, ry, ts * 0.18, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
 
       // Choose a clean Highway Shield Badge ([1], [2]) position that maximizes clearance from all interchanges & endpoints
