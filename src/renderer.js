@@ -559,9 +559,9 @@ export class MiniMotorwaysRenderer {
     // 9. Draw Live Aircraft & Flight Corridors
     this.drawPlanes(ctx, world, sim, ts);
 
-    // 10. Highlight Selected Town or Airport Ring
+    // 10. Highlight Selected Building, Farm Estate, Town or Airport + Active Supply-Chain Corridors
     if (this.selectedEntity) {
-      this.drawSelectionHighlight(ctx, this.selectedEntity, ts);
+      this.drawSelectionHighlight(ctx, world, this.selectedEntity, ts);
     }
 
     ctx.restore();
@@ -3225,14 +3225,203 @@ export class MiniMotorwaysRenderer {
     ctx.restore();
   }
 
-  drawSelectionHighlight(ctx, entity, ts) {
-    const cx = entity.x * ts + ts * 0.5;
-    const cy = entity.y * ts + ts * 0.5;
-    const rad = (entity.urbanRadius ? entity.urbanRadius * 0.85 : entity.halfLen + 2) * ts;
-
+  drawSelectionHighlight(ctx, world, entity, ts) {
     ctx.save();
+    const ox = ts * 0.5;
+    const oy = ts * 0.5;
+
+    // Case 1: Industrial or Commercial Building (`entity.zoneType`)
+    if (entity.zoneType === 'industrial' || entity.zoneType === 'commercial') {
+      const wT = entity.wTiles || 2;
+      const hT = entity.hTiles || 2;
+      const cx = entity.x * ts + ox;
+      const cy = entity.y * ts + oy;
+      const boxW = (wT + 0.72) * ts;
+      const boxH = (hT + 0.72) * ts;
+
+      // 1A. If this is a FARM with a sprawling estate, highlight the outer estate boundary
+      if (entity.resourceType === 'FARM' && entity.bspParcels && entity.bspParcels.length > 0) {
+        ctx.save();
+        if (this._cachedArablePaths && this._cachedArablePaths.arableFillPath) {
+          ctx.clip(this._cachedArablePaths.arableFillPath);
+        }
+        ctx.strokeStyle = 'rgba(217, 119, 6, 0.55)';
+        ctx.lineWidth = 2.0;
+        ctx.setLineDash([6, 4]);
+        if (entity.estateLoops && entity.estateLoops.length > 0) {
+          ctx.beginPath();
+          for (const loop of entity.estateLoops) {
+            if (!loop || loop.length < 3) continue;
+            ctx.moveTo(loop[0][0] * ts, loop[0][1] * ts);
+            for (let i = 1; i < loop.length; i++) {
+              ctx.lineTo(loop[i][0] * ts, loop[i][1] * ts);
+            }
+            ctx.closePath();
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // 1B. Highlight all Upstream (Inbound) and Downstream (Outbound) Cargo Corridors connected to `entity`
+      const connectedLinks = (world.cargoLinks || []).filter(
+        l => l.from.id === entity.id || l.to.id === entity.id
+      );
+
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const link of connectedLinks) {
+        const pts = link.points;
+        if (!pts || pts.length < 2) continue;
+        const isOutbound = link.from.id === entity.id;
+        const partner = isOutbound ? link.to : link.from;
+        const col = isOutbound ? '#2563eb' : '#d97706';
+
+        // Crisp white corridor casing
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.88)';
+        ctx.lineWidth = 5.4;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        this.traceSmoothPath(ctx, pts, ts);
+        ctx.stroke();
+
+        // Directional dashed freight vector
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2.8;
+        ctx.setLineDash([7, 4.5]);
+        ctx.beginPath();
+        this.traceSmoothPath(ctx, pts, ts);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Midpoint directional chevron arrowhead
+        const midIdx = Math.max(0, Math.min(pts.length - 2, Math.floor(pts.length * 0.5)));
+        const p0 = pts[midIdx];
+        const p1 = pts[Math.min(pts.length - 1, midIdx + 2)];
+        const ax = (p0.x + p1.x) * 0.5 * ts + ox;
+        const ay = (p0.y + p1.y) * 0.5 * ts + oy;
+        const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+        ctx.save();
+        ctx.translate(ax, ay);
+        ctx.rotate(ang);
+        ctx.fillStyle = col;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(6.2, 0);
+        ctx.lineTo(-4.4, -4.6);
+        ctx.lineTo(-4.4, 4.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        // Highlight connected partner building pad + compact role badge
+        const pwT = partner.wTiles || 2;
+        const phT = partner.hTiles || 2;
+        const pcx = partner.x * ts + ox;
+        const pcy = partner.y * ts + oy;
+        const pBoxW = (pwT + 0.55) * ts;
+        const pBoxH = (phT + 0.55) * ts;
+
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3.8;
+        ctx.beginPath();
+        ctx.roundRect(pcx - pBoxW * 0.5, pcy - pBoxH * 0.5, pBoxW, pBoxH, 5.5);
+        ctx.stroke();
+
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.roundRect(pcx - pBoxW * 0.5, pcy - pBoxH * 0.5, pBoxW, pBoxH, 5.5);
+        ctx.stroke();
+
+        const pTag = partner.resourceType || (partner.zoneType === 'commercial' ? 'CBD' : (partner.subType || 'MFG'));
+        const badgeText = isOutbound ? `→ ${pTag}` : `← ${pTag}`;
+        ctx.font = '800 8.5px Inter, sans-serif';
+        const bw = ctx.measureText(badgeText).width + 10;
+        // Flip badge below `partner` if placing it above would collide with the selected building's frame
+        const placeBelow =
+          pcy > cy &&
+          Math.abs(pcx - cx) < (boxW + pBoxW) * 0.65 &&
+          (pcy - pBoxH * 0.5 - 16) < (cy + boxH * 0.5);
+        const by = placeBelow ? (pcy + pBoxH * 0.5 + 10) : (pcy - pBoxH * 0.5 - 10);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.roundRect(pcx - bw * 0.5, by - 6.5, bw, 13, 3.5);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, pcx, by + 0.5);
+      }
+
+      // 1C. Precision double-cased selection frame around the selected building itself
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 5.2;
+      ctx.beginPath();
+      ctx.roundRect(cx - boxW * 0.5, cy - boxH * 0.5, boxW, boxH, 6.5);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#36383e';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.roundRect(cx - boxW * 0.5, cy - boxH * 0.5, boxW, boxH, 6.5);
+      ctx.stroke();
+
+      // Floating Selected Facility Stage Pill above building
+      const selTag = entity.resourceType
+        ? `${entity.resourceType}`
+        : (entity.zoneType === 'commercial' ? (entity.isCircular ? 'CBD HUB' : 'COMMERCIAL') : (entity.subType === 'RAW' ? 'CHEM · RAW' : entity.subType));
+      ctx.font = '800 9px Inter, sans-serif';
+      const sw = ctx.measureText(selTag).width + 12;
+      const sy = cy - boxH * 0.5 - 11;
+      ctx.fillStyle = '#36383e';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(cx - sw * 0.5, sy - 7, sw, 14, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#f2efe9';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(selTag, cx, sy + 0.5);
+
+      ctx.restore();
+      return;
+    }
+
+    // Case 2: Airport (`entity.halfLen`)
+    if (typeof entity.halfLen === 'number') {
+      const cx = entity.x * ts + ox;
+      const cy = entity.y * ts + oy;
+      const padLen = (entity.halfLen * 2 + 2.4) * ts;
+      const padWid = (entity.halfWid * 2 + (entity.isHub ? 2.4 : 1.8)) * ts;
+      ctx.translate(cx, cy);
+      ctx.rotate(entity.angleRad || 0);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 5.0;
+      ctx.beginPath();
+      ctx.roundRect(-padLen * 0.5, -padWid * 0.5, padLen, padWid, 12);
+      ctx.stroke();
+      ctx.strokeStyle = '#e85c90';
+      ctx.lineWidth = 2.6;
+      ctx.setLineDash([8, 5]);
+      ctx.beginPath();
+      ctx.roundRect(-padLen * 0.5, -padWid * 0.5, padLen, padWid, 12);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    // Case 3: Town (`entity.urbanRadius`)
+    const cx = entity.x * ts + ox;
+    const cy = entity.y * ts + oy;
+    const rad = (entity.urbanRadius || 12) * 0.85 * ts;
     ctx.strokeStyle = '#36383e';
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 2.8;
     ctx.setLineDash([8, 6]);
     ctx.beginPath();
     ctx.arc(cx, cy, rad, 0, Math.PI * 2);

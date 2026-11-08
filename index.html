@@ -257,7 +257,7 @@
       </div>
 
       <div class="text-[11px] text-stone-500 flex items-center justify-between pt-0.5">
-        <span>Tap or click any <b>Airport</b> / <b>Town</b></span>
+        <span>Tap or click any <b>Building</b>, <b>Farm</b>, <b>Airport</b> or <b>Town</b></span>
         <span>Drag to pan • Pinch / Scroll to zoom</span>
       </div>
     </div>
@@ -310,24 +310,33 @@
     </div>
   </div>
 
-  <!-- BOTTOM ENTITY INSPECTOR CARD (Responsive Bottom Sheet on Mobile, Card on Desktop) -->
-  <div id="inspectorCard" class="fixed bottom-2.5 left-2.5 right-2.5 sm:left-auto sm:bottom-4 sm:right-4 z-30 sm:w-96 glass-panel rounded-2xl p-3.5 sm:p-4 hidden pointer-events-auto transition-all">
-    <div class="flex items-start justify-between gap-2 border-b border-stone-300/70 pb-2.5 mb-2.5">
-      <div>
-        <div class="flex items-center gap-2">
-          <span id="inspBadge" class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-pink-600 text-white">AIRPORT</span>
-          <span id="inspCode" class="mono text-xs font-bold text-stone-500">IATA: KMT</span>
+  <!-- BOTTOM ENTITY INSPECTOR DOSSIER (Responsive Bottom Sheet on Mobile, Floating Card on Desktop) -->
+  <aside id="inspectorCard" aria-label="Selected entity inspector" class="fixed bottom-2.5 left-2.5 right-2.5 sm:left-auto sm:bottom-4 sm:right-4 z-30 sm:w-[25.5rem] glass-panel rounded-2xl p-4 hidden pointer-events-auto transition-all duration-150">
+    <div class="flex items-start justify-between gap-2 pb-2.5 mb-2.5 border-b border-stone-300/70">
+      <div class="min-w-0">
+        <h2 id="inspTitle" class="text-[17px] sm:text-lg font-extrabold text-[#36383e] leading-tight tracking-tight truncate">Metro International Airport</h2>
+        <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
+          <span id="inspBadge" class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-pink-600 text-white tracking-wide">AIRPORT</span>
+          <span id="inspCode" class="mono text-[11px] font-bold text-stone-600">IATA: KMT</span>
         </div>
-        <h2 id="inspTitle" class="text-sm sm:text-base font-extrabold text-[#36383e] mt-0.5">Metro International Airport</h2>
       </div>
-      <button id="closeInspectorBtn" aria-label="Close inspector" class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-500 hover:text-stone-800 hover:bg-stone-200/70">
-        <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
+      <div class="flex items-center gap-1 shrink-0">
+        <button id="focusInspectorBtn" title="Center & Zoom on Map" aria-label="Center and zoom on selected entity" class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/80 active:scale-95 transition">
+          <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.1" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="7" />
+            <circle cx="12" cy="12" r="2" fill="currentColor" />
+            <path stroke-linecap="round" d="M12 2v3m0 14v3M2 12h3m14 0h3" />
+          </svg>
+        </button>
+        <button id="closeInspectorBtn" title="Close Inspector (Esc)" aria-label="Close inspector" class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/80 active:scale-95 transition">
+          <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
     </div>
-    <div id="inspBody" class="text-xs text-stone-600 space-y-2"></div>
-  </div>
+    <div id="inspBody" class="drawer-scroll text-xs text-stone-700 space-y-3 max-h-[54dvh] sm:max-h-[62dvh] overflow-y-auto pr-0.5"></div>
+  </aside>
 
 
   <script type="module" src="./src/main.js"></script>

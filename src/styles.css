@@ -4,6 +4,14 @@
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
+::selection {
+  background: rgba(232, 92, 144, 0.22);
+  color: #36383e;
+}
+:focus-visible {
+  outline: 2px solid #36383e;
+  outline-offset: 2px;
+}
 body, html {
   margin: 0;
   padding: 0;
@@ -25,8 +33,22 @@ canvas {
 canvas:active {
   cursor: grabbing;
 }
+h1 {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+h2 {
+  font-size: 1.15rem;
+  line-height: 1.28;
+  letter-spacing: -0.02em;
+}
 .mono {
   font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 .drawer-scroll {
   overscroll-behavior: contain;
