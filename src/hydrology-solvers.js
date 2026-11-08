@@ -243,8 +243,9 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       let bestSp = null;
       let bestScore = -1;
       for (let attempt = 0; attempt < 55; attempt++) {
-        const sx = world.rng.int(28, W - 29);
-        const sy = world.rng.int(24, H - 25);
+        // Keep interior mountain springs in the central highland core (>= 48 tiles inside map borders)
+        const sx = world.rng.int(48, W - 49);
+        const sy = world.rng.int(38, H - 39);
         const id = world.idx(sx, sy);
         if (world.waterMask[id] > 0) continue;
         const el = world.elevationField[id];
@@ -329,6 +330,27 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       path = applyMeanderingDisplacement(path, seedPhase, 0.42);
     }
 
+    // If an interior river approaches within 22 tiles of a map border anywhere before its final 12 points,
+    // snap it to exit directly off the map border at that point so it never grazes the border and hooks back inland!
+    if (path[0].x > 3 && path[0].x < W - 4 && path[0].y > 3 && path[0].y < H - 4) {
+      for (let i = 0; i < path.length - 12; i++) {
+        const pt = path[i];
+        if (pt.x >= W - 22) {
+          path = [{ x: W - 1, y: pt.y }, { x: W - 2, y: pt.y }, ...path.slice(i)];
+          break;
+        } else if (pt.x <= 21) {
+          path = [{ x: 0, y: pt.y }, { x: 1, y: pt.y }, ...path.slice(i)];
+          break;
+        } else if (pt.y >= H - 20) {
+          path = [{ x: pt.x, y: H - 1 }, { x: pt.x, y: H - 2 }, ...path.slice(i)];
+          break;
+        } else if (pt.y <= 19) {
+          path = [{ x: pt.x, y: 0 }, { x: pt.x, y: 1 }, ...path.slice(i)];
+          break;
+        }
+      }
+    }
+
     // Extend start/end vertices by 2 tiles if on map border or entering a water basin
     const first = path[0];
     if (first.x <= 3) path.unshift({ x: 0, y: first.y, width: first.width });
@@ -351,15 +373,15 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     }
 
     // Determine if this river starts at an interior mountain spring (vs. map border or upstream lake)
-    const startsAtBorder = first.x <= 3 || first.x >= W - 4 || first.y <= 3 || first.y >= H - 4;
-    const startsInLake = world.waterMask[world.idx(first.x, first.y)] === 2;
+    const startsAtBorder = path[0].x <= 3 || path[0].x >= W - 4 || path[0].y <= 3 || path[0].y >= H - 4;
+    const startsInLake = world.waterMask[world.idx(path[0].x, path[0].y)] === 2;
     const isInteriorSpring = !startsAtBorder && !startsInLake && !isMainOutflow;
 
     // Assign bold, Mini Motorways-scale cartographic channel widths:
-    // - Mainstems / border trunks: `1.85 -> 3.25` tiles
-    // - Interior mountain springs: emerge gracefully from `0.50` tiles in the highland forest to `2.30` tiles at mouth!
-    const startW = arch === 'island-hopper' ? 0.65 : (isMainOutflow ? 1.85 : (isInteriorSpring ? 0.50 : 1.25));
-    const endW = arch === 'island-hopper' ? 1.65 : (isMainOutflow ? 3.20 : 2.30);
+    // - Mainstems / border trunks: `1.85 -> 3.20` tiles (or `1.35 -> 2.40` for secondary border rivers)
+    // - Interior mountain springs: `0.55 -> 1.45` tiles (clearly subordinate tributary creeks!)
+    const startW = arch === 'island-hopper' ? 0.65 : (isMainOutflow ? 1.85 : (isInteriorSpring ? 0.55 : 1.35));
+    const endW = arch === 'island-hopper' ? 1.65 : (isMainOutflow ? 3.20 : (isInteriorSpring ? 1.45 : 2.40));
     for (let i = 0; i < path.length; i++) {
       const frac = i / Math.max(1, path.length - 1);
       if (path[i].width === undefined) {

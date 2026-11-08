@@ -2049,7 +2049,7 @@ export class ProceduralLogisticsWorld {
       ).length;
       if (attachedCount >= 2) return false;
       const angDiff = Math.abs(Math.atan2(Math.sin(ic.angleRad - baseAngle), Math.cos(ic.angleRad - baseAngle)));
-      return angDiff >= 0.98;
+      return angDiff >= 2.05; // Require >= 117° wide pass-through angle (never an acute V-point!)
     }) || null;
   }
 
@@ -2327,7 +2327,8 @@ export class ProceduralLogisticsWorld {
       const checkShared = (myX, myY, myUx, myUy, otX, otY, otUx, otUy) => {
         if (Math.hypot(myX - otX, myY - otY) < 8.5) {
           const dot = myUx * otUx + myUy * otUy;
-          if (dot > 0.45) return false;
+          // Require departing tangents at a shared endpoint to be >= 110° apart (`dot <= -0.34`) so they never form a V-point!
+          if (dot > -0.34) return false;
         }
         return true;
       };
@@ -3792,11 +3793,22 @@ export class ProceduralLogisticsWorld {
         rawSpans.push({ i0: startIdx, i1: samples.length - 7 });
       }
 
-      // Coalesce adjacent tunnel spans separated by a short (< 10 sample) surface speck
+      // Coalesce adjacent tunnel spans separated by a short (< 10 sample) surface speck ONLY if no interchange lies in the gap!
       const mergedSpans = [];
       for (const sp of rawSpans) {
-        if (mergedSpans.length > 0 && sp.i0 - mergedSpans[mergedSpans.length - 1].i1 <= 10) {
-          mergedSpans[mergedSpans.length - 1].i1 = sp.i1;
+        const prev = mergedSpans[mergedSpans.length - 1];
+        let gapHasInterchange = false;
+        if (prev && sp.i0 - prev.i1 <= 10) {
+          for (let g = prev.i1; g <= sp.i0; g++) {
+            const gpt = samples[g];
+            if (this.interchanges.some(ic => Math.hypot(ic.x - gpt.x, ic.y - gpt.y) < 12.5)) {
+              gapHasInterchange = true;
+              break;
+            }
+          }
+        }
+        if (prev && sp.i0 - prev.i1 <= 10 && !gapHasInterchange) {
+          prev.i1 = sp.i1;
         } else {
           mergedSpans.push({ ...sp });
         }
