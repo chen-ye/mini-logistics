@@ -190,10 +190,10 @@ function updateTelemetryUI(world, fromWorker = false) {
   document.getElementById('statPop').textContent = world.houses.length + world.destinations.length;
   const hubs = world.airports.filter(a => a.airportClass === 'HUB').length;
   const others = world.airports.length - hubs;
-  document.getElementById('statAirports').textContent = `${hubs}H / ${others}R`;
+  document.getElementById('statAirports').textContent = `${hubs} Hub · ${others} Reg`;
   const clovers = world.interchanges.filter(i => i.type === 'cloverleaf' || i.type === 'trumpet').length;
   const ramps = world.interchanges.filter(i => i.type === 'diamond-ramp').length;
-  document.getElementById('statBridges').textContent = `${clovers}C / ${ramps}R`;
+  document.getElementById('statBridges').textContent = `${clovers} Sys · ${ramps} Ramp`;
 
   const logEl = document.getElementById('pipelineLog');
   logEl.innerHTML = world.logs
@@ -203,17 +203,27 @@ function updateTelemetryUI(world, fromWorker = false) {
 
 let currentInspected = { type: null, entity: null };
 
+function compassSector(dx, dy) {
+  if (Math.hypot(dx, dy) < 2.5) return 'Core';
+  const dirs = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'];
+  const ang = Math.atan2(dy, dx);
+  const idx = Math.round(((ang + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 0.25)) % 8;
+  return dirs[idx];
+}
+
 function describeBuildingDossier(d) {
   const hostTown = currentWorld ? currentWorld.towns[d.townId] : null;
   const townName = hostTown ? hostTown.name : 'Regional';
+  const sec = hostTown ? compassSector(d.x - hostTown.x, d.y - hostTown.y) : `#${d.id}`;
+
   if (d.zoneType === 'commercial') {
     return {
       stage: 'COM',
       badge: d.isCircular ? 'CBD · LANDMARK' : 'COM · ARTERIAL',
       badgeClass: 'bg-blue-700 text-white',
       shortTag: d.isCircular ? 'CBD' : 'COM',
-      title: d.isCircular ? `${townName} Central Plaza` : `${townName} Commercial Exchange`,
-      roleDesc: 'Final consumer & commercial destination receiving finished goods and commuter trips.'
+      typeLabel: d.isCircular ? `CBD Plaza (${sec})` : `Commercial (${sec})`,
+      title: d.isCircular ? `${townName} CBD Plaza (${sec})` : `${townName} Commercial (${sec})`
     };
   }
   if (d.subType === 'RAW') {
@@ -223,8 +233,8 @@ function describeBuildingDossier(d) {
         badge: 'RAW · MINE',
         badgeClass: 'bg-amber-700 text-white',
         shortTag: 'MINE',
-        title: `${townName} Foothill Quarry`,
-        roleDesc: 'Out-of-town stone & ore extraction bench perched on steep foothill toes, hauling aggregate to urban factories.'
+        typeLabel: `Quarry (${sec})`,
+        title: `${townName} Quarry (${sec})`
       };
     }
     if (d.resourceType === 'TIMBER') {
@@ -233,8 +243,8 @@ function describeBuildingDossier(d) {
         badge: 'RAW · TIMBER',
         badgeClass: 'bg-amber-700 text-white',
         shortTag: 'WOOD',
-        title: `${townName} Forestry Camp`,
-        roleDesc: 'Windward upland sawmill and cedar log yard nestled in high-fertility woodland.'
+        typeLabel: `Sawmill (${sec})`,
+        title: `${townName} Sawmill (${sec})`
       };
     }
     if (d.resourceType === 'FARM') {
@@ -243,8 +253,8 @@ function describeBuildingDossier(d) {
         badge: 'RAW · FARM',
         badgeClass: 'bg-amber-700 text-white',
         shortTag: 'FARM',
-        title: `${townName} Alluvial Farmstead`,
-        roleDesc: 'Lowland agribusiness homestead with recursive BSP crop parcels, contour-hugging orchards, and broken-grid farm lanes.'
+        typeLabel: `Farm (${sec})`,
+        title: `${townName} Farm (${sec})`
       };
     }
     return {
@@ -252,8 +262,8 @@ function describeBuildingDossier(d) {
       badge: 'RAW · CHEM',
       badgeClass: 'bg-amber-700 text-white',
       shortTag: 'CHEM',
-      title: `${townName} Bulk & Chemical Works`,
-      roleDesc: 'Urban-fringe chemical tank farm, pressure vats, and bulk feedstock plant supplying local manufacturing.'
+      typeLabel: `Chem (${sec})`,
+      title: `${townName} Chemical Plant (${sec})`
     };
   }
   if (d.subType === 'LOG') {
@@ -262,8 +272,8 @@ function describeBuildingDossier(d) {
       badge: 'LOG · HUB',
       badgeClass: 'bg-purple-700 text-white',
       shortTag: 'LOG',
-      title: `${townName} Cross-Dock Logistics`,
-      roleDesc: 'High-throughput freight consolidation warehouse distributing manufactured goods to commercial cores.'
+      typeLabel: `Depot (${sec})`,
+      title: `${townName} Logistics Hub (${sec})`
     };
   }
   return {
@@ -271,8 +281,8 @@ function describeBuildingDossier(d) {
     badge: 'MFG · FACTORY',
     badgeClass: 'bg-orange-700 text-white',
     shortTag: 'MFG',
-    title: `${townName} Sawtooth Factory`,
-    roleDesc: 'North-light sawtooth manufacturing hall converting raw feedstock into finished commercial cargo.'
+    typeLabel: `Factory (${sec})`,
+    title: `${townName} Factory (${sec})`
   };
 }
 
@@ -308,34 +318,31 @@ function openEntityInspector(type, entity, shouldFocus = false) {
     const hostTown = currentWorld.towns[entity.hostTownId];
     badge.textContent = entity.classLabel.toUpperCase();
     badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-[#e85c90] text-white tracking-wide';
-    code.textContent = `IATA ${entity.iata} • ${entity.runwayLabel}`;
+    code.textContent = `IATA ${entity.iata} • (${Math.round(entity.x)}, ${Math.round(entity.y)})`;
     title.textContent = entity.name;
     body.innerHTML = `
       <div class="divide-y divide-stone-300/60 border-y border-stone-300/60">
         <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Runway Configuration</span>
+          <span class="text-stone-500 font-medium">Runways</span>
           <span class="mono font-bold text-[#36383e] tabular-nums">${entity.runwayCount} Parallel • ${entity.runwayLabel}</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Approach Obstacle Cone</span>
+          <span class="text-stone-500 font-medium">Approach Cone</span>
           <span class="mono font-bold text-emerald-700 tabular-nums">${entity.approachClearance}% Clear</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Expressway Gateway</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">Motorway [${entity.motorwayId || 1}] (${entity.distToCBD} tiles)</span>
+          <span class="text-stone-500 font-medium">Expressway Spur</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums">Motorway ${entity.motorwayId || 1} (${entity.distToCBD} tiles to CBD)</span>
         </div>
         ${hostTown ? `
         <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Host Municipality</span>
+          <span class="text-stone-500 font-medium">Municipality</span>
           <button type="button" data-jump-town="${hostTown.id}" class="font-bold text-[#36383e] hover:text-[#e85c90] underline underline-offset-2 transition flex items-center gap-1">
-            <span>${hostTown.name} (T${hostTown.tier})</span>
+            <span>${hostTown.name} (Tier ${hostTown.tier})</span>
             <svg class="w-3 h-3" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
           </button>
         </div>` : ''}
       </div>
-      <p class="text-[11px] text-stone-600 leading-relaxed">
-        Served by a grade-separated landside terminal loop road and dual-carriageway spine anchored into <b>Motorway [${entity.motorwayId || 1}]</b>.
-      </p>
     `;
   } else if (normalizedType === 'building') {
     const info = describeBuildingDossier(entity);
@@ -354,7 +361,7 @@ function openEntityInspector(type, entity, shouldFocus = false) {
       { key: 'RAW', label: '1. RAW', tone: 'bg-amber-700 text-white border-amber-700' },
       { key: 'MFG', label: '2. MFG', tone: 'bg-orange-700 text-white border-orange-700' },
       { key: 'LOG', label: '3. LOG', tone: 'bg-purple-700 text-white border-purple-700' },
-      { key: 'COM', label: '4. CBD', tone: 'bg-blue-700 text-white border-blue-700' }
+      { key: 'COM', label: '4. COM', tone: 'bg-blue-700 text-white border-blue-700' }
     ];
     const connectedStageSet = new Set();
     for (const l of inboundLinks) connectedStageSet.add(describeBuildingDossier(l.from).stage);
@@ -383,19 +390,19 @@ function openEntityInspector(type, entity, shouldFocus = false) {
 
     const wT = entity.wTiles || 2;
     const hT = entity.hTiles || 2;
-    let siteMetricLabel = 'Footprint & Frontage';
+    let siteMetricLabel = 'Footprint & Access';
     let siteMetricVal = `${wT}×${hT} Tiles • Road (${entity.roadX}, ${entity.roadY})`;
     if (entity.resourceType === 'FARM' && entity.bspParcels) {
-      siteMetricLabel = 'Estate Cadastral Layout';
-      siteMetricVal = `${entity.bspParcels.length} Parcels • ${(entity.tractorTracks || []).length} Farm Tracks`;
+      siteMetricLabel = 'Estate Layout';
+      siteMetricVal = `${entity.bspParcels.length} Parcels • ${(entity.tractorTracks || []).length} Tracks`;
     } else if (entity.resourceType === 'MINE') {
       const slopePct = Math.round((currentWorld.slopeField[currentWorld.idx(entity.gx, entity.gy)] || 0.1) * 100);
-      siteMetricLabel = 'Geologic Bench';
-      siteMetricVal = `${wT}×${hT} Quarry • ${slopePct}% Foothill Grade`;
+      siteMetricLabel = 'Foothill Bench';
+      siteMetricVal = `${wT}×${hT} Tiles • ${slopePct}% Slope`;
     } else if (entity.resourceType === 'TIMBER') {
       const fertPct = Math.round((currentWorld.fertilityField[currentWorld.idx(entity.gx, entity.gy)] || 0.6) * 100);
-      siteMetricLabel = 'Woodland Stand';
-      siteMetricVal = `${wT}×${hT} Sawmill • ${fertPct}% Windward Fertility`;
+      siteMetricLabel = 'Forest Stand';
+      siteMetricVal = `${wT}×${hT} Tiles • ${fertPct}% Fertility`;
     }
 
     const renderLinkRow = (link, dir) => {
@@ -403,8 +410,8 @@ function openEntityInspector(type, entity, shouldFocus = false) {
       const pInfo = describeBuildingDossier(partner);
       const distTiles = (link.points || []).length;
       const dirBadge = dir === 'in'
-        ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 shrink-0">← IN · ${pInfo.shortTag}</span>`
-        : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 shrink-0">→ OUT · ${pInfo.shortTag}</span>`;
+        ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 shrink-0">← ${pInfo.shortTag} #${partner.id}</span>`
+        : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 shrink-0">→ ${pInfo.shortTag} #${partner.id}</span>`;
       return `
         <button type="button" data-jump-dest="${partner.id}" class="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
           <div class="flex items-center gap-2 min-w-0">
@@ -412,7 +419,7 @@ function openEntityInspector(type, entity, shouldFocus = false) {
             <span class="font-bold text-[#36383e] group-hover:text-[#e85c90] truncate">${pInfo.title}</span>
           </div>
           <div class="flex items-center gap-1 shrink-0">
-            <span class="mono text-[10px] font-bold text-stone-500 tabular-nums">${distTiles}t</span>
+            <span class="mono text-[10px] font-bold text-stone-500 tabular-nums">${distTiles} tiles</span>
             <svg class="w-3.5 h-3.5 text-stone-400 group-hover:text-[#36383e]" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
           </div>
         </button>
@@ -441,7 +448,7 @@ function openEntityInspector(type, entity, shouldFocus = false) {
           <span class="text-stone-500 font-medium">Demand Channel</span>
           <span class="flex items-center gap-1.5 font-bold text-[#36383e] tabular-nums">
             <span class="w-2.5 h-2.5 rounded-xs inline-block" style="background:${entity.palette.roof}; border-bottom: 2px solid ${entity.palette.base}"></span>
-            <span>${entity.palette.name} • ${entity.pinsCount} Cargo Bays</span>
+            <span>${entity.palette.name} • ${entity.pinsCount} Bays</span>
           </span>
         </div>
         <div class="flex items-center justify-between py-1.5">
@@ -453,25 +460,23 @@ function openEntityInspector(type, entity, shouldFocus = false) {
       ${allLinksHtml ? `
         <div class="space-y-1.5">
           <div class="flex items-center justify-between text-[11px] font-bold text-stone-600">
-            <span>Connected Supply-Chain Links (${inboundLinks.length} In, ${outboundLinks.length} Out)</span>
-            <span class="text-[10px] font-normal text-stone-500">Click to inspect</span>
+            <span>Cargo Links (${inboundLinks.length} In, ${outboundLinks.length} Out)</span>
+            <span class="text-[10px] font-normal text-stone-500">Click to jump</span>
           </div>
-          <div class="space-y-1 max-h-32 overflow-y-auto drawer-scroll pr-0.5">
+          <div class="space-y-1 max-h-36 overflow-y-auto drawer-scroll pr-0.5">
             ${allLinksHtml}
           </div>
         </div>
       ` : `
-        <div class="py-1.5 border-b border-stone-300/60 text-[11px] text-stone-600">
-          Served directly by local <b>${entity.palette.name}</b> commuter and light-delivery traffic within <b>${hostTown ? hostTown.name : 'the district'}</b>.
+        <div class="text-[11px] text-stone-500">
+          Local <b>${entity.palette.name}</b> commuter &amp; retail destination in <b>${hostTown ? hostTown.name : 'the district'}</b>.
         </div>
       `}
-
-      <p class="text-[11px] text-stone-600 leading-relaxed">${info.roleDesc}</p>
     `;
   } else {
     badge.textContent = `TIER ${entity.tier} · ${entity.tierTitle.toUpperCase()}`;
     badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-[#36383e] text-white tracking-wide';
-    code.textContent = `CODE ${entity.iata} • ${entity.suitabilityScore}% ALLUVIAL FIT`;
+    code.textContent = `CODE ${entity.iata} • (${Math.round(entity.x)}, ${Math.round(entity.y)})`;
     title.textContent = entity.name;
 
     const ap = entity.airportId !== null ? currentWorld.airports[entity.airportId] : null;
@@ -483,7 +488,6 @@ function openEntityInspector(type, entity, shouldFocus = false) {
     const cPct = Math.round((cCount / totalBld) * 100);
     const iPct = Math.max(0, 100 - rPct - cPct);
 
-    // Gather key industrial & landmark facilities belonging to this town so the user can jump straight into them!
     const townFacilities = currentWorld.destinations
       .filter(d => d.townId === entity.id && (d.zoneType === 'industrial' || d.isCircular))
       .sort((a, b) => (b.isRuralNiche ? 1 : 0) - (a.isRuralNiche ? 1 : 0))
@@ -493,8 +497,8 @@ function openEntityInspector(type, entity, shouldFocus = false) {
       const fInfo = describeBuildingDossier(d);
       return `
         <button type="button" data-jump-dest="${d.id}" class="flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
-          <span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${fInfo.badgeClass} shrink-0">${fInfo.shortTag}</span>
-          <span class="text-[11px] font-bold text-[#36383e] group-hover:text-[#e85c90] truncate flex-1">${fInfo.title.replace(entity.name + ' ', '')}</span>
+          <span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${fInfo.badgeClass} shrink-0">${fInfo.shortTag} #${d.id}</span>
+          <span class="text-[11px] font-bold text-[#36383e] group-hover:text-[#e85c90] truncate flex-1">${fInfo.typeLabel}</span>
           <svg class="w-3 h-3 text-stone-400 group-hover:text-[#36383e] shrink-0" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
         </button>
       `;
@@ -514,21 +518,32 @@ function openEntityInspector(type, entity, shouldFocus = false) {
         </div>
       </div>
 
+      <div class="divide-y divide-stone-300/60 border-b border-stone-300/60">
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Urban Grid &amp; Fit</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums">${(entity.boroughs || []).length || 1} Boroughs • ${entity.suitabilityScore}% Fit</span>
+        </div>
+        ${ap ? `
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Airport</span>
+          <button type="button" data-jump-ap="${ap.id}" class="font-bold text-[#36383e] hover:text-[#e85c90] underline underline-offset-2 transition flex items-center gap-1">
+            <span>${ap.name} (${ap.iata})</span>
+            <svg class="w-3 h-3" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          </button>
+        </div>` : ''}
+      </div>
+
       ${facChipsHtml ? `
         <div class="space-y-1.5">
           <div class="flex items-center justify-between text-[11px] font-bold text-stone-600">
-            <span>Municipal Industries &amp; Landmarks</span>
-            <span class="text-[10px] font-normal text-stone-500">Click to inspect</span>
+            <span>Industries &amp; Landmarks</span>
+            <span class="text-[10px] font-normal text-stone-500">Click to jump</span>
           </div>
           <div class="grid grid-cols-2 gap-1.5">
             ${facChipsHtml}
           </div>
         </div>
       ` : ''}
-
-      <p class="text-[11px] text-stone-600 leading-relaxed">
-        Multi-borough block grid (${(entity.boroughs || []).length || 1} boroughs). ${ap ? `Served by <button type="button" data-jump-ap="${ap.id}" class="font-bold text-[#36383e] hover:text-[#e85c90] underline underline-offset-2">${ap.name} (${ap.iata})</button>.` : ''}
-      </p>
     `;
   }
 }
@@ -893,20 +908,11 @@ document.getElementById('sliderWind').addEventListener('input', (e) => {
 });
 
 // Layer Overlay Buttons
-const layerBadges = {
-  aesthetic: 'Mini Motorways View',
-  rci: 'RCI Zoning & Cargo Chain',
-  airport: 'Airport Solver & Cones',
-  hierarchy: 'Central Place Graph',
-  hydrology: 'Topography & Suitability',
-  roadgrid: 'Road Grid & Vector Graph'
-};
 document.querySelectorAll('.layer-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     renderer.activeLayer = btn.dataset.layer;
-    document.getElementById('activeLayerBadge').textContent = layerBadges[renderer.activeLayer];
   });
 });
 
@@ -943,15 +949,6 @@ function animate(now) {
 }
 
 function initApp() {
-  const swatchContainer = document.getElementById('colorSwatches');
-  if (swatchContainer) {
-    swatchContainer.innerHTML = PALETTE.districtColors.map(c =>
-      `<div class="flex items-center gap-1 bg-white/80 px-1.5 py-0.5 rounded-md border border-stone-300/60" title="${c.name} Demand Channel">
-         <span class="w-2.5 h-2.5 rounded-sm" style="background:${c.roof}; border-bottom: 2px solid ${c.base}"></span>
-         <span class="text-[9px] font-bold text-stone-600">${c.name.slice(0, 3)}</span>
-       </div>`
-    ).join('');
-  }
   if (window.innerWidth < 768) {
     document.getElementById('generatorDrawer').classList.add('hidden');
   }
