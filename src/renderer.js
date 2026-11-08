@@ -196,14 +196,14 @@ export class MiniMotorwaysRenderer {
         const pts = Array.isArray(rObj) ? rObj : rObj.points;
         const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
         if (!pts || pts.length < 4) continue;
-        const startW = isMain ? 1.05 : 0.36;
-        const endW = isMain ? 1.95 : 1.55;
+        const startW = isMain ? 0.84 : 0.56;
+        const endW = isMain ? 1.44 : 1.08;
         for (let i = 0; i < pts.length - 1; i++) {
           const p0 = pts[i];
           const p1 = pts[i + 1];
           const p2 = pts[Math.min(pts.length - 1, i + 2)];
           const frac = i / (pts.length - 1);
-          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.85));
+          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.90));
           ctx.lineWidth = ts * w + bankExtra;
           ctx.beginPath();
           const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
@@ -329,14 +329,14 @@ export class MiniMotorwaysRenderer {
         const pts = Array.isArray(rObj) ? rObj : rObj.points;
         const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
         if (!pts || pts.length < 4) continue;
-        const startW = isMain ? 1.05 : 0.36;
-        const endW = isMain ? 1.95 : 1.55;
+        const startW = isMain ? 0.84 : 0.56;
+        const endW = isMain ? 1.44 : 1.08;
         for (let i = 0; i < pts.length - 1; i++) {
           const p0 = pts[i];
           const p1 = pts[i + 1];
           const p2 = pts[Math.min(pts.length - 1, i + 2)];
           const frac = i / (pts.length - 1);
-          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.85));
+          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.90));
           ctx.lineWidth = ts * w + bankExtra;
           ctx.beginPath();
           const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
@@ -1377,53 +1377,73 @@ export class MiniMotorwaysRenderer {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      // Soft Elevated Overpass Drop Shadow on the ground below
+      // Split `samples` into above-ground surface spans and subterranean tunnel spans (`mw.tunnels`)
+      // so tunneled motorway sections cast ZERO ground shadows and leave mountain contours/trees untouched!
+      const tunnels = mw.tunnels || [];
+      const surfaceSpans = [];
+      let curStart = 0;
+      for (const tun of tunnels) {
+        if (tun.i0 >= curStart) {
+          const seg = samples.slice(curStart, tun.i0 + 1);
+          if (seg.length >= 2) surfaceSpans.push(seg);
+        }
+        curStart = tun.i1;
+      }
+      if (curStart < samples.length - 1) {
+        const tail = samples.slice(curStart);
+        if (tail.length >= 2) surfaceSpans.push(tail);
+      }
+
+      // 1. Soft Elevated Overpass Drop Shadow on the ground below (ONLY for above-ground surface spans!)
       ctx.strokeStyle = 'rgba(54, 56, 62, 0.14)';
       ctx.lineWidth = ts * 0.92;
-      this.traceMotorwaySamples(ctx, samples, ts, 8, 11);
-      ctx.stroke();
+      for (const seg of surfaceSpans) {
+        this.traceMotorwaySamples(ctx, seg, ts, 8, 11);
+        ctx.stroke();
+      }
 
-      // Vibrant Pink Motorway Outer Casing
-      ctx.strokeStyle = PALETTE.motorwayBorder;
-      ctx.lineWidth = ts * 0.88;
-      this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
-      ctx.stroke();
-
-      // Translucent Pink Motorway Deck
-      ctx.strokeStyle = PALETTE.motorwayFill;
-      ctx.lineWidth = ts * 0.72;
-      this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
-      ctx.stroke();
-
-      // Crisp Median Divider Line
-      ctx.strokeStyle = PALETTE.motorwayCore;
-      ctx.lineWidth = 2.0;
-      this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
-      ctx.stroke();
-
-      // Mountain Tunnel Spans & Concrete Portal Mouths (`mw.tunnels`)
-      if (mw.tunnels && mw.tunnels.length > 0) {
-        for (const tun of mw.tunnels) {
+      // 2. Subterranean Dashed Alignment Line inside Mountain Tunnels (no shadow!)
+      if (tunnels.length > 0) {
+        ctx.strokeStyle = 'rgba(217, 67, 118, 0.48)';
+        ctx.lineWidth = ts * 0.40;
+        ctx.setLineDash([5, 5]);
+        for (const tun of tunnels) {
           const tSamples = samples.slice(tun.i0, tun.i1 + 1);
           if (tSamples.length >= 2) {
-            // Cover surface deck with upper-mountain terrace stone so the motorway goes underground!
-            ctx.strokeStyle = '#e3ded2';
-            ctx.lineWidth = ts * 1.18;
-            ctx.lineCap = 'butt';
             this.traceMotorwaySamples(ctx, tSamples, ts, 0, 0);
             ctx.stroke();
-
-            // Subterranean dashed alignment line inside the mountain
-            ctx.strokeStyle = 'rgba(217, 67, 118, 0.52)';
-            ctx.lineWidth = ts * 0.42;
-            ctx.setLineDash([5, 5]);
-            this.traceMotorwaySamples(ctx, tSamples, ts, 0, 0);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.lineCap = 'round';
           }
+        }
+        ctx.setLineDash([]);
+      }
 
-          // Draw dark charcoal concrete tunnel portal mouths at entry and exit
+      // 3. Vibrant Pink Motorway Outer Casing (above-ground spans only)
+      ctx.strokeStyle = PALETTE.motorwayBorder;
+      ctx.lineWidth = ts * 0.88;
+      for (const seg of surfaceSpans) {
+        this.traceMotorwaySamples(ctx, seg, ts, 0, 0);
+        ctx.stroke();
+      }
+
+      // 4. Translucent Pink Motorway Deck (above-ground spans only)
+      ctx.strokeStyle = PALETTE.motorwayFill;
+      ctx.lineWidth = ts * 0.72;
+      for (const seg of surfaceSpans) {
+        this.traceMotorwaySamples(ctx, seg, ts, 0, 0);
+        ctx.stroke();
+      }
+
+      // 5. Crisp Median Divider Line (above-ground spans only)
+      ctx.strokeStyle = PALETTE.motorwayCore;
+      ctx.lineWidth = 2.0;
+      for (const seg of surfaceSpans) {
+        this.traceMotorwaySamples(ctx, seg, ts, 0, 0);
+        ctx.stroke();
+      }
+
+      // 6. Concrete Tunnel Portal Mouths at Entry & Exit of Each Mountain Tunnel
+      if (tunnels.length > 0) {
+        for (const tun of tunnels) {
           for (const [px, py, ang] of [
             [tun.x0 * ts + ts * 0.5, tun.y0 * ts + ts * 0.5, tun.ang0],
             [tun.x1 * ts + ts * 0.5, tun.y1 * ts + ts * 0.5, tun.ang1 + Math.PI]
@@ -1431,7 +1451,6 @@ export class MiniMotorwaysRenderer {
             ctx.save();
             ctx.translate(px, py);
             ctx.rotate(ang);
-            // Concrete portal headwall collar
             ctx.fillStyle = '#36383e';
             ctx.strokeStyle = '#f2efe9';
             ctx.lineWidth = 1.4;
@@ -1439,7 +1458,6 @@ export class MiniMotorwaysRenderer {
             ctx.roundRect(-3.5, -ts * 0.56, 7.0, ts * 1.12, 2.5);
             ctx.fill();
             ctx.stroke();
-            // Dark tunnel bore mouth
             ctx.fillStyle = '#1f2024';
             ctx.beginPath();
             ctx.arc(1.5, 0, ts * 0.34, -Math.PI * 0.5, Math.PI * 0.5);
@@ -1622,6 +1640,9 @@ export class MiniMotorwaysRenderer {
         if (!samples || samples.length < 2) continue;
         const scaled = Math.max(0, Math.min(0.9999, car.t)) * (samples.length - 1);
         const idx = Math.floor(scaled);
+        if (car.mw.tunnels && car.mw.tunnels.some(tun => scaled >= tun.i0 && scaled <= tun.i1)) {
+          continue; // Vehicle is inside a subterranean mountain tunnel
+        }
         const frac = scaled - idx;
         const p0 = samples[idx];
         const p1 = samples[idx + 1];

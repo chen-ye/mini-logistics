@@ -376,7 +376,8 @@ export function synthesizeTerrainAndBasins(world) {
           }
         }
       }
-      if (comp.length < 85) {
+      const minBasinSize = arch === 'island-hopper' ? 140 : (touchesBorder ? 620 : 380);
+      if (comp.length < minBasinSize) {
         for (const cid of comp) {
           world.waterMask[cid] = 0;
           world.elevationField[cid] = Math.max(world.elevationField[cid], seaLevel + 0.03);
