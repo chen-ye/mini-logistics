@@ -236,33 +236,33 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
 
   // Selects well-spaced dry-land entry points along the 4 map borders so continental rivers
   // enter from the edge of the map (like Mini Motorways / OpenTTD) instead of starting as blind tentacles!
-  const pickMapBorderRiverEntries = (count = 3) => {
+  const pickMapBorderRiverEntries = (count = 2) => {
     const candidates = [];
     const scanBorderPt = (x, y) => {
+      // Avoid placing border river entries directly underneath the top-left Seed HUD or top-right Zoom/Playback HUD!
+      if ((x <= 105 && y <= 24) || (x >= W - 22 && y <= 88)) return;
       const id = world.idx(x, y);
       if (world.waterMask[id] > 0) return;
-      // Ensure at least 28 tiles of clearance from any border bay/lake
       for (const b of basins) {
-        if (Math.hypot(x - b.cx, y - b.cy) < 48) return;
+        if (Math.hypot(x - b.cx, y - b.cy) < 52) return;
       }
-      for (let dy = -12; dy <= 12; dy += 4) {
-        for (let dx = -12; dx <= 12; dx += 4) {
+      for (let dy = -14; dy <= 14; dy += 4) {
+        for (let dx = -14; dx <= 14; dx += 4) {
           if (world.inBounds(x + dx, y + dy, 1) && world.waterMask[world.idx(x + dx, y + dy)] > 0) return;
         }
       }
       const dSink = Math.hypot(x - primarySink.deepX, y - primarySink.deepY);
-      if (dSink < 95) return;
+      if (dSink < 105) return;
       const elev = world.elevationField[id];
-      // Prefer valley passes & moderate upland saddles entering from the map border
       const valleyScore = 1.0 - Math.abs(elev - (seaLevel + 0.16)) * 1.5 + dSink * 0.002 + world.rng.range(-0.08, 0.08);
       candidates.push({ x, y, score: valleyScore });
     };
 
-    for (let x = 24; x < W - 24; x += 8) {
+    for (let x = 28; x < W - 28; x += 8) {
       scanBorderPt(x, 2);
       scanBorderPt(x, H - 3);
     }
-    for (let y = 24; y < H - 24; y += 8) {
+    for (let y = 28; y < H - 28; y += 8) {
       scanBorderPt(2, y);
       scanBorderPt(W - 3, y);
     }
@@ -271,7 +271,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     const chosen = [];
     for (const c of candidates) {
       if (chosen.length >= count) break;
-      if (chosen.every(p => Math.hypot(p.x - c.x, p.y - c.y) >= 92)) {
+      if (chosen.every(p => Math.hypot(p.x - c.x, p.y - c.y) >= 115)) {
         chosen.push(c);
       }
     }
@@ -293,7 +293,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     if (applyMeanders) {
       path = applyMeanderingDisplacement(path, seedPhase, 1.0);
     } else {
-      path = smoothPolyline(path, 3);
+      path = applyMeanderingDisplacement(path, seedPhase, 0.42);
     }
 
     // Extend start/end vertices by 2 tiles if on map border or entering a water basin
@@ -462,8 +462,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       }
     }
 
-    // Trace 3–4 long D8 rivers entering from the Map Borders down the Priority-Flood surface into lakes/rivers!
-    const borderEntries = pickMapBorderRiverEntries(4);
+    // Trace 2–3 long D8 rivers entering from the Map Borders down the Priority-Flood surface into lakes/rivers!
+    const borderEntries = pickMapBorderRiverEntries(2);
     for (let bIdx = 0; bIdx < borderEntries.length; bIdx++) {
       const entry = borderEntries[bIdx];
       let curr = Math.floor(entry.y / stride) * cw + Math.floor(entry.x / stride);
@@ -529,7 +529,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     }
   } else {
     // Continental Map-Border-to-Basin/Confluence Trunk Rivers (`thalweg-astar` & `meandering-plain`)
-    const borderEntries = pickMapBorderRiverEntries(3);
+    const borderEntries = pickMapBorderRiverEntries(2);
     for (let sPass = 0; sPass < borderEntries.length; sPass++) {
       const entry = borderEntries[sPass];
       let targetSink = primarySink;

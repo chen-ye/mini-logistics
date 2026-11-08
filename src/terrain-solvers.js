@@ -196,11 +196,14 @@ export function synthesizeTerrainAndBasins(world) {
         const valleyFlat = Math.pow(erodedMain, 1.38) * 0.68;
         baseRelief = valleyFlat + sharpCrest * 0.34 + foldValleys * 0.42;
       } else if (terrainAlgo === 'voronoi-plates') {
-        // Engine 3: Polygonal Voronoi Tectonic Micro-Plates (Convergent Orogeny + Divergent Rift Basins)
+        // Engine 3: Domain-Warped Tectonic Micro-Plates (Sinuous Continental Sutures & Fold Belts)
+        // Strongly domain-warp plate coordinates so boundaries are organic continental arcs, never polygonal moats!
+        const vwx = wx + (macroPlate - 0.5) * 0.28 + (fineDetail - 0.05) * 0.85;
+        const vwy = wy + foldValleys * 1.05 + (macroPlate - 0.5) * 0.22;
         let d1 = Infinity, d2 = Infinity;
         let p1 = voronoiPlates[0], p2 = voronoiPlates[0];
         for (const vp of voronoiPlates) {
-          const dist = Math.hypot(wx - vp.x, wy - vp.y);
+          const dist = Math.hypot(vwx - vp.x, vwy - vp.y);
           if (dist < d1) {
             d2 = d1; p2 = p1;
             d1 = dist; p1 = vp;
@@ -209,20 +212,19 @@ export function synthesizeTerrainAndBasins(world) {
           }
         }
         const boundaryDist = d2 - d1;
-        // Relative convergence/divergence along the plate-pair normal
         const nxP = (p2.x - p1.x) / (Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1);
         const nyP = (p2.y - p1.y) / (Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1);
         const convergence = (p1.vx - p2.vx) * nxP + (p1.vy - p2.vy) * nyP;
 
-        const blendT = Math.min(1, Math.max(0, 0.5 + boundaryDist / 0.14));
+        const blendT = Math.min(1, Math.max(0, 0.5 + boundaryDist / 0.18));
         const cratonElev = p1.baseElev * blendT + p2.baseElev * (1 - blendT);
-        const boundaryPulse = Math.exp(-Math.pow(boundaryDist / 0.052, 2));
-        // Convergent fault -> folded mountain belt; Divergent fault -> deep rift lake/valley trough!
-        const faultRelief = convergence >= 0
-          ? boundaryPulse * (0.28 + ridgedSpines * 0.85)
-          : -boundaryPulse * 0.26;
-        const cratonNoise = world.noise.fbmEroded(uStrike * 2.4 + offX * 0.2, vStrike * 2.4 + offY * 0.2, 4, 1.4) * 0.28;
-        baseRelief = cratonElev * 0.62 + faultRelief + cratonNoise;
+        const boundaryPulse = Math.exp(-Math.pow(boundaryDist / 0.068, 2));
+        // Convergent sutures buckle upward into warped cordillera ranges; divergent sutures form broad valleys
+        const faultRelief = convergence >= -0.05
+          ? boundaryPulse * (0.24 + ridgedSpines * 0.95)
+          : -boundaryPulse * 0.14 * macroPlate;
+        const cratonNoise = world.noise.fbmEroded(uStrike * 2.3 + offX * 0.2, vStrike * 2.6 + offY * 0.2, 4, 1.5) * 0.46;
+        baseRelief = cratonElev * 0.54 + faultRelief + cratonNoise + foldValleys * 0.35;
       } else {
         // Engine 1: Default Anisotropic Strike fBm + Ridged Spines
         baseRelief = macroPlate * 0.52 + foldValleys * 0.75 + ridgedSpines + fineDetail;

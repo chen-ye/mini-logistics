@@ -2366,7 +2366,7 @@ export class ProceduralLogisticsWorld {
       const id = this.idx(gx, gy);
       const segLen = i > 0 ? Math.hypot(pt.x - samples[i - 1].x, pt.y - samples[i - 1].y) : 1.0;
 
-      // Forbid acute hairpin turns (> 70° bend over a 4-sample window)
+      // Forbid acute hairpin turns (> 70° bend over a 4-sample window) and 90° L-corners (over a 10-sample window)
       if (i >= 2 && i <= samples.length - 3) {
         const vx1 = pt.x - samples[i - 2].x;
         const vy1 = pt.y - samples[i - 2].y;
@@ -2375,7 +2375,17 @@ export class ProceduralLogisticsWorld {
         const l1 = Math.hypot(vx1, vy1) || 1;
         const l2 = Math.hypot(vx2, vy2) || 1;
         const cosTurn = (vx1 * vx2 + vy1 * vy2) / (l1 * l2);
-        if (cosTurn < 0.32) return Infinity;
+        if (cosTurn < 0.35) return Infinity;
+      }
+      if (i >= 5 && i <= samples.length - 6) {
+        const vx1 = pt.x - samples[i - 5].x;
+        const vy1 = pt.y - samples[i - 5].y;
+        const vx2 = samples[i + 5].x - pt.x;
+        const vy2 = samples[i + 5].y - pt.y;
+        const l1 = Math.hypot(vx1, vy1) || 1;
+        const l2 = Math.hypot(vx2, vy2) || 1;
+        const cosWide = (vx1 * vx2 + vy1 * vy2) / (l1 * l2);
+        if (cosWide < 0.44) return Infinity;
       }
 
       if (this.waterMask[id] === 1 || (this.waterMask[id] === 0 && this.distToWater[id] < 1.35)) {
@@ -2388,12 +2398,13 @@ export class ProceduralLogisticsWorld {
         const wWeight = this.waterMask[id] === 2 ? 1.25 : 1.0;
         waterArc += segLen * wWeight;
         totalWaterArc += segLen * wWeight;
-        // Hard invariant 6: Never build long causeways across wide open lakes/bays/sea channels!
+        // Hard invariant 6: Never build causeways across open lakes/bays on continental maps (`<= 8.5` weighted tiles),
+        // and only allow narrow-strait causeways (`<= 12.5` weighted tiles) in `island-hopper`!
         const isIH = this.config.archetype === 'island-hopper';
-        if (waterArc > (isIH ? 13.5 : 19.0) || totalWaterArc > (isIH ? 16.5 : 26.0)) {
+        if (waterArc > (isIH ? 12.5 : 8.5) || totalWaterArc > (isIH ? 15.5 : 12.0)) {
           return Infinity;
         }
-        penalty += segLen * (this.waterMask[id] === 2 ? 5.8 : 3.4);
+        penalty += segLen * (this.waterMask[id] === 2 ? 7.5 : 3.8);
       } else {
         // In `island-hopper`, never use a tiny uninhabited skerry (`landmassId < 0`) as a motorway bridge pier!
         if (this.config.archetype === 'island-hopper' && this.landmassId[id] < 0) {
