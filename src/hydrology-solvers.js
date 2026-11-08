@@ -236,6 +236,39 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
 
   // Selects well-spaced dry-land entry points along the 4 map borders so continental rivers
   // enter from the edge of the map (like Mini Motorways / OpenTTD) instead of starting as blind tentacles!
+  // Helper: Pick 2 well-spaced Highland Mountain Springs (`elevation >= seaLevel + 0.21`, far from lakes)
+  const pickHighlandMountainSprings = (count = 2) => {
+    const springs = [];
+    for (let s = 0; s < count; s++) {
+      let bestSp = null;
+      let bestScore = -1;
+      for (let attempt = 0; attempt < 55; attempt++) {
+        const sx = world.rng.int(28, W - 29);
+        const sy = world.rng.int(24, H - 25);
+        const id = world.idx(sx, sy);
+        if (world.waterMask[id] > 0) continue;
+        const el = world.elevationField[id];
+        if (el < seaLevel + 0.21) continue;
+        if (springs.some(p => Math.hypot(p.x - sx, p.y - sy) < 82)) continue;
+
+        let minBasinD = Infinity;
+        for (const b of basins) {
+          const d = Math.hypot(sx - b.cx, sy - b.cy);
+          if (d < minBasinD) minBasinD = d;
+        }
+        if (minBasinD < 64) continue;
+
+        const score = el + Math.min(140, minBasinD) * 0.003;
+        if (score > bestScore) {
+          bestScore = score;
+          bestSp = { x: sx, y: sy };
+        }
+      }
+      if (bestSp) springs.push(bestSp);
+    }
+    return springs;
+  };
+
   const pickMapBorderRiverEntries = (count = 2) => {
     const candidates = [];
     const scanBorderPt = (x, y) => {
@@ -303,41 +336,50 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     else if (first.y <= 3) path.unshift({ x: first.x, y: 0, width: first.width });
     else if (first.y >= H - 4) path.unshift({ x: first.x, y: H - 1, width: first.width });
 
+    // Extend final vertex into the receiving water basin / parent river so confluences & mouths join seamlessly!
     const last = path[path.length - 1];
     const prev = path[Math.max(0, path.length - 3)];
     if (world.waterMask[world.idx(last.x, last.y)] > 0) {
       const dx = last.x - prev.x;
       const dy = last.y - prev.y;
       const len = Math.hypot(dx, dy) || 1;
-      const ex = Math.round(last.x + (dx / len) * 2.0);
-      const ey = Math.round(last.y + (dy / len) * 2.0);
+      const ex = Math.round(last.x + (dx / len) * 2.6);
+      const ey = Math.round(last.y + (dy / len) * 2.6);
       if (world.inBounds(ex, ey, 1) && (ex !== last.x || ey !== last.y)) {
         path.push({ x: ex, y: ey, width: last.width });
       }
     }
 
-    // Assign a steady, nearly-parallel cartographic channel width (`0.86 -> 1.24` or `1.02 -> 1.42`)
-    // so rivers read as bold, continuous regional waterways rather than pointy cones/tentacles!
-    const startW = arch === 'island-hopper' ? 0.56 : (isMainOutflow ? 1.02 : 0.86);
-    const endW = arch === 'island-hopper' ? 0.96 : (isMainOutflow ? 1.42 : 1.24);
+    // Determine if this river starts at an interior mountain spring (vs. map border or upstream lake)
+    const startsAtBorder = first.x <= 3 || first.x >= W - 4 || first.y <= 3 || first.y >= H - 4;
+    const startsInLake = world.waterMask[world.idx(first.x, first.y)] === 2;
+    const isInteriorSpring = !startsAtBorder && !startsInLake && !isMainOutflow;
+
+    // Assign bold, Mini Motorways-scale cartographic channel widths:
+    // - Mainstems / border trunks: `1.85 -> 3.25` tiles
+    // - Interior mountain springs: emerge gracefully from `0.50` tiles in the highland forest to `2.30` tiles at mouth!
+    const startW = arch === 'island-hopper' ? 0.65 : (isMainOutflow ? 1.85 : (isInteriorSpring ? 0.50 : 1.25));
+    const endW = arch === 'island-hopper' ? 1.65 : (isMainOutflow ? 3.20 : 2.30);
     for (let i = 0; i < path.length; i++) {
       const frac = i / Math.max(1, path.length - 1);
       if (path[i].width === undefined) {
-        path[i].width = startW + (endW - startW) * Math.pow(frac, 1.35);
+        const curveExp = isInteriorSpring ? 0.78 : 1.12;
+        path[i].width = startW + (endW - startW) * Math.pow(frac, curveExp);
       }
     }
 
-    world.rivers.push({ points: path, isMainOutflow });
+    world.rivers.push({
+      points: path,
+      isMainOutflow,
+      headwaterPt: isInteriorSpring ? { x: path[0].x, y: path[0].y } : null
+    });
     for (let i = 0; i < path.length; i++) {
       const { x, y, width } = path[i];
       const progress = i / (path.length - 1);
       const id = world.idx(x, y);
       world.drainageField[id] += isMainOutflow ? 2.5 : (0.5 + progress * 1.5);
-      if (world.waterMask[id] === 0) {
-        world.waterMask[id] = 1;
-      }
-      const rad = width ? Math.min(0.72, width * 0.32) : 0.45;
-      world.carveValleyChannel(x, y, rad, 0);
+      const chanRad = Math.max(isInteriorSpring && progress < 0.15 ? 0.75 : 1.05, (width || 1.5) * 0.56);
+      world.carveValleyChannel(x, y, chanRad, 1, isInteriorSpring && progress < 0.22);
     }
   };
 
@@ -463,9 +505,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     }
 
     // Trace 2–3 long D8 rivers entering from the Map Borders down the Priority-Flood surface into lakes/rivers!
-    const borderEntries = pickMapBorderRiverEntries(2);
-    for (let bIdx = 0; bIdx < borderEntries.length; bIdx++) {
-      const entry = borderEntries[bIdx];
+    // Trace 2–3 long D8 rivers from Map Borders + 2 Highland Mountain Springs down the Priority-Flood surface!
+    const d8Sources = [...pickMapBorderRiverEntries(2), ...pickHighlandMountainSprings(2)];
+    for (let bIdx = 0; bIdx < d8Sources.length; bIdx++) {
+      const entry = d8Sources[bIdx];
       let curr = Math.floor(entry.y / stride) * cw + Math.floor(entry.x / stride);
       const rawPts = [{ x: entry.x, y: entry.y }];
       const seen = new Set();
@@ -484,7 +527,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         }
         curr = receiver[curr];
       }
-      if (rawPts.length >= 24) {
+      if (rawPts.length >= 26) {
         const curved = applyMeanderingDisplacement(rawPts, bIdx * 2.1 + 0.8, 0.65);
         carveTaperingRiverPath(curved, bIdx === 0, false, 0);
       }
@@ -528,10 +571,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       }
     }
   } else {
-    // Continental Map-Border-to-Basin/Confluence Trunk Rivers (`thalweg-astar` & `meandering-plain`)
-    const borderEntries = pickMapBorderRiverEntries(2);
-    for (let sPass = 0; sPass < borderEntries.length; sPass++) {
-      const entry = borderEntries[sPass];
+    // Continental Map-Border + Highland Mountain-Spring Trunk Rivers (`thalweg-astar` & `meandering-plain`)
+    const allSources = [...pickMapBorderRiverEntries(2), ...pickHighlandMountainSprings(2)];
+    for (let sPass = 0; sPass < allSources.length; sPass++) {
+      const entry = allSources[sPass];
       let targetSink = primarySink;
       let minSD = Infinity;
       for (const b of basins) {
@@ -541,7 +584,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           targetSink = b;
         }
       }
-      const rPath = routeValleyThalwegAStar(entry.x, entry.y, targetSink.deepX, targetSink.deepY, true, sPass * 2.1, 64);
+      const rPath = routeValleyThalwegAStar(entry.x, entry.y, targetSink.deepX, targetSink.deepY, true, sPass * 2.1, 58);
       carveTaperingRiverPath(rPath, sPass === 0, useMeanders, sPass * 1.9);
     }
   }

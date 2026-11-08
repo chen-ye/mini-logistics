@@ -156,8 +156,8 @@ export class ProceduralLogisticsWorld {
    * flat-floored alluvial valley trough into `elevationField` so towns and roads naturally
    * follow the river valley floor.
    */
-  carveValleyChannel(cx, cy, radius, type = 1) {
-    const valleyRad = radius + 8.5;
+  carveValleyChannel(cx, cy, radius, type = 1, keepHighlandElevation = false) {
+    const valleyRad = keepHighlandElevation ? radius + 2.5 : radius + 8.5;
     const rCeil = Math.ceil(valleyRad);
     const r2 = radius * radius;
     const v2 = valleyRad * valleyRad;
@@ -172,8 +172,10 @@ export class ProceduralLogisticsWorld {
         const id = this.idx(x, y);
         if (d2 <= r2) {
           if (this.waterMask[id] === 0) this.waterMask[id] = type;
-          this.elevationField[id] = Math.min(this.elevationField[id], this.seaLevel - 0.04);
-        } else {
+          if (!keepHighlandElevation) {
+            this.elevationField[id] = Math.min(this.elevationField[id], this.seaLevel - 0.04);
+          }
+        } else if (!keepHighlandElevation) {
           // Smoothly grade the surrounding terrain down toward a flat alluvial river terrace
           const t = (Math.sqrt(d2) - radius) / (valleyRad - radius);
           const terraceElev = this.seaLevel + 0.04 + t * 0.07;
@@ -1154,13 +1156,33 @@ export class ProceduralLogisticsWorld {
         if (this.roadGrid[nid] > 0) {
           stepCost *= 0.20;
         } else if (isWater) {
-          // River bridges (`waterMask === 1`) are economical; open-sea/lake bridges (`waterMask === 2`)
-          // are heavily penalized so surface roads route around bays/lakes and cross at narrow necks!
-          stepCost *= this.waterMask[nid] === 2 ? 19.5 : 5.8;
+          // River bridges (`waterMask === 1`) must cross from bank to bank (dry land within 1..5 steps ahead along `dx, dy`),
+          // NEVER walk lengthwise down the middle of a river channel!
+          if (this.waterMask[nid] === 1) {
+            let crossesToBank = false;
+            for (let s = 1; s <= 5; s++) {
+              const bx = nx + dx * s;
+              const by = ny + dy * s;
+              if (this.inBounds(bx, by, 1) && this.waterMask[this.idx(bx, by)] === 0) {
+                crossesToBank = true;
+                break;
+              }
+            }
+            stepCost *= crossesToBank ? 2.4 : 45.0;
+          } else {
+            stepCost *= 19.5;
+          }
           if (currIsWater && pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
-            stepCost += 26.0;
+            stepCost += 34.0;
           }
         } else {
+          // Never wrap a road in a tight U-loop around an interior mountain spring headwater (`r.headwaterPt`)!
+          for (const rObj of this.rivers) {
+            if (rObj.headwaterPt && Math.hypot(nx - rObj.headwaterPt.x, ny - rObj.headwaterPt.y) < 6.0) {
+              stepCost += 65.0;
+              break;
+            }
+          }
           // Keep dry-land arterials set back from the 1-tile cream riverbank border
           const dW = this.distToWater[nid];
           if (dW < 2.5 && !currIsWater) {
@@ -2388,23 +2410,23 @@ export class ProceduralLogisticsWorld {
         if (cosWide < 0.44) return Infinity;
       }
 
-      if (this.waterMask[id] === 1 || (this.waterMask[id] === 0 && this.distToWater[id] < 1.35)) {
+      if (this.waterMask[id] === 1) {
         riverProxArc += segLen;
-        // Never allow an expressway to run longitudinally inside or on top of a river channel!
-        if (riverProxArc > 11.5) return Infinity;
+        // Never allow an expressway to run longitudinally inside a river channel (> 2 perpendicular river crossings)
+        if (riverProxArc > 14.5) return Infinity;
       }
 
       if (this.waterMask[id] > 0) {
-        const wWeight = this.waterMask[id] === 2 ? 1.25 : 1.0;
+        const wWeight = this.waterMask[id] === 2 ? 1.35 : 0.72;
         waterArc += segLen * wWeight;
         totalWaterArc += segLen * wWeight;
-        // Hard invariant 6: Never build causeways across open lakes/bays on continental maps (`<= 8.5` weighted tiles),
+        // Hard invariant 6: Never build causeways across open lakes/bays on continental maps (`<= 9.5` weighted tiles),
         // and only allow narrow-strait causeways (`<= 12.5` weighted tiles) in `island-hopper`!
         const isIH = this.config.archetype === 'island-hopper';
-        if (waterArc > (isIH ? 12.5 : 8.5) || totalWaterArc > (isIH ? 15.5 : 12.0)) {
+        if (waterArc > (isIH ? 12.5 : 9.5) || totalWaterArc > (isIH ? 15.5 : 13.5)) {
           return Infinity;
         }
-        penalty += segLen * (this.waterMask[id] === 2 ? 7.5 : 3.8);
+        penalty += segLen * (this.waterMask[id] === 2 ? 7.5 : 3.4);
       } else {
         // In `island-hopper`, never use a tiny uninhabited skerry (`landmassId < 0`) as a motorway bridge pier!
         if (this.config.archetype === 'island-hopper' && this.landmassId[id] < 0) {
@@ -3833,6 +3855,29 @@ export class ProceduralLogisticsWorld {
             });
           }
         }
+      }
+    }
+
+    // Nestle interior mountain spring headwaters (`r.headwaterPt`) inside a lush highland forest grove!
+    for (const rObj of this.rivers) {
+      if (!rObj.headwaterPt) continue;
+      const hx = rObj.headwaterPt.x;
+      const hy = rObj.headwaterPt.y;
+      for (let g = 0; g < 11; g++) {
+        const ang = (g / 11) * Math.PI * 2 + this.rng.range(-0.3, 0.3);
+        const rad = this.rng.range(1.6, 4.2);
+        const tx = hx + Math.cos(ang) * rad;
+        const ty = hy + Math.sin(ang) * rad;
+        const gx = Math.round(tx), gy = Math.round(ty);
+        if (!this.inBounds(gx, gy, 3)) continue;
+        const gid = this.idx(gx, gy);
+        if (this.waterMask[gid] > 0 || this.buildingMask[gid] > 0 || this.roadGrid[gid] > 0 || this.zoneColorIdx[gid] >= 0) continue;
+        this.trees.push({
+          x: tx,
+          y: ty,
+          r: this.rng.range(0.65, 1.05),
+          color: this.rng.pick(PALETTE.treeDots)
+        });
       }
     }
   }
