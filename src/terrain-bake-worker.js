@@ -255,23 +255,25 @@ export class TerrainBitmapBaker {
 
     ctx.drawImage(this._waterOverlayBitmap, 0, 0);
 
-    ctx.fillStyle = 'rgba(186, 208, 181, 0.28)';
+    ctx.fillStyle = 'rgba(186, 208, 181, 0.32)';
     ctx.beginPath();
-    for (let i = 0; i < trees.length; i += 2) {
+    for (let i = 0; i < trees.length; i++) {
       const tree = trees[i];
+      if (!tree.isAnchor) continue;
       const tx = tree.x * ts;
       const ty = tree.y * ts;
-      const tr = tree.r * ts * 2.15;
+      const tr = tree.r * ts * 2.45;
       ctx.moveTo(tx + tr, ty);
       ctx.arc(tx, ty, tr, 0, Math.PI * 2);
     }
     ctx.fill();
 
-    ctx.fillStyle = 'rgba(54, 56, 62, 0.1)';
+    const shOff = ts * 0.11;
+    ctx.fillStyle = 'rgba(54, 56, 62, 0.10)';
     ctx.beginPath();
     for (const tree of trees) {
-      const tx = tree.x * ts + 2.5;
-      const ty = tree.y * ts + 2.5;
+      const tx = tree.x * ts + shOff;
+      const ty = tree.y * ts + shOff;
       const tr = tree.r * ts;
       ctx.moveTo(tx + tr, ty);
       ctx.arc(tx, ty, tr, 0, Math.PI * 2);
