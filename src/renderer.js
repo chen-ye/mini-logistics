@@ -621,12 +621,58 @@ export class MiniMotorwaysRenderer {
     }
     ctx.stroke();
 
-    // Pass B: Road Outer Casing (Grey)
+    // Gather all surface roundabouts (Airport Gateways + Expressway Street-Stubs) so their outer road casings
+    // and white asphalt rings fuse seamlessly with incoming arterial roads!
+    const roundabouts = [];
+    for (const ap of world.airports) {
+      roundabouts.push({
+        x: ap.gateX * ts + ts * 0.5,
+        y: ap.gateY * ts + ts * 0.5,
+        rRing: ts * 0.68,
+        rIsland: ts * 0.36,
+        accentColor: ap.palette.roof,
+        isAirport: true
+      });
+    }
+    for (const ic of world.interchanges) {
+      if (ic.type === 'terminal-stub' && !ic.isAirportStub) {
+        const town = ic.townId !== undefined ? world.towns[ic.townId] : null;
+        roundabouts.push({
+          x: ic.x * ts + ts * 0.5,
+          y: ic.y * ts + ts * 0.5,
+          rRing: ts * 0.64,
+          rIsland: ts * 0.33,
+          accentColor: town ? town.palette.roof : '#8fa989',
+          isAirport: false
+        });
+      } else if (ic.type === 'diamond-ramp') {
+        roundabouts.push({
+          x: ic.termX * ts + ts * 0.5,
+          y: ic.termY * ts + ts * 0.5,
+          rRing: ts * 0.56,
+          rIsland: ts * 0.30,
+          accentColor: '#8fa989',
+          isAirport: false
+        });
+      }
+    }
+
+    // Pass B: Road Outer Casing (Grey) + Roundabout Outer Casing Rings
     for (const r of world.roads) {
-      if (r.points.length < 2) continue;
+      if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadCasing;
       ctx.lineWidth = r.type === 'street' ? ts * 0.58 : (r.type === 'airport-loop' ? ts * 0.66 : ts * 0.74);
       this.traceSmoothPath(ctx, r.points, ts);
+      ctx.stroke();
+    }
+    if (roundabouts.length > 0) {
+      ctx.strokeStyle = PALETTE.roadCasing;
+      ctx.lineWidth = ts * 0.68;
+      ctx.beginPath();
+      for (const rb of roundabouts) {
+        ctx.moveTo(rb.x + rb.rRing, rb.y);
+        ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
+      }
       ctx.stroke();
     }
 
@@ -646,7 +692,7 @@ export class MiniMotorwaysRenderer {
     }
     ctx.lineCap = 'round';
 
-    // Pass D: Crisp White Road Asphalt Fill (both Houses AND Destinations!)
+    // Pass D: Crisp White Road Asphalt Fill (both Houses AND Destinations + Roundabout Annular Roadways!)
     ctx.strokeStyle = PALETTE.roadAsphalt;
     ctx.lineWidth = ts * 0.26;
     ctx.beginPath();
@@ -663,11 +709,52 @@ export class MiniMotorwaysRenderer {
     ctx.stroke();
 
     for (const r of world.roads) {
-      if (r.points.length < 2) continue;
+      if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadAsphalt;
       ctx.lineWidth = r.type === 'street' ? ts * 0.42 : (r.type === 'airport-loop' ? ts * 0.48 : ts * 0.56);
       this.traceSmoothPath(ctx, r.points, ts);
       ctx.stroke();
+    }
+    if (roundabouts.length > 0) {
+      ctx.strokeStyle = PALETTE.roadAsphalt;
+      ctx.lineWidth = ts * 0.50;
+      ctx.beginPath();
+      for (const rb of roundabouts) {
+        ctx.moveTo(rb.x + rb.rRing, rb.y);
+        ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
+      }
+      ctx.stroke();
+    }
+
+    // Pass E: Landscaped Central Islands for Non-Airport Surface Roundabouts
+    for (const rb of roundabouts) {
+      if (rb.isAirport) continue;
+      this.drawRoundaboutCentralIsland(ctx, rb.x, rb.y, rb.rIsland, rb.accentColor);
+    }
+  }
+
+  drawRoundaboutCentralIsland(ctx, x, y, rIsland, accentColor) {
+    // Inner curb casing around central landscaped island
+    ctx.fillStyle = PALETTE.parkSageGreen;
+    ctx.strokeStyle = PALETTE.roadCasing;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(x, y, rIsland, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Lush inner turf planter ring
+    ctx.fillStyle = '#9fb99a';
+    ctx.beginPath();
+    ctx.arc(x, y, rIsland * 0.58, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Subtle town/airport accent centerpiece
+    if (accentColor) {
+      ctx.fillStyle = accentColor;
+      ctx.beginPath();
+      ctx.arc(x, y, rIsland * 0.26, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -997,38 +1084,6 @@ export class MiniMotorwaysRenderer {
       ctx.fill();
       ctx.stroke();
 
-      // 1B. Landside Curbside Terminal Loop Road & Access Avenue Stub (drawn on top of pad)
-      const loopHalfW = (ap.isHub ? 3.0 : 2.1) * ts;
-      const loopInnerY = side * (ap.isHub ? 2.05 : 1.60) * ts;
-      const loopOuterY = side * (ap.isHub ? 3.45 : 2.65) * ts;
-      const loopTopY = Math.min(loopInnerY, loopOuterY);
-      const loopBoxH = Math.abs(loopOuterY - loopInnerY);
-      const stubEndY = side * (ap.stubDist || (ap.isHub ? 5.8 : 4.6)) * ts;
-
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      for (const [stroke, lw] of [[PALETTE.roadCasing, ts * 0.58], [PALETTE.roadAsphalt, ts * 0.40]]) {
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = lw;
-        ctx.beginPath();
-        ctx.roundRect(-loopHalfW, loopTopY, loopHalfW * 2, loopBoxH, loopBoxH * 0.48);
-        ctx.moveTo(0, loopOuterY);
-        ctx.lineTo(0, stubEndY);
-        ctx.stroke();
-      }
-
-      // Short-Term Parking & Transit Plaza Island inside the Curbside Loop
-      const plazaMidY = (loopInnerY + loopOuterY) * 0.5;
-      const plazaW = loopHalfW * 1.22;
-      const plazaH = Math.max(ts * 0.45, loopBoxH * 0.45);
-      ctx.fillStyle = '#d8d5ce';
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.roundRect(-plazaW * 0.5, plazaMidY - plazaH * 0.5, plazaW, plazaH, 4);
-      ctx.fill();
-      ctx.stroke();
-
       if (ap.isHub) {
         // =================================================================
         // TIER 1: INTERNATIONAL DUAL-RUNWAY HUB (Parallel Runways L & R)
@@ -1224,22 +1279,143 @@ export class MiniMotorwaysRenderer {
         this.drawAirportTower(ctx, towerX, termY, ts, ap.palette.roof);
       }
 
+      // 3. Landside Terminal Curbside Loop, Parking Plaza, Access Spine & Gateway Roundabout
+      const termW = (ap.isHub ? rwyLen * 0.46 : rwyLen * 0.40);
+      const termH = ts * (ap.isHub ? 1.15 : 1.02);
+      const termY = side * ts * (ap.isHub ? 1.32 : 1.18);
+      const termOuterY = termY + side * (termH * 0.5);
+
+      const loopW = termW * (ap.isHub ? 0.82 : 0.88);
+      const loopHalfW = loopW * 0.5;
+      const loopInnerY = termOuterY + side * (ts * 0.22);
+      const loopOuterY = loopInnerY + side * (ts * 1.06);
+      const loopTopY = Math.min(loopInnerY, loopOuterY);
+      const loopBoxH = Math.abs(loopOuterY - loopInnerY);
+      const loopR = loopBoxH * 0.48;
+
+      // Transit / Parking Plaza Island inside the Curbside Loop
+      const plazaMidY = (loopInnerY + loopOuterY) * 0.5;
+      const plazaW = loopW * 0.74;
+      const plazaH = loopBoxH * 0.45;
+      ctx.fillStyle = '#d8d5ce';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(-plazaW * 0.5, plazaMidY - plazaH * 0.5, plazaW, plazaH, 3.5);
+      ctx.fill();
+      ctx.stroke();
+
+      // Project the exact Gateway Roundabout location into local airport coordinates
+      const cosA = Math.cos(ap.angleRad);
+      const sinA = Math.sin(ap.angleRad);
+      const gatePx = ap.gateX * ts + ts * 0.5;
+      const gatePy = ap.gateY * ts + ts * 0.5;
+      const gdx = gatePx - cx;
+      const gdy = gatePy - cy;
+      const localGateX = gdx * cosA + gdy * sinA;
+      const localGateY = -gdx * sinA + gdy * cosA;
+
+      const spineStartY = loopOuterY;
+
+      // PASS 1: Road Grey Casing for Curbside Loop, Access Spine & Gateway Roundabout
+      // Stroking the loop, spine, and roundabout ring together in Pass 1 guarantees the outer grey casing
+      // wraps continuously around the entire landside network without inner casing lines cutting across!
+      const rbRadius = ts * 0.68;
+      const rbIslandRadius = ts * 0.36;
+      const localArtThroats = [];
+      for (const r of world.roads) {
+        if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
+        for (let i = 0; i < r.points.length; i++) {
+          if (r.points[i].x === ap.gateX && r.points[i].y === ap.gateY) {
+            if (i > 0) {
+              const pPrev = r.points[i - 1];
+              const npx = pPrev.x * ts + ts * 0.5 - cx;
+              const npy = pPrev.y * ts + ts * 0.5 - cy;
+              localArtThroats.push([npx * cosA + npy * sinA, -npx * sinA + npy * cosA]);
+            }
+            if (i < r.points.length - 1) {
+              const pNext = r.points[i + 1];
+              const npx = pNext.x * ts + ts * 0.5 - cx;
+              const npy = pNext.y * ts + ts * 0.5 - cy;
+              localArtThroats.push([npx * cosA + npy * sinA, -npx * sinA + npy * cosA]);
+            }
+          }
+        }
+      }
+
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = PALETTE.roadCasing;
+      ctx.lineWidth = ts * 0.68;
+      ctx.beginPath();
+      ctx.roundRect(-loopHalfW, loopTopY, loopW, loopBoxH, loopR);
+      ctx.moveTo(0, spineStartY);
+      ctx.lineTo(localGateX, localGateY);
+      ctx.moveTo(localGateX + rbRadius, localGateY);
+      ctx.arc(localGateX, localGateY, rbRadius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // PASS 2: Crisp White Road Asphalt Fill for Curbside Loop, Access Spine, Gateway Roundabout & Outgoing Arterial Throats
+      // Drawing all white fills together seamlessly fuses the loop, spine, circulatory roundabout ring, and
+      // municipal arterial throats into a single continuous white roadway with zero casing seam lines!
+      ctx.strokeStyle = PALETTE.roadAsphalt;
+      ctx.lineWidth = ts * 0.50;
+      ctx.beginPath();
+      ctx.roundRect(-loopHalfW, loopTopY, loopW, loopBoxH, loopR);
+      ctx.moveTo(0, spineStartY);
+      ctx.lineTo(localGateX, localGateY);
+      ctx.moveTo(localGateX + rbRadius, localGateY);
+      ctx.arc(localGateX, localGateY, rbRadius, 0, Math.PI * 2);
+      for (const [tx, ty] of localArtThroats) {
+        ctx.moveTo(localGateX, localGateY);
+        ctx.lineTo(tx, ty);
+      }
+      ctx.stroke();
+
+      // PASS 3: Landscaped Central Roundabout Island at (localGateX, localGateY)
+      this.drawRoundaboutCentralIsland(ctx, localGateX, localGateY, rbIslandRadius, ap.palette.roof);
+
       ctx.restore();
 
-      // Floating Minimalist IATA & Tier Pill Tag
+      // Floating Minimalist IATA & Tier Pill Tag (floating cleanly above the northernmost facility bounds)
+      const corners = [
+        [-padLen * 0.5, -padWid * 0.5],
+        [padLen * 0.5, -padWid * 0.5],
+        [padLen * 0.5, padWid * 0.5],
+        [-padLen * 0.5, padWid * 0.5]
+      ];
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      for (const [u, v] of corners) {
+        const wx = cx + u * cosA - v * sinA;
+        const wy = cy + u * sinA + v * cosA;
+        if (wy < minY) minY = wy;
+        if (wy > maxY) maxY = wy;
+        if (wx < minX) minX = wx;
+        if (wx > maxX) maxX = wx;
+      }
+      if (gatePy < minY) minY = gatePy;
+      if (gatePy > maxY) maxY = gatePy;
+
       ctx.save();
       ctx.font = '800 10px Inter, sans-serif';
       const badgePrefix = ap.airportClass === 'HUB' ? '✈ HUB' : (ap.airportClass === 'CRG' ? '📦 CRG' : '✈ REG');
       const tagText = `${badgePrefix} • ${ap.iata}`;
       const tw = ctx.measureText(tagText).width + 14;
+
+      const badgeX = Math.max(tw * 0.5 + 10, Math.min(world.W * ts - tw * 0.5 - 10, (minX + maxX) * 0.5));
+      const badgeY = minY >= 36 ? minY - 15 : maxY + 20;
+
       ctx.fillStyle = ap.isHub ? '#e85c90' : '#36383e';
       ctx.beginPath();
-      ctx.roundRect(cx - tw * 0.5, cy - ts * (ap.isHub ? 3.2 : 2.5), tw, 18, 9);
+      ctx.roundRect(badgeX - tw * 0.5, badgeY - 9, tw, 18, 9);
       ctx.fill();
       ctx.fillStyle = '#f2efe9';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(tagText, cx, cy - ts * (ap.isHub ? 3.2 : 2.5) + 9);
+      ctx.fillText(tagText, badgeX, badgeY);
       ctx.restore();
     }
   }
@@ -1471,14 +1647,39 @@ export class MiniMotorwaysRenderer {
           }
         }
 
-        // 2. Single Crisp Surface Roundabout Ring at the Connected Stub Terminal
-        ctx.fillStyle = '#ffffff';
-        ctx.strokeStyle = '#36383e';
-        ctx.lineWidth = 2.0;
+        // 2. Annular Surface Roundabout Ring at the Connected Stub Terminal
+        const rbY = sySign * across;
+        const rbR = ts * 0.56;
+        ctx.strokeStyle = PALETTE.roadCasing;
+        ctx.lineWidth = ts * 0.62;
         ctx.beginPath();
-        ctx.arc(0, sySign * across, ts * 0.34, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.arc(0, rbY, rbR, 0, Math.PI * 2);
         ctx.stroke();
+
+        const cosR = Math.cos(ic.angleRad);
+        const sinR = Math.sin(ic.angleRad);
+        const connRoad = world.roads.find(
+          r => r.points.length >= 2 && Math.hypot(r.points[0].x - ic.termX, r.points[0].y - ic.termY) < 0.5
+        );
+        const nextPt = connRoad ? connRoad.points[1] : { x: ic.connectX, y: ic.connectY };
+        const localConnDx = (nextPt.x - ic.x) * ts;
+        const localConnDy = (nextPt.y - ic.y) * ts;
+        const connLx = localConnDx * cosR + localConnDy * sinR;
+        const connLy = -localConnDx * sinR + localConnDy * cosR;
+
+        ctx.strokeStyle = PALETTE.roadAsphalt;
+        ctx.lineWidth = ts * 0.56;
+        ctx.beginPath();
+        ctx.moveTo(0, rbY);
+        ctx.lineTo(connLx, connLy);
+        ctx.stroke();
+
+        ctx.lineWidth = ts * 0.44;
+        ctx.beginPath();
+        ctx.arc(0, rbY, rbR, 0, Math.PI * 2);
+        ctx.stroke();
+
+        this.drawRoundaboutCentralIsland(ctx, 0, rbY, ts * 0.30, '#8fa989');
         ctx.restore();
       }
     }
@@ -1604,18 +1805,71 @@ export class MiniMotorwaysRenderer {
         }
       }
 
-      // Grade-Separated Roundabout Interchange Rings at non-pruned Street-Stub Terminations
+      // Grade-Separated Annular Roundabout Interchange Rings at non-pruned Street-Stub Terminations
       const termEndpoints = [];
       if (!mw.prunedStart) termEndpoints.push([sx, sy]);
       if (!mw.prunedEnd) termEndpoints.push([ex, ey]);
       for (const [rx, ry] of termEndpoints) {
-        ctx.fillStyle = '#ffffff';
-        ctx.strokeStyle = '#36383e';
-        ctx.lineWidth = 2.5;
+        const apGateway = world.airports.find(
+          a => Math.hypot(a.gateX * ts + ts * 0.5 - rx, a.gateY * ts + ts * 0.5 - ry) < 1.0
+        );
+        const townIc = !apGateway
+          ? world.interchanges.find(ic => ic.type === 'terminal-stub' && Math.hypot(ic.x * ts + ts * 0.5 - rx, ic.y * ts + ts * 0.5 - ry) < 1.5)
+          : null;
+        const town = townIc && townIc.townId !== undefined ? world.towns[townIc.townId] : null;
+        const rbR = apGateway ? ts * 0.68 : ts * 0.64;
+        const rbIslandR = apGateway ? ts * 0.36 : ts * 0.33;
+        const accentColor = apGateway ? apGateway.palette.roof : (town ? town.palette.roof : '#8fa989');
+
+        const gx = Math.round((rx - ts * 0.5) / ts);
+        const gy = Math.round((ry - ts * 0.5) / ts);
+
+        // Find all surface roads & airport spines entering this roundabout so we can re-fill their white asphalt
+        // throats in the same pass as the roundabout's white asphalt ring—fusing them with zero grey seam lines!
+        const throatSegments = [];
+        if (apGateway) {
+          const cosA = Math.cos(apGateway.angleRad);
+          const sinA = Math.sin(apGateway.angleRad);
+          const side = apGateway.apronSide;
+          const termH = ts * (apGateway.isHub ? 1.15 : 1.02);
+          const termY = side * ts * (apGateway.isHub ? 1.32 : 1.18);
+          const loopInnerY = termY + side * (termH * 0.5 + ts * 0.22);
+          const loopOuterY = loopInnerY + side * (ts * 1.06);
+          const spStartX = (apGateway.x * ts + ts * 0.5) - loopOuterY * sinA;
+          const spStartY = (apGateway.y * ts + ts * 0.5) + loopOuterY * cosA;
+          throatSegments.push([rx, ry, spStartX, spStartY]);
+        }
+        for (const r of world.roads) {
+          if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
+          for (let i = 0; i < r.points.length; i++) {
+            if (r.points[i].x === gx && r.points[i].y === gy) {
+              if (i > 0) {
+                throatSegments.push([rx, ry, r.points[i - 1].x * ts + ts * 0.5, r.points[i - 1].y * ts + ts * 0.5]);
+              }
+              if (i < r.points.length - 1) {
+                throatSegments.push([rx, ry, r.points[i + 1].x * ts + ts * 0.5, r.points[i + 1].y * ts + ts * 0.5]);
+              }
+            }
+          }
+        }
+
+        ctx.strokeStyle = PALETTE.roadCasing;
+        ctx.lineWidth = ts * 0.68;
         ctx.beginPath();
-        ctx.arc(rx, ry, ts * 0.44, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.arc(rx, ry, rbR, 0, Math.PI * 2);
         ctx.stroke();
+
+        ctx.strokeStyle = PALETTE.roadAsphalt;
+        ctx.lineWidth = ts * 0.50;
+        ctx.beginPath();
+        ctx.arc(rx, ry, rbR, 0, Math.PI * 2);
+        for (const [x0, y0, x1, y1] of throatSegments) {
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+        }
+        ctx.stroke();
+
+        this.drawRoundaboutCentralIsland(ctx, rx, ry, rbIslandR, accentColor);
       }
 
       // Choose a clean Highway Shield Badge ([1], [2]) position that maximizes clearance from all interchanges & endpoints

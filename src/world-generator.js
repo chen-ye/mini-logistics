@@ -999,13 +999,13 @@ export class ProceduralLogisticsWorld {
         const landNx = -sinA * apronSide;
         const landNy = cosA * apronSide;
 
-        const loopDist = isHub ? 2.6 : 2.0;
+        const outerDist = isHub ? 3.2 : 2.9;
         const stubDist = isHub ? 5.8 : 4.6;
 
         const gateX = Math.max(6, Math.min(this.W - 7, Math.round(bestSite.cx + landNx * stubDist)));
         const gateY = Math.max(6, Math.min(this.H - 7, Math.round(bestSite.cy + landNy * stubDist)));
-        const curbX = Math.max(6, Math.min(this.W - 7, Math.round(bestSite.cx + landNx * loopDist)));
-        const curbY = Math.max(6, Math.min(this.H - 7, Math.round(bestSite.cy + landNy * loopDist)));
+        const curbX = Math.max(6, Math.min(this.W - 7, Math.round(bestSite.cx + landNx * outerDist)));
+        const curbY = Math.max(6, Math.min(this.H - 7, Math.round(bestSite.cy + landNy * outerDist)));
 
         const nameMap = {
           HUB: `${hostTown.name} International Hub`,
@@ -1064,10 +1064,15 @@ export class ProceduralLogisticsWorld {
             if (
               Math.abs(u) <= halfLen + 2.0 &&
               v >= -(halfWid + (isHub ? 1.8 : 1.4)) &&
-              v <= Math.max(halfWid + (isHub ? 1.8 : 1.4), stubDist - 0.6)
+              v <= halfWid + (isHub ? 1.8 : 1.4)
             ) {
-              this.buildingMask[this.idx(gx, gy)] = 3; // 3 = Airport exclusion zone
-              this.zoneColorIdx[this.idx(gx, gy)] = hostTown.colorIdx;
+              this.buildingMask[this.idx(gx, gy)] = 3; // 3 = Airport runway airside exclusion zone
+            } else if (
+              Math.abs(u) <= (isHub ? 3.8 : 2.8) &&
+              v > halfWid &&
+              v <= stubDist + 1.2
+            ) {
+              this.buildingMask[this.idx(gx, gy)] = 4; // 4 = Landside transit/road reserve (blocks buildings, permits access)
             }
           }
         }
@@ -1139,46 +1144,53 @@ export class ProceduralLogisticsWorld {
     const nx = ap.landNx;
     const ny = ap.landNy;
 
-    const loopHalfSpan = ap.isHub ? 3.0 : 2.1;
-    const innerDist = ap.isHub ? 2.1 : 1.6;
-    const outerDist = ap.isHub ? 3.5 : 2.7;
-    const stubDist = ap.stubDist || (ap.isHub ? 5.8 : 4.6);
+    // Reserve airport loop and landside access footprint on roadGrid & buildingMask
+    // so urban grid streets and buildings do not encroach on the airport terminal grounds
+    const boundDist = ap.stubDist + 1.2;
+    const boundHalfSpan = (ap.isHub ? 3.6 : 2.5);
+    for (let u = -boundHalfSpan; u <= boundHalfSpan; u += 1.0) {
+      for (let v = 1.0; v <= boundDist; v += 1.0) {
+        const gx = Math.round(ap.x + u * cosA + v * nx);
+        const gy = Math.round(ap.y + u * sinA + v * ny);
+        if (this.inBounds(gx, gy, 2)) {
+          const id = this.idx(gx, gy);
+          if (this.buildingMask[id] === 0) {
+            this.buildingMask[id] = 4; // Road/transit reserve: keeps building-free, permits road access
+          }
+        }
+      }
+    }
 
-    // 6-point oval curbside loop around the terminal parking/transit plaza
-    const loopCoords = [
-      { u: 0, v: outerDist },
-      { u: -loopHalfSpan, v: outerDist },
-      { u: -loopHalfSpan, v: innerDist },
-      { u: 0, v: innerDist },
-      { u: loopHalfSpan, v: innerDist },
-      { u: loopHalfSpan, v: outerDist },
-      { u: 0, v: outerDist }
+    // Rasterize the airport access avenue spine on roadGrid for vehicle navigation
+    const spineSteps = Math.max(2, Math.round(Math.hypot(ap.gateX - ap.curbX, ap.gateY - ap.curbY)));
+    for (let s = 0; s <= spineSteps; s++) {
+      const sx = Math.round(ap.curbX + (ap.gateX - ap.curbX) * (s / spineSteps));
+      const sy = Math.round(ap.curbY + (ap.gateY - ap.curbY) * (s / spineSteps));
+      if (this.inBounds(sx, sy, 2)) {
+        this.roadGrid[this.idx(sx, sy)] = 2;
+        this.buildingMask[this.idx(sx, sy)] = 4;
+      }
+    }
+
+    const stubPts = [
+      { x: ap.curbX, y: ap.curbY, isBridge: false },
+      { x: ap.gateX, y: ap.gateY, isBridge: false }
     ];
-
-    const loopPts = [];
-    for (const pt of loopCoords) {
-      const rx = Math.max(4, Math.min(this.W - 5, Math.round(ap.x + pt.u * cosA + pt.v * nx)));
-      const ry = Math.max(4, Math.min(this.H - 5, Math.round(ap.y + pt.u * sinA + pt.v * ny)));
-      loopPts.push({ x: rx, y: ry, isBridge: false });
-      this.roadGrid[this.idx(rx, ry)] = 4;
-      this.buildingMask[this.idx(rx, ry)] = 3;
-    }
-    ap.landsideLoopPts = loopPts;
-    this.roads.push({ points: loopPts, type: 'airport-loop' });
-
-    // Dedicated Dual-Carriageway Airport Access Spine Stub from Loop out to `gateX, gateY`
-    const stubPts = [];
-    const steps = 5;
-    for (let s = 0; s <= steps; s++) {
-      const d = outerDist + (stubDist - outerDist) * (s / steps);
-      const sx = Math.max(4, Math.min(this.W - 5, Math.round(ap.x + d * nx)));
-      const sy = Math.max(4, Math.min(this.H - 5, Math.round(ap.y + d * ny)));
-      stubPts.push({ x: sx, y: sy, isBridge: false });
-      this.roadGrid[this.idx(sx, sy)] = 2;
-      this.buildingMask[this.idx(sx, sy)] = 4;
-    }
     ap.accessStubPts = stubPts;
-    this.roads.push({ points: stubPts, type: 'arterial' });
+    this.roads.push({ points: stubPts, type: 'airport-spine' });
+
+    // Always register the Airport Gateway Entrance Roundabout Interchange at `(gateX, gateY)`
+    this.interchanges.push({
+      type: 'terminal-stub',
+      isAirportStub: true,
+      airportId: ap.id,
+      x: ap.gateX,
+      y: ap.gateY,
+      stubEndX: ap.curbX,
+      stubEndY: ap.curbY,
+      angleRad: Math.atan2(ny, nx),
+      label: `${ap.iata} Gateway Plaza`
+    });
   }
 
   /*************************************************************************
@@ -1302,8 +1314,11 @@ export class ProceduralLogisticsWorld {
     for (const ap of this.airports) {
       const host = this.towns[ap.hostTownId];
       if (host) {
-        const path = this.findRoadPathAStar(ap.gateX, ap.gateY, host.x, host.y, false);
-        if (path) this.commitRoadPath(path, 'airport-link');
+        let path = this.findRoadPathAStar(ap.gateX, ap.gateY, host.x, host.y, false, null, true);
+        if (!path) {
+          path = this.findRoadPathAStar(ap.gateX, ap.gateY, host.x, host.y, true, null, true);
+        }
+        if (path) this.commitRoadPath(path, 'arterial');
       }
     }
   }
@@ -1366,9 +1381,10 @@ export class ProceduralLogisticsWorld {
 
     while (heapId.length > 0) {
       const cid = heapPopId();
+      const distFromStart = Math.hypot((cid % W) - sx, Math.floor(cid / W) - sy);
       if (
         cid === endId ||
-        (stopOnExistingRoad && cid !== startId && (this.roadGrid[cid] === 1 || this.roadGrid[cid] === 2))
+        (stopOnExistingRoad && distFromStart >= 3.0 && this.buildingMask[cid] !== 4 && (this.roadGrid[cid] === 1 || this.roadGrid[cid] === 2))
       ) {
         const path = [];
         let trace = cid;
@@ -1398,8 +1414,14 @@ export class ProceduralLogisticsWorld {
         const nid = this.idx(nx, ny);
         if (closedGen[nid] === gen) continue;
 
-        // Never tunnel through any placed building (house, commercial/industrial lot, airport, or ramp reserve!)
-        if (this.buildingMask[nid] > 0 && nid !== startId && nid !== endId) continue;
+        // Never tunnel through any placed building (house, commercial/industrial lot, or airport runway!)
+        if (
+          (this.buildingMask[nid] === 1 || this.buildingMask[nid] === 2 || this.buildingMask[nid] === 3) &&
+          nid !== startId &&
+          nid !== endId
+        ) {
+          continue;
+        }
         if (blockedFn && nid !== startId && nid !== endId && blockedFn(nx, ny)) continue;
 
         const isWater = this.waterMask[nid] > 0;
@@ -1527,6 +1549,15 @@ export class ProceduralLogisticsWorld {
         const prev = out[out.length - 1];
         const curr = pts[i];
         const next = pts[i + 1];
+
+        // Never skip an airport gateway plaza or interchange node!
+        const isKeyNode = this.airports.some(a => a.gateX === curr.x && a.gateY === curr.y) ||
+                          this.interchanges.some(ic => ic.x === curr.x && ic.y === curr.y);
+        if (isKeyNode) {
+          out.push(curr);
+          continue;
+        }
+
         const cid = this.idx(curr.x, curr.y);
         if (
           !curr.isBridge &&
@@ -1548,6 +1579,15 @@ export class ProceduralLogisticsWorld {
       out.push(pts[pts.length - 1]);
       return out;
     };
+
+    // Always preserve start/end points if they are an airport gateway plaza or interchange!
+    const isStartKey = this.airports.some(a => a.gateX === path[0].x && a.gateY === path[0].y) ||
+                       this.interchanges.some(ic => ic.x === path[0].x && ic.y === path[0].y);
+    const lastIdx = path.length - 1;
+    const isEndKey = this.airports.some(a => a.gateX === path[lastIdx].x && a.gateY === path[lastIdx].y) ||
+                     this.interchanges.some(ic => ic.x === path[lastIdx].x && ic.y === path[lastIdx].y);
+    if (isStartKey) isNewTile[0] = 1;
+    if (isEndKey) isNewTile[lastIdx] = 1;
 
     // Only emit new road sub-paths (including 1 anchor point where a new branch leaves/joins an existing road)
     // so shared trunk corridors are never double-drawn or offset-scalloped!
@@ -1906,7 +1946,13 @@ export class ProceduralLogisticsWorld {
       for (let dy = 0; dy < hTiles; dy++) {
         for (let dx = 0; dx < wTiles; dx++) {
           const id = this.idx(gx + dx, gy + dy);
-          if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0 || this.distToWater[id] < 2.0) {
+          if (
+            this.waterMask[id] > 0 ||
+            this.buildingMask[id] > 0 ||
+            this.roadGrid[id] > 0 ||
+            this.distToWater[id] < 2.0 ||
+            this.isPointInAirportPad(gx + dx, gy + dy, 2.0)
+          ) {
             return null;
           }
         }
@@ -3928,10 +3974,6 @@ export class ProceduralLogisticsWorld {
             break;
           } else if (!mEnd.usedHubGate) {
             this.removeOrphanedTerminalStub(mEnd.stub.x, mEnd.stub.y);
-          } else {
-            this.interchanges = this.interchanges.filter(
-              ic => !(ic.type === 'terminal-stub' && ic.isAirportStub && ic.airportId === mEnd.ap.id)
-            );
           }
         }
         if (linkedCluster) continue;
@@ -4093,11 +4135,7 @@ export class ProceduralLogisticsWorld {
         }
       }
 
-      if (!builtApMotorway) {
-        this.interchanges = this.interchanges.filter(
-          ic => !(ic.type === 'terminal-stub' && ic.isAirportStub && ic.airportId === ap.id)
-        );
-      }
+      // If no motorway connected, the airport gateway plaza stub remains as the arterial gateway plaza
     }
 
     // 4. Additional Regional Spurs for Underserved Tier-1/2 Cities (up to maxStateMotorways)
