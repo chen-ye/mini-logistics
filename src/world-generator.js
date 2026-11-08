@@ -1222,8 +1222,11 @@ export class ProceduralLogisticsWorld {
     }
   }
 
-  findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false) {
+  findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false, options = null) {
     const { W } = this;
+    const isInterchangeBypass = Boolean(options && options.isInterchangeBypass);
+    const customTurnPenalty = options && options.turnPenalty !== undefined ? options.turnPenalty : null;
+    const extraCostFn = options && options.extraCostFn ? options.extraCostFn : null;
     const startId = this.idx(sx, sy);
     const endId = this.idx(ex, ey);
     const gen = ++this._astarGen;
@@ -1328,7 +1331,8 @@ export class ProceduralLogisticsWorld {
         // bypass rings (`buildingMask === 4`) can freely take 45° diagonal steps!
         const c1Id = this.idx(cx + dx, cy);
         const c2Id = this.idx(cx, cy + dy);
-        const inInterchangeRing = this.buildingMask[cid] === 4 && this.buildingMask[nid] === 4;
+        const inInterchangeRing =
+          isInterchangeBypass || (this.buildingMask[cid] === 4 && this.buildingMask[nid] === 4);
         if (
           dx !== 0 &&
           dy !== 0 &&
@@ -1386,7 +1390,7 @@ export class ProceduralLogisticsWorld {
           const dElev = Math.max(0, this.elevationField[nid] - this.elevationField[cid]);
           stepCost += this.slopeField[nid] * 3.8 + dElev * 16.0 + Math.max(0, this.elevationField[nid] - this.seaLevel - 0.14) * 2.2;
           // Strongly prefer existing orthogonal streets inside urban zones; never carve a parallel street 1-2 tiles away!
-          if (this.zoneColorIdx[nid] >= 0) {
+          if (this.zoneColorIdx[nid] >= 0 && !isInterchangeBypass && this.buildingMask[nid] !== 4) {
             stepCost *= 4.5;
             const pnx = -dy;
             const pny = dx;
@@ -1399,13 +1403,20 @@ export class ProceduralLogisticsWorld {
               }
             }
           }
+          if (extraCostFn) {
+            stepCost += extraCostFn(nx, ny);
+          }
         }
 
         // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) so A* marches in clean octilinear runs
         // instead of 1-tile staircases or caterpillar zig-zags!
         if (pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
-          const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
-          stepCost += inUrban ? 4.2 : 2.4;
+          if (customTurnPenalty !== null) {
+            stepCost += customTurnPenalty;
+          } else {
+            const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
+            stepCost += inUrban ? 4.2 : 2.4;
+          }
         }
 
         const tentativeG = gScore[cid] + stepCost;
@@ -2712,6 +2723,33 @@ export class ProceduralLogisticsWorld {
     return true;
   }
 
+  /**
+   * Computes a soft siting penalty when a candidate Cloverleaf or Trumpet interchange footprint
+   * overlaps existing surface roads, bridges, or buildings, steering interchanges into open pockets
+   * beside arterials when available.
+   */
+  interchangeRoadOverlapCost(cx, cy, radius = 4.2) {
+    const rCeil = Math.ceil(radius);
+    const r2 = radius * radius;
+    let cost = 0;
+    for (let dy = -rCeil; dy <= rCeil; dy++) {
+      for (let dx = -rCeil; dx <= rCeil; dx++) {
+        if (dx * dx + dy * dy > r2) continue;
+        const gx = Math.round(cx + dx);
+        const gy = Math.round(cy + dy);
+        if (!this.inBounds(gx, gy, 1)) continue;
+        const id = this.idx(gx, gy);
+        const rg = this.roadGrid[id];
+        if (rg === 3) cost += 35.0;
+        else if (rg === 2) cost += 4.5;
+        else if (rg === 1) cost += 2.2;
+        const bm = this.buildingMask[id];
+        if (bm === 1 || bm === 2) cost += 3.0;
+      }
+    }
+    return cost;
+  }
+
   scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId = null, preferOff = 0, candidateOff = 0, forbidAnyCrossing = false, allowTouchTrunkNum = null) {
     if (!samples || samples.length < 2) return Infinity;
     const chord = Math.hypot(ex - sx, ey - sy) || 1;
@@ -3432,7 +3470,11 @@ export class ProceduralLogisticsWorld {
           const score = this.scoreMotorwaySamples(samples, originX, originY, hitPt.x, hitPt.y, airportId, 0, 0, true, trunk.number);
           if (!Number.isFinite(score)) continue;
 
-          const totalScore = score + chord * 0.45 + (1.0 - cosPerp) * 18;
+          const totalScore =
+            score +
+            chord * 0.45 +
+            (1.0 - cosPerp) * 18 +
+            this.interchangeRoadOverlapCost(hitPt.x, hitPt.y, 4.0) * 0.55;
           if (totalScore < bestScore) {
             bestScore = totalScore;
             bestResult = {
@@ -3652,15 +3694,15 @@ export class ProceduralLogisticsWorld {
    * affected road cannot be cleanly rerouted.
    */
   displaceAndRerouteRoadsAtInterchange(ic, requireCleanReroute = false) {
-    let isInsideFootprint;
+    let isInsideCore;
     if (ic.type === 'cloverleaf') {
-      isInsideFootprint = (px, py) => Math.hypot(px - ic.x, py - ic.y) <= 3.6;
+      isInsideCore = (px, py) => Math.hypot(px - ic.x, py - ic.y) <= 3.6;
     } else if (ic.type === 'trumpet') {
       const cosA = Math.cos(ic.angleMain);
       const sinA = Math.sin(ic.angleMain);
       const nx = -sinA * (ic.sideSign || 1);
       const ny = cosA * (ic.sideSign || 1);
-      isInsideFootprint = (px, py) => {
+      isInsideCore = (px, py) => {
         const dx = px - ic.x;
         const dy = py - ic.y;
         const u = dx * cosA + dy * sinA;
@@ -3672,7 +3714,7 @@ export class ProceduralLogisticsWorld {
       const sinA = Math.sin(ic.angleRad);
       const nx = -sinA * ic.connSide;
       const ny = cosA * ic.connSide;
-      isInsideFootprint = (px, py) => {
+      isInsideCore = (px, py) => {
         const gx = Math.round(px);
         const gy = Math.round(py);
         if (gx === ic.connectX && gy === ic.connectY) return false;
@@ -3687,9 +3729,83 @@ export class ProceduralLogisticsWorld {
     }
 
     const hasAnyRoadOverlap = this.roads.some(
-      r => r.type !== 'airport-loop' && r.points.some(pt => isInsideFootprint(pt.x, pt.y))
+      r => r.type !== 'airport-loop' && r.points.some(pt => isInsideCore(pt.x, pt.y))
     );
     if (!hasAnyRoadOverlap) return true;
+
+    // 0. Expand the stripped zone outward along degree-2 unanchored road segments (up to `maxPullback` tiles)
+    //    until reaching real corridor anchors (`deg >= 3` junctions, building driveways, or bridges)
+    //    so realigned roads sweep smoothly from anchor to anchor instead of forming a tight 4-bend U-blister!
+    const total = this.W * this.H;
+    const preDeg = new Uint8Array(total);
+    const frontageMask = new Uint8Array(total);
+    const fullAdj = new Map();
+    const addFullEdge = (u, v) => {
+      if (!fullAdj.has(u)) fullAdj.set(u, []);
+      if (!fullAdj.has(v)) fullAdj.set(v, []);
+      const lu = fullAdj.get(u);
+      if (!lu.includes(v)) {
+        lu.push(v);
+        fullAdj.get(v).push(u);
+        preDeg[u] = Math.min(255, preDeg[u] + 1);
+        preDeg[v] = Math.min(255, preDeg[v] + 1);
+      }
+    };
+
+    for (const h of this.houses) {
+      const rx = Math.round(h.roadX), ry = Math.round(h.roadY);
+      if (this.inBounds(rx, ry, 1)) frontageMask[this.idx(rx, ry)] = 1;
+    }
+    for (const d of this.destinations) {
+      const rx = Math.round(d.roadX), ry = Math.round(d.roadY);
+      if (this.inBounds(rx, ry, 1)) frontageMask[this.idx(rx, ry)] = 1;
+    }
+
+    const strippedTile = new Uint8Array(total);
+    const pullDist = new Uint8Array(total);
+    const pullQ = [];
+
+    for (const r of this.roads) {
+      if (r.type === 'airport-loop' || r.type === 'airport-spine') continue;
+      for (let i = 0; i < r.points.length; i++) {
+        const pt = r.points[i];
+        const gx = Math.round(pt.x), gy = Math.round(pt.y);
+        const id = this.idx(gx, gy);
+        if (isInsideCore(pt.x, pt.y) && strippedTile[id] === 0) {
+          strippedTile[id] = 1;
+          pullQ.push(id);
+        }
+        if (i < r.points.length - 1) {
+          const next = r.points[i + 1];
+          addFullEdge(id, this.idx(Math.round(next.x), Math.round(next.y)));
+        }
+      }
+    }
+
+    const maxPullback = ic.type === 'diamond-ramp' ? 10 : 18;
+    let pHead = 0;
+    while (pHead < pullQ.length) {
+      const cid = pullQ[pHead++];
+      if (pullDist[cid] >= maxPullback) continue;
+      for (const nid of (fullAdj.get(cid) || [])) {
+        if (strippedTile[nid] === 1) continue;
+        const nx = nid % this.W;
+        const ny = Math.floor(nid / this.W);
+        const isKey =
+          this.airports.some(a => a.gateX === nx && a.gateY === ny) ||
+          this.interchanges.some(otherIc => Math.round(otherIc.x) === nx && Math.round(otherIc.y) === ny);
+        if (isKey || this.roadGrid[nid] === 3) continue;
+        if (frontageMask[nid] === 1 && Math.hypot(nx - ic.x, ny - ic.y) > 6.8) continue;
+        // Stop at degree >= 3 junctions so the junction tile itself acts as the wide-horizon portal!
+        if (preDeg[nid] >= 3) continue;
+        strippedTile[nid] = 1;
+        pullDist[nid] = pullDist[cid] + 1;
+        pullQ.push(nid);
+      }
+    }
+
+    const isInsideFootprint = (px, py) =>
+      isInsideCore(px, py) || strippedTile[this.idx(Math.round(px), Math.round(py))] === 1;
 
     // 1. Build the subgraph of road edges touching `isInsideFootprint` and identify all
     //    boundary portal vertices (vertices just outside `isInsideFootprint` connected to an inside vertex).
@@ -3852,10 +3968,15 @@ export class ProceduralLogisticsWorld {
           ordered.push(withAng[(startIdx + i) % withAng.length]);
         }
 
+        const bypassOptions = {
+          isInterchangeBypass: true,
+          turnPenalty: 7.5
+        };
+
         for (let i = 0; i < ordered.length - 1; i++) {
           const pA = ordered[i];
           const pB = ordered[i + 1];
-          const detour = this.findRoadPathAStar(pA.x, pA.y, pB.x, pB.y, true, isInsideFootprint, false);
+          const detour = this.findRoadPathAStar(pA.x, pA.y, pB.x, pB.y, true, isInsideCore, false, bypassOptions);
           if (detour && detour.length >= 2) {
             this.commitRoadPath(detour, rType, extraProps);
           } else if (requireCleanReroute) {
@@ -3864,7 +3985,10 @@ export class ProceduralLogisticsWorld {
         }
       } else if (pts.length === 1 && ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
         const pA = pts[0];
-        const detour = this.findRoadPathAStar(pA.x, pA.y, ic.connectX, ic.connectY, true, isInsideFootprint, false);
+        const detour = this.findRoadPathAStar(pA.x, pA.y, ic.connectX, ic.connectY, true, isInsideCore, false, {
+          isInterchangeBypass: true,
+          turnPenalty: 6.5
+        });
         if (detour && detour.length >= 2) {
           this.commitRoadPath(detour, rType, extraProps);
         }
@@ -4195,7 +4319,7 @@ export class ProceduralLogisticsWorld {
           const mAng = Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x);
           if (Math.abs(Math.sin(mAng - crossAng)) < 0.64) continue;
           if (!this.isCloverleafFootprintDry(pt.x, pt.y, mAng, crossAng, [-1, 1], [-1, 1])) continue;
-          const dMid = Math.hypot(pt.x - midX, pt.y - midY);
+          const dMid = Math.hypot(pt.x - midX, pt.y - midY) + this.interchangeRoadOverlapCost(pt.x, pt.y, 4.4) * 0.45;
           if (dMid < minViaDist) {
             minViaDist = dMid;
             bestViaPt = pt;
