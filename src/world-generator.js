@@ -4733,103 +4733,37 @@ export class ProceduralLogisticsWorld {
 
   populateLandscapeTrees() {
     const isIslandHopper = this.config.archetype === 'island-hopper';
-    const isTreeTileClear = (gx, gy) => {
-      if (!this.inBounds(gx, gy, 3)) return false;
-      const gid = this.idx(gx, gy);
-      if (
-        this.waterMask[gid] > 0 ||
-        this.buildingMask[gid] > 0 ||
-        this.roadGrid[gid] > 0 ||
-        this.zoneColorIdx[gid] >= 0
-      ) {
-        return false;
-      }
-      // Keep tree crowns clear of surface road casings & bridges
-      if (
-        this.roadGrid[gid - 1] > 0 ||
-        this.roadGrid[gid + 1] > 0 ||
-        this.roadGrid[gid - this.W] > 0 ||
-        this.roadGrid[gid + this.W] > 0
-      ) {
-        return false;
-      }
-      return true;
-    };
-
-    // Generate cohesive, overlapping Mini Motorways woodland canopies on foothill & windward slopes:
-    // - Smooth low-frequency biome patches (`0.021` cycles/tile) carve distinct 15–30 tile forest stands
-    //   while leaving ~65% of contour terraces open and uncluttered.
-    // - Within each stand, every clump places satellite crowns at `rad = (r0 + rSat) * (0.48..0.82)`
-    //   so crowns physically overlap into cloud-like scalloped canopies with zero isolated stipple dust.
-    const freqScale = 360 / this.W;
-    const treeScale = Math.pow(this.W / 360, 0.42);
-    const cellStep = Math.max(2.6, 2.8 * treeScale);
-    const maxJitter = cellStep * 0.44;
-
-    for (let y = 6; y < this.H - 6; y += cellStep) {
-      for (let x = 6; x < this.W - 6; x += cellStep) {
-        const cx = x + this.rng.range(-maxJitter, maxJitter);
-        const cy = y + this.rng.range(-maxJitter, maxJitter);
-        const gx0 = Math.round(cx);
-        const gy0 = Math.round(cy);
-        if (!isTreeTileClear(gx0, gy0)) continue;
-
-        const id = this.idx(gx0, gy0);
+    // Generate coherent upland woodland groves & windward rain-shadow forests (no confetti sprinkles!)
+    for (let y = 5; y < this.H - 5; y += 2.4) {
+      for (let x = 5; x < this.W - 5; x += 2.4) {
+        const ix = Math.round(x), iy = Math.round(y);
+        const id = this.idx(ix, iy);
+        if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) continue;
+        if (this.zoneColorIdx[id] >= 0) continue;
         const dWater = this.distToWater[id];
         const isSmallIslet = isIslandHopper && this.landmassId[id] < 0;
-        if (dWater < (isSmallIslet ? 1.5 : 3.6)) continue;
+        if (dWater < (isSmallIslet ? 1.5 : 4.2)) continue;
 
         const hillHeight = Math.max(0, this.elevationField[id] - this.seaLevel);
-        if (!isSmallIslet && hillHeight < 0.07) continue;
-
-        const nx = cx * 0.021 * freqScale;
-        const ny = cy * 0.021 * freqScale;
-        const macroForest = this.noise.fbm(nx + 3.1, ny + 8.4, 2);
-        const edgeWarp = (this.noise.fbm(nx * 2.2 + 17.4, ny * 2.2 + 29.8, 2) - 0.5) * 0.14;
-        const moistureBias = (this.fertilityField[id] - 0.38) * 0.25;
-        const slopeBand = Math.min(0.14, (hillHeight - 0.07) * 0.55);
-        const groveScore = macroForest + edgeWarp + moistureBias + slopeBand;
-
-        const threshold = isSmallIslet ? 0.50 : 0.65;
-        if (groveScore <= threshold) continue;
-
-        const depth = groveScore - threshold;
-        const isCore = depth > 0.04;
-        const primaryColor = this.rng.pick(PALETTE.treeDots);
-        const secondaryColor = this.rng.pick(PALETTE.treeDots);
-
-        // 1. Central anchor crown of the clump
-        const r0 = (isCore ? this.rng.range(0.45, 0.60) : this.rng.range(0.33, 0.44)) * treeScale;
-        this.trees.push({
-          x: cx,
-          y: cy,
-          r: r0,
-          color: primaryColor,
-          isAnchor: isCore
-        });
-
-        // 2. Overlapping satellite crowns (`rad < r0 + rSat` guarantees continuous scalloped canopy closure!)
-        const satCount = isSmallIslet
-          ? this.rng.int(2, 4)
-          : (depth > 0.085 ? this.rng.int(5, 7) : (isCore ? this.rng.int(3, 5) : this.rng.int(2, 3)));
-        const baseAng = this.rng.range(0, Math.PI * 2);
-        for (let g = 0; g < satCount; g++) {
-          const rSat = (isCore ? this.rng.range(0.32, 0.48) : this.rng.range(0.24, 0.35)) * treeScale;
-          const ang = baseAng + (g / satCount) * Math.PI * 2 + this.rng.range(-0.32, 0.32);
-          const rad = (r0 + rSat) * this.rng.range(0.48, 0.82);
-          const tx = cx + Math.cos(ang) * rad;
-          const ty = cy + Math.sin(ang) * rad;
-          const gx = Math.round(tx);
-          const gy = Math.round(ty);
-          if (!isTreeTileClear(gx, gy)) continue;
-
-          this.trees.push({
-            x: tx,
-            y: ty,
-            r: rSat,
-            color: this.rng.next() < 0.68 ? primaryColor : secondaryColor,
-            isAnchor: isCore && g % 2 === 0
-          });
+        // Orographic windward bonus (`fertilityField` encodes windward upslope moisture!)
+        const moistureBias = (this.fertilityField[id] - 0.35) * 0.45;
+        const forestPatch = this.noise.fbm(x * 0.055 + 3.1, y * 0.055 + 8.4, 2) + moistureBias;
+        if ((hillHeight > 0.12 && forestPatch + hillHeight * 1.15 > 0.60) || (isSmallIslet && forestPatch > 0.40)) {
+          const groveCount = isSmallIslet ? this.rng.int(1, 3) : (moistureBias > 0.06 ? this.rng.int(3, 5) : this.rng.int(1, 3));
+          for (let g = 0; g < groveCount; g++) {
+            const tx = x + this.rng.range(-1.04, 1.04);
+            const ty = y + this.rng.range(-1.04, 1.04);
+            const gx = Math.round(tx), gy = Math.round(ty);
+            if (!this.inBounds(gx, gy, 3)) continue;
+            const gid = this.idx(gx, gy);
+            if (this.waterMask[gid] > 0 || this.buildingMask[gid] > 0 || this.roadGrid[gid] > 0 || this.zoneColorIdx[gid] >= 0) continue;
+            this.trees.push({
+              x: tx,
+              y: ty,
+              r: this.rng.range(0.44, 0.78),
+              color: this.rng.pick(PALETTE.treeDots)
+            });
+          }
         }
       }
     }
@@ -4839,27 +4773,20 @@ export class ProceduralLogisticsWorld {
       if (!rObj.headwaterPt) continue;
       const hx = rObj.headwaterPt.x;
       const hy = rObj.headwaterPt.y;
-      // Bias grove arc upstream away from the initial river channel direction
-      const pNext = rObj.points && rObj.points.length > 3 ? rObj.points[3] : null;
-      const upAng = pNext ? Math.atan2(hy - pNext.y, hx - pNext.x) : 0;
-      const springPrimary = this.rng.pick(PALETTE.treeDots);
-      const springSecondary = this.rng.pick(PALETTE.treeDots);
-      for (let g = 0; g < 18; g++) {
-        const spread = pNext ? this.rng.range(-Math.PI * 0.72, Math.PI * 0.72) : (g / 18) * Math.PI * 2;
-        const ang = upAng + spread;
-        const rad = this.rng.range(1.35, 3.20) * treeScale;
+      for (let g = 0; g < 11; g++) {
+        const ang = (g / 11) * Math.PI * 2 + this.rng.range(-0.3, 0.3);
+        const rad = this.rng.range(1.4, 3.6);
         const tx = hx + Math.cos(ang) * rad;
         const ty = hy + Math.sin(ang) * rad;
-        const gx = Math.round(tx);
-        const gy = Math.round(ty);
-        if (!isTreeTileClear(gx, gy)) continue;
-        const baseR = g % 3 === 0 ? this.rng.range(0.44, 0.56) : this.rng.range(0.30, 0.42);
+        const gx = Math.round(tx), gy = Math.round(ty);
+        if (!this.inBounds(gx, gy, 3)) continue;
+        const gid = this.idx(gx, gy);
+        if (this.waterMask[gid] > 0 || this.buildingMask[gid] > 0 || this.roadGrid[gid] > 0 || this.zoneColorIdx[gid] >= 0) continue;
         this.trees.push({
           x: tx,
           y: ty,
-          r: baseR * treeScale,
-          color: g % 2 === 0 ? springPrimary : springSecondary,
-          isAnchor: g % 2 === 0
+          r: this.rng.range(0.52, 0.84),
+          color: this.rng.pick(PALETTE.treeDots)
         });
       }
     }
