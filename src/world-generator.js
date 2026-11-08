@@ -1903,7 +1903,47 @@ export class ProceduralLogisticsWorld {
       }
     }
 
-    this.roads = cleanedRoads;
+    // Flood-fill from all arterial/bridge/loop tiles (`roadGrid >= 2`) and town centers so any
+    // orphaned 2-tile street island severed from the town grid is cleanly removed!
+    const reachable = new Uint8Array(this.W * this.H);
+    const rQueue = [];
+    for (let y = 0; y < this.H; y++) {
+      for (let x = 0; x < this.W; x++) {
+        const id = this.idx(x, y);
+        if (this.roadGrid[id] >= 2) {
+          reachable[id] = 1;
+          rQueue.push(x, y);
+        }
+      }
+    }
+    for (const t of this.towns) {
+      const tid = this.idx(t.x, t.y);
+      if (this.roadGrid[tid] > 0 && !reachable[tid]) {
+        reachable[tid] = 1;
+        rQueue.push(t.x, t.y);
+      }
+    }
+    let rHead = 0;
+    const dirs8 = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+    while (rHead < rQueue.length) {
+      const cx = rQueue[rHead++];
+      const cy = rQueue[rHead++];
+      for (const [dx, dy] of dirs8) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (!this.inBounds(nx, ny, 1)) continue;
+        const nid = this.idx(nx, ny);
+        if (this.roadGrid[nid] > 0 && !reachable[nid]) {
+          reachable[nid] = 1;
+          rQueue.push(nx, ny);
+        }
+      }
+    }
+
+    this.roads = cleanedRoads.filter(r => {
+      if (r.type !== 'street') return true;
+      return r.points.some(pt => reachable[this.idx(Math.round(pt.x), Math.round(pt.y))] === 1);
+    });
     this.rebuildRoadGridAndEdges();
   }
 

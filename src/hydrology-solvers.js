@@ -15,6 +15,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
   const { W, H, seaLevel } = world;
   const arch = world.config.archetype;
   const hydroAlgo = world.config.hydrologyAlgo || 'thalweg-astar';
+  const baseElevation = new Float32Array(world.elevationField);
 
   // Helper: Smooth a river polyline with Laplacian passes so meanders are 100% C1 smooth (zero spikes!)
   const smoothPolyline = (pts, passes = 4) => {
@@ -396,13 +397,97 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       isMainOutflow,
       headwaterPt: isInteriorSpring ? { x: path[0].x, y: path[0].y } : null
     });
-    for (let i = 0; i < path.length; i++) {
+
+    // Build a monotonically descending thalweg bank profile (`thalwegBankElev`) from headwater to mouth
+    // and bind each valley tile to its nearest perpendicular river station (`nearestStationIdx`) so
+    // downstream stations never back-scoop upstream points and contour terraces (`+0.36`, `+0.24`, `+0.13`)
+    // bend upstream into crisp cartographic V-notches ("the Rule of Vs")!
+    const nPts = path.length;
+    const thalwegBankElev = new Float32Array(nPts);
+    const chanRadii = new Float32Array(nPts);
+    const valleyRadii = new Float32Array(nPts);
+    const shapeExps = new Float32Array(nPts);
+    const srcNaturalElev = Math.max(
+      seaLevel + 0.06,
+      baseElevation[world.idx(path[0].x, path[0].y)]
+    );
+    const mouthTargetElev = seaLevel + 0.025;
+
+    for (let i = 0; i < nPts; i++) {
+      const progress = i / Math.max(1, nPts - 1);
       const { x, y, width } = path[i];
-      const progress = i / (path.length - 1);
       const id = world.idx(x, y);
       world.drainageField[id] += isMainOutflow ? 2.5 : (0.5 + progress * 1.5);
+
+      const localNatural = baseElevation[id];
+      const gradedCurve =
+        mouthTargetElev +
+        (srcNaturalElev - mouthTargetElev) * Math.pow(1 - progress, isInteriorSpring ? 1.18 : 1.38);
+      // Interior springs emerge at 0 incision at progress = 0 and deepen progressively downstream
+      const inciseEnv = isInteriorSpring
+        ? Math.pow(Math.sin(Math.pow(progress, 0.58) * Math.PI * 0.88), 1.15)
+        : (0.45 + 0.55 * Math.sin(Math.pow(progress, 0.65) * Math.PI));
+      const incisionDepth = (isMainOutflow ? 0.145 : 0.115) * inciseEnv;
+      const incisedLocal = Math.max(mouthTargetElev, localNatural - incisionDepth);
+      const rawBank = 0.55 * gradedCurve + 0.45 * incisedLocal;
+      thalwegBankElev[i] = i === 0 ? rawBank : Math.min(rawBank, thalwegBankElev[i - 1]);
+
       const chanRad = Math.max(isInteriorSpring && progress < 0.15 ? 0.75 : 1.05, (width || 1.5) * 0.56);
-      world.carveValleyChannel(x, y, chanRad, 1, isInteriorSpring && progress < 0.22);
+      chanRadii[i] = chanRad;
+      const startValleyW = isInteriorSpring ? 2.2 : 9.5;
+      const endValleyW = isMainOutflow ? 19.5 : 15.0;
+      valleyRadii[i] = chanRad + startValleyW + (endValleyW - startValleyW) * Math.pow(progress, isInteriorSpring ? 0.70 : 0.85);
+      shapeExps[i] = 1.18 + 1.02 * Math.pow(progress, 0.90);
+    }
+
+    // Pass 1: Assign each tile in the river's corridor to its nearest river station `i*`
+    const touchedMap = new Map();
+    for (let i = 0; i < nPts; i++) {
+      const { x, y } = path[i];
+      const vRad = valleyRadii[i];
+      const rCeil = Math.ceil(vRad);
+      const v2 = vRad * vRad;
+      const ix0 = Math.max(0, Math.floor(x - rCeil));
+      const ix1 = Math.min(W - 1, Math.ceil(x + rCeil));
+      const iy0 = Math.max(0, Math.floor(y - rCeil));
+      const iy1 = Math.min(H - 1, Math.ceil(y + rCeil));
+
+      for (let gy = iy0; gy <= iy1; gy++) {
+        for (let gx = ix0; gx <= ix1; gx++) {
+          const d2 = (gx - x) * (gx - x) + (gy - y) * (gy - y);
+          if (d2 > v2) continue;
+          const gid = world.idx(gx, gy);
+          const prev = touchedMap.get(gid);
+          if (!prev || d2 < prev.d2) {
+            touchedMap.set(gid, { d2, i });
+          }
+        }
+      }
+    }
+
+    // Pass 2: Carve channel & lateral valley wall from each tile's true perpendicular station `i*`
+    for (const [gid, { d2, i }] of touchedMap.entries()) {
+      const chanRad = chanRadii[i];
+      const valleyRad = valleyRadii[i];
+      const bankElev = thalwegBankElev[i];
+      if (d2 <= chanRad * chanRad) {
+        if (world.waterMask[gid] === 0) world.waterMask[gid] = 1;
+        world.elevationField[gid] = Math.min(world.elevationField[gid], bankElev - 0.015);
+      } else {
+        const d = Math.sqrt(d2);
+        const u = Math.min(1, (d - chanRad) / Math.max(0.5, valleyRad - chanRad));
+        const gorgeU = Math.pow(u, shapeExps[i]);
+        const smoothRimU = u * u * (3 - 2 * u);
+        const rimBlend = Math.max(0, Math.min(1, (u - 0.58) / 0.42));
+        const profileU = gorgeU * (1 - rimBlend) + smoothRimU * rimBlend;
+        const hillElev = baseElevation[gid];
+        if (hillElev > bankElev) {
+          const targetElev = bankElev + (hillElev - bankElev) * profileU;
+          if (targetElev < world.elevationField[gid]) {
+            world.elevationField[gid] = targetElev;
+          }
+        }
+      }
     }
   };
 
