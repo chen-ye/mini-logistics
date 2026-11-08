@@ -2272,16 +2272,17 @@ export class ProceduralLogisticsWorld {
       // (#3) Smooth contour- & riverbank-hugging outer perimeter loops (`estateLoops`),
       // (#4) Recursive X/Y Binary Space Partitioning (`bspParcels`) with T-junction seams in both axes,
       // (#5) Micro-geographic crop zoning (riparian pasture -> flat alluvial wheat/ochre/loam -> foothill orchards),
-      // (#6) An unpaved internal tractor spine lane (`tractorSpine`) & upland windbreak poplar row (`windbreakPts`).
+      // (#6) A broken-grid farm road network (`tractorTracks`) serving every field & stopping fractionally in terminal fields,
+      //      plus an upland windbreak poplar row (`windbreakPts`).
       let bspParcels = [];
       let estateLoops = [];
-      let tractorSpine = null;
+      let tractorTracks = [];
       let windbreakPts = [];
       if (chosenCand.resourceType === 'FARM') {
         const estate = this.buildFarmEstate(chosenCand.gx, chosenCand.gy, chosenCand.cx, chosenCand.cy, slotIdx);
         bspParcels = estate.bspParcels;
         estateLoops = estate.estateLoops;
-        tractorSpine = estate.tractorSpine;
+        tractorTracks = estate.tractorTracks;
         windbreakPts = estate.windbreakPts;
       }
 
@@ -2305,7 +2306,7 @@ export class ProceduralLogisticsWorld {
         resourceType: chosenCand.resourceType, // 'MINE' | 'TIMBER' | 'FARM'
         bspParcels,
         estateLoops,
-        tractorSpine,
+        tractorTracks,
         windbreakPts,
         isRuralNiche: true,
         isCircular: false,
@@ -2440,16 +2441,16 @@ export class ProceduralLogisticsWorld {
 
       if (axis === 'x' && w >= 8) {
         let sx;
-        if (fgx >= x0 + 4 && fgx <= x1 - 4 && this.rng.next() < 0.65) sx = fgx;
-        else if (fgx + 2 >= x0 + 4 && fgx + 2 <= x1 - 4 && this.rng.next() < 0.65) sx = fgx + 2;
+        if (fgx >= x0 + 4 && fgx <= x1 - 4) sx = fgx;
+        else if (fgx + 2 >= x0 + 4 && fgx + 2 <= x1 - 4) sx = fgx + 2;
         else sx = x0 + Math.floor(w * 0.35 + this.rng.next() * (w * 0.30));
         sx = Math.max(x0 + 4, Math.min(x1 - 4, sx));
         splitBox(x0, y0, sx, y1, depth + 1, 'y');
         splitBox(sx, y0, x1, y1, depth + 1, 'y');
       } else if (h >= 8) {
         let sy;
-        if (fgy >= y0 + 4 && fgy <= y1 - 4 && this.rng.next() < 0.65) sy = fgy;
-        else if (fgy + 2 >= y0 + 4 && fgy + 2 <= y1 - 4 && this.rng.next() < 0.65) sy = fgy + 2;
+        if (fgy >= y0 + 4 && fgy <= y1 - 4) sy = fgy;
+        else if (fgy + 2 >= y0 + 4 && fgy + 2 <= y1 - 4) sy = fgy + 2;
         else sy = y0 + Math.floor(h * 0.35 + this.rng.next() * (h * 0.30));
         sy = Math.max(y0 + 4, Math.min(y1 - 4, sy));
         splitBox(x0, y0, x1, sy, depth + 1, 'x');
@@ -2665,66 +2666,25 @@ export class ProceduralLogisticsWorld {
     // (#3) Trace Smooth Contour- & Riverbank-Hugging Outer Estate Boundary Loops
     const estateLoops = this.traceSmoothEstateLoops(estateTileSet, fgx, fgy);
 
-    // (#6a) Extract Internal Unpaved Tractor Spine starting from the 2×2 farmstead along the longest internal BSP seam
-    let tractorSpine = null;
-    const candidateSpines = [
-      { axis: 'y', coord: fgy },
-      { axis: 'y', coord: fgy + 2 },
-      { axis: 'x', coord: fgx },
-      { axis: 'x', coord: fgx + 2 }
-    ];
-    let bestSpineLen = 0;
-    for (const cs of candidateSpines) {
-      if (cs.axis === 'x') {
-        let minT = fgy, maxT = fgy + 2;
-        while (
-          estateTileSet.has((cs.coord - 1) * 10000 + (minT - 1)) &&
-          estateTileSet.has(cs.coord * 10000 + (minT - 1))
-        ) {
-          minT--;
-        }
-        while (
-          estateTileSet.has((cs.coord - 1) * 10000 + maxT) &&
-          estateTileSet.has(cs.coord * 10000 + maxT)
-        ) {
-          maxT++;
-        }
-        const len = maxT - minT;
-        if (len >= 6 && len > bestSpineLen) {
-          bestSpineLen = len;
-          const spanN = fgy - minT;
-          const spanS = maxT - (fgy + 2);
-          const y0 = spanN >= 2 ? Math.round(fgy - spanN * 0.78) : fgy;
-          const y1 = spanS >= 2 ? Math.round(fgy + 2 + spanS * 0.78) : fgy + 2;
-          tractorSpine = { x0: cs.coord, y0, x1: cs.coord, y1 };
-        }
-      } else {
-        let minT = fgx, maxT = fgx + 2;
-        while (
-          estateTileSet.has((minT - 1) * 10000 + (cs.coord - 1)) &&
-          estateTileSet.has((minT - 1) * 10000 + cs.coord)
-        ) {
-          minT--;
-        }
-        while (
-          estateTileSet.has(maxT * 10000 + (cs.coord - 1)) &&
-          estateTileSet.has(maxT * 10000 + cs.coord)
-        ) {
-          maxT++;
-        }
-        const len = maxT - minT;
-        if (len >= 6 && len > bestSpineLen) {
-          bestSpineLen = len;
-          const spanW = fgx - minT;
-          const spanE = maxT - (fgx + 2);
-          const x0 = spanW >= 2 ? Math.round(fgx - spanW * 0.78) : fgx;
-          const x1 = spanE >= 2 ? Math.round(fgx + 2 + spanE * 0.78) : fgx + 2;
-          tractorSpine = { x0, y0: cs.coord, x1, y1: cs.coord };
-        }
-      }
-    }
+    // (#6a) Build Broken-Grid Farm Track Network (`tractorTracks`) serving every field & stopping fractionally in terminal fields
+    const tractorTracks = this.buildBrokenGridTractorTracks(bspParcels, estateTileSet, fgx, fgy, slotIdx);
 
-    // (#6b) Place a sparse row of Windbreak Poplars (`windbreakPts`) along the highest upland outer boundary segment
+    const distPointToTrack = (px, py) => {
+      let minD = Infinity;
+      for (const tr of tractorTracks) {
+        const dx = tr.x1 - tr.x0;
+        const dy = tr.y1 - tr.y0;
+        const lenSq = dx * dx + dy * dy;
+        let t = lenSq > 1e-6 ? ((px - tr.x0) * dx + (py - tr.y0) * dy) / lenSq : 0;
+        t = Math.max(0, Math.min(1, t));
+        const d = Math.hypot(px - (tr.x0 + t * dx), py - (tr.y0 + t * dy));
+        if (d < minD) minD = d;
+      }
+      return minD;
+    };
+
+    // (#6b) Place a sparse row of Windbreak Poplars (`windbreakPts`) along the highest upland outer boundary segment,
+    // strictly >= 2.8 tiles clear of any farm road (`tractorTracks`) or paved road!
     const windbreakPts = [];
     if (estateLoops.length > 0) {
       const mainLoop = estateLoops[0];
@@ -2734,16 +2694,22 @@ export class ProceduralLogisticsWorld {
       if (winLen >= 3) {
         for (let i = 0; i < mainLoop.length; i++) {
           let elevSum = 0;
-          let nearRoad = false;
+          let invalidSeg = false;
           for (let k = 0; k < winLen; k++) {
             const pt = mainLoop[(i + k) % mainLoop.length];
             const gx = Math.round(pt[0]), gy = Math.round(pt[1]);
-            if (!this.inBounds(gx, gy, 2)) { nearRoad = true; break; }
+            if (!this.inBounds(gx, gy, 2)) { invalidSeg = true; break; }
             const tid = this.idx(gx, gy);
-            if (this.roadGrid[tid] > 0) { nearRoad = true; break; }
+            const touchesOrchard = bspParcels.some(
+              p => p.crop === 'orchard' && pt[0] >= p.x0 - 1 && pt[0] <= p.x1 + 1 && pt[1] >= p.y0 - 1 && pt[1] <= p.y1 + 1
+            );
+            if (touchesOrchard || this.roadGrid[tid] > 0 || distPointToTrack(pt[0], pt[1]) < 2.8) {
+              invalidSeg = true;
+              break;
+            }
             elevSum += this.elevationField[tid];
           }
-          if (!nearRoad && elevSum > bestScore) {
+          if (!invalidSeg && elevSum > bestScore) {
             bestScore = elevSum;
             bestSegStart = i;
           }
@@ -2756,14 +2722,504 @@ export class ProceduralLogisticsWorld {
             const steps = Math.max(1, Math.round(segLen / 0.85));
             for (let s = 0; s < steps; s++) {
               const t = s / steps;
-              windbreakPts.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+              const wx = a[0] + t * (b[0] - a[0]);
+              const wy = a[1] + t * (b[1] - a[1]);
+              if (distPointToTrack(wx, wy) >= 2.6) {
+                windbreakPts.push([wx, wy]);
+              }
             }
           }
         }
       }
     }
 
-    return { bspParcels, estateLoops, tractorSpine, windbreakPts };
+    return { bspParcels, estateLoops, tractorTracks, windbreakPts };
+  }
+
+  /**
+   * Builds a connected, broken-grid unpaved farm road network along internal BSP parcel seams
+   * that reaches and serves every parcel in `bspParcels` and terminates at a random fractional
+   * distance (`36%–76%`) along terminal field seams without touching outer boundaries or trees.
+   */
+  buildBrokenGridTractorTracks(bspParcels, estateTileSet, fgx, fgy, slotIdx) {
+    if (!bspParcels || bspParcels.length === 0) return [];
+
+    // 1. Collect shared seams between adjacent BSP parcels + the 4 root edges of the 2×2 farmstead pad
+    const rawSeams = [
+      { axis: 'h', y: fgy, a: fgx, b: fgx + 2, parcels: [], isPad: true },
+      { axis: 'h', y: fgy + 2, a: fgx, b: fgx + 2, parcels: [], isPad: true },
+      { axis: 'v', x: fgx, a: fgy, b: fgy + 2, parcels: [], isPad: true },
+      { axis: 'v', x: fgx + 2, a: fgy, b: fgy + 2, parcels: [], isPad: true }
+    ];
+
+    for (let i = 0; i < bspParcels.length; i++) {
+      const p = bspParcels[i];
+      // Connect any parcel touching the 2×2 farmstead `[fgx, fgx+2] × [fgy, fgy+2]`both along AND across the parcel
+      // so tracks leaving the barn yard always reach the interior BSP seams!
+      const touchesFarm =
+        p.x0 <= fgx + 2 && p.x1 >= fgx && p.y0 <= fgy + 2 && p.y1 >= fgy;
+      if (touchesFarm) {
+        for (const py of [fgy, fgy + 2]) {
+          if (py >= p.y0 && py <= p.y1) {
+            rawSeams.push({ axis: 'h', y: py, a: Math.min(p.x0, fgx), b: Math.max(p.x1, fgx + 2), parcels: [i], isPad: false });
+          }
+        }
+        for (const px of [fgx, fgx + 2]) {
+          if (px >= p.x0 && px <= p.x1) {
+            rawSeams.push({ axis: 'v', x: px, a: Math.min(p.y0, fgy), b: Math.max(p.y1, fgy + 2), parcels: [i], isPad: false });
+          }
+        }
+      }
+
+      for (let j = i + 1; j < bspParcels.length; j++) {
+        const q = bspParcels[j];
+        if (p.y1 === q.y0 || p.y0 === q.y1) {
+          const sy = p.y1 === q.y0 ? p.y1 : p.y0;
+          const xA = Math.max(p.x0, q.x0);
+          const xB = Math.min(p.x1, q.x1);
+          if (xB - xA >= 1) {
+            rawSeams.push({ axis: 'h', y: sy, a: xA, b: xB, parcels: [i, j], isPad: false });
+          }
+        }
+        if (p.x1 === q.x0 || p.x0 === q.x1) {
+          const sx = p.x1 === q.x0 ? p.x1 : p.x0;
+          const yA = Math.max(p.y0, q.y0);
+          const yB = Math.min(p.y1, q.y1);
+          if (yB - yA >= 1) {
+            rawSeams.push({ axis: 'v', x: sx, a: yA, b: yB, parcels: [i, j], isPad: false });
+          }
+        }
+      }
+    }
+
+    // 2. Collect all split coordinates along each seam line (endpoints + T-junction intersections)
+    const hSeams = rawSeams.filter(s => s.axis === 'h');
+    const vSeams = rawSeams.filter(s => s.axis === 'v');
+
+    const vKey = (x, y) => `${x},${y}`;
+    const vertices = new Map();
+    const ensureVertex = (x, y) => {
+      const k = vKey(x, y);
+      let v = vertices.get(k);
+      if (!v) {
+        const isPadVert = x >= fgx && x <= fgx + 2 && y >= fgy && y <= fgy + 2;
+        // A vertex is strictly interior if all 4 surrounding grid cells belong to `estateTileSet`
+        // AND lie well below the `dh = 0.13` hillside forest contour (`< seaLevel + 0.118`)
+        let isInterior = isPadVert;
+        if (!isPadVert) {
+          isInterior = true;
+          for (const [dx, dy] of [[-1, -1], [0, -1], [-1, 0], [0, 0]]) {
+            const gx = x + dx, gy = y + dy;
+            if (!estateTileSet.has(gx * 10000 + gy) || !this.inBounds(gx, gy, 2)) {
+              isInterior = false;
+              break;
+            }
+            const tid = this.idx(gx, gy);
+            if (this.elevationField[tid] >= this.seaLevel + 0.130 || this.distToWater[tid] < 1.8) {
+              isInterior = false;
+              break;
+            }
+          }
+        }
+        v = { k, x, y, isPadVert, isInterior, edges: [] };
+        vertices.set(k, v);
+      }
+      return v;
+    };
+
+    const edgeMap = new Map();
+    const addAtomicEdge = (x0, y0, x1, y1, axis, parcels, isPad) => {
+      if (x0 === x1 && y0 === y1) return;
+      // Skip any non-pad segment whose midpoint is outside the arable flatland (`dh < 0.13`)
+      if (!isPad) {
+        const mx = Math.floor((x0 + x1) * 0.5);
+        const my = Math.floor((y0 + y1) * 0.5);
+        if (!this.inBounds(mx, my, 2)) return;
+        const midId = this.idx(mx, my);
+        if (this.elevationField[midId] >= this.seaLevel + 0.130 || this.distToWater[midId] < 1.8) return;
+        // Both sides of an internal seam at its midpoint must belong to `estateTileSet`
+        const cellA = axis === 'h' ? mx * 10000 + (y0 - 1) : (x0 - 1) * 10000 + my;
+        const cellB = axis === 'h' ? mx * 10000 + y0 : x0 * 10000 + my;
+        if (!estateTileSet.has(cellA) || !estateTileSet.has(cellB)) return;
+      }
+
+      const u = ensureVertex(x0, y0);
+      const v = ensureVertex(x1, y1);
+      const eKey = u.k < v.k ? `${u.k}|${v.k}` : `${v.k}|${u.k}`;
+      let e = edgeMap.get(eKey);
+      if (!e) {
+        e = {
+          id: eKey,
+          u: u.k,
+          v: v.k,
+          x0: u.x,
+          y0: u.y,
+          x1: v.x,
+          y1: v.y,
+          axis,
+          len: Math.hypot(v.x - u.x, v.y - u.y),
+          parcels: new Set(),
+          isPad: Boolean(isPad)
+        };
+        edgeMap.set(eKey, e);
+        u.edges.push(e);
+        v.edges.push(e);
+      }
+      if (isPad) e.isPad = true;
+      for (const pIdx of parcels) e.parcels.add(pIdx);
+    };
+
+    for (const hs of hSeams) {
+      const xs = new Set([hs.a, hs.b]);
+      for (const os of hSeams) {
+        if (os.y === hs.y) {
+          if (os.a >= hs.a && os.a <= hs.b) xs.add(os.a);
+          if (os.b >= hs.a && os.b <= hs.b) xs.add(os.b);
+        }
+      }
+      for (const vs of vSeams) {
+        if (vs.x >= hs.a && vs.x <= hs.b && hs.y >= vs.a && hs.y <= vs.b) {
+          xs.add(vs.x);
+        }
+      }
+      const sortedX = [...xs].sort((a, b) => a - b);
+      for (let k = 0; k < sortedX.length - 1; k++) {
+        addAtomicEdge(sortedX[k], hs.y, sortedX[k + 1], hs.y, 'h', hs.parcels, hs.isPad);
+      }
+    }
+
+    for (const vs of vSeams) {
+      const ys = new Set([vs.a, vs.b]);
+      for (const os of vSeams) {
+        if (os.x === vs.x) {
+          if (os.a >= vs.a && os.a <= vs.b) ys.add(os.a);
+          if (os.b >= vs.a && os.b <= vs.b) ys.add(os.b);
+        }
+      }
+      for (const hs of hSeams) {
+        if (hs.y >= vs.a && hs.y <= vs.b && vs.x >= hs.a && vs.x <= hs.b) {
+          ys.add(hs.y);
+        }
+      }
+      const sortedY = [...ys].sort((a, b) => a - b);
+      for (let k = 0; k < sortedY.length - 1; k++) {
+        addAtomicEdge(vs.x, sortedY[k], vs.x, sortedY[k + 1], 'v', vs.parcels, vs.isPad);
+      }
+    }
+
+    // Associate each atomic edge with all BSP parcels whose boundary contains the segment
+    const allEdges = [...edgeMap.values()];
+    for (const e of allEdges) {
+      if (e.isPad) continue;
+      for (let pIdx = 0; pIdx < bspParcels.length; pIdx++) {
+        const p = bspParcels[pIdx];
+        if (e.axis === 'h' && (e.y0 === p.y0 || e.y0 === p.y1)) {
+          const xMin = Math.min(e.x0, e.x1), xMax = Math.max(e.x0, e.x1);
+          if (xMin >= p.x0 && xMax <= p.x1) e.parcels.add(pIdx);
+        } else if (e.axis === 'v' && (e.x0 === p.x0 || e.x0 === p.x1)) {
+          const yMin = Math.min(e.y0, e.y1), yMax = Math.max(e.y0, e.y1);
+          if (yMin >= p.y0 && yMax <= p.y1) e.parcels.add(pIdx);
+        }
+      }
+    }
+
+    // 3. Grow a Broken-Grid Spanning Tree from the 2×2 farmstead pad
+    const treeVerts = new Set();
+    const selectedEdges = new Set();
+    const vertInAxis = new Map();
+    for (const v of vertices.values()) {
+      if (v.isPadVert) treeVerts.add(v.k);
+    }
+    for (const e of allEdges) {
+      if (e.isPad) selectedEdges.add(e);
+    }
+
+    // Step 3A: Prim's broken-grid expansion over interior vertices (`isInterior === true`)
+    // Preferring 90° orthogonal turns (`turnDiscount = 0.62`) creates staggered broken-grid jogs!
+    let grew = true;
+    while (grew) {
+      grew = false;
+      let bestEdge = null;
+      let bestFrom = null;
+      let bestTo = null;
+      let bestCost = Infinity;
+
+      for (const uKey of treeVerts) {
+        const u = vertices.get(uKey);
+        if (!u) continue;
+        const inAx = vertInAxis.get(uKey);
+        for (const e of u.edges) {
+          if (selectedEdges.has(e)) continue;
+          const otherKey = e.u === uKey ? e.v : e.u;
+          if (treeVerts.has(otherKey)) continue;
+          const otherV = vertices.get(otherKey);
+          if (!otherV || !otherV.isInterior) continue;
+
+          const hash = ((u.x * 31 + u.y * 17 + otherV.x * 13 + otherV.y * 7 + slotIdx * 19) & 15) / 15;
+          const turnMult = inAx && inAx !== e.axis ? 0.62 : 1.18;
+          const cost = e.len * (0.85 + hash * 0.35) * turnMult;
+          if (cost < bestCost) {
+            bestCost = cost;
+            bestEdge = e;
+            bestFrom = uKey;
+            bestTo = otherKey;
+          }
+        }
+      }
+
+      if (bestEdge) {
+        selectedEdges.add(bestEdge);
+        treeVerts.add(bestTo);
+        vertInAxis.set(bestTo, bestEdge.axis);
+        grew = true;
+      }
+    }
+
+    // Step 3B: Ensure EVERY parcel (`0 .. bspParcels.length - 1`) is served by at least one non-pad edge,
+    // and add radial terminal seam spurs (`u_inner -> v_outer`) between outer fields!
+    const getServedParcels = () => {
+      const s = new Set();
+      for (const e of selectedEdges) {
+        if (e.isPad) continue;
+        for (const pIdx of e.parcels) s.add(pIdx);
+      }
+      return s;
+    };
+
+    // Add radial terminal seam spurs `(u_inner in treeVerts -> v_outer on perimeter)` so outer fields
+    // get dedicated dead-end spurs that stop fractionally along their shared seams!
+    for (const uKey of [...treeVerts]) {
+      const u = vertices.get(uKey);
+      if (!u || !u.isInterior) continue;
+      for (const e of u.edges) {
+        if (selectedEdges.has(e) || e.isPad) continue;
+        const otherKey = e.u === uKey ? e.v : e.u;
+        if (treeVerts.has(otherKey)) continue;
+        const otherV = vertices.get(otherKey);
+        if (!otherV || otherV.isInterior) continue;
+        if (e.len >= 3.0) {
+          selectedEdges.add(e);
+          treeVerts.add(otherKey);
+        }
+      }
+    }
+
+    // Shortest-path augmentation for any parcel still unserved
+    for (let pIdx = 0; pIdx < bspParcels.length; pIdx++) {
+      const served = getServedParcels();
+      if (served.has(pIdx)) continue;
+
+      // Dijkstra from `treeVerts` to any edge serving `pIdx`
+      const dist = new Map();
+      const prevEdge = new Map();
+      const prevVert = new Map();
+      const pq = [];
+      for (const tk of treeVerts) {
+        dist.set(tk, 0);
+        pq.push({ k: tk, d: 0 });
+      }
+      let targetVert = null;
+      let targetLeafEdge = null;
+
+      while (pq.length > 0) {
+        pq.sort((a, b) => a.d - b.d);
+        const curr = pq.shift();
+        if (curr.d > (dist.get(curr.k) ?? Infinity)) continue;
+        const u = vertices.get(curr.k);
+        if (!u) continue;
+
+        for (const e of u.edges) {
+          if (e.parcels.has(pIdx) && !e.isPad) {
+            targetVert = curr.k;
+            targetLeafEdge = e;
+            break;
+          }
+          const nk = e.u === curr.k ? e.v : e.u;
+          const nv = vertices.get(nk);
+          if (!nv) continue;
+          const stepCost = e.len + (nv.isInterior ? 0 : 25);
+          const nd = curr.d + stepCost;
+          if (nd < (dist.get(nk) ?? Infinity)) {
+            dist.set(nk, nd);
+            prevEdge.set(nk, e);
+            prevVert.set(nk, curr.k);
+            pq.push({ k: nk, d: nd });
+          }
+        }
+        if (targetLeafEdge) break;
+      }
+
+      if (targetLeafEdge) {
+        selectedEdges.add(targetLeafEdge);
+        const otherK = targetLeafEdge.u === targetVert ? targetLeafEdge.v : targetLeafEdge.u;
+        treeVerts.add(otherK);
+        let cur = targetVert;
+        while (cur) {
+          treeVerts.add(cur);
+          const pe = prevEdge.get(cur);
+          if (!pe) break;
+          selectedEdges.add(pe);
+          cur = prevVert.get(cur);
+        }
+      }
+    }
+
+    // 4. Orient the selected graph as a directed tree rooted at `padVerts`, merge collinear
+    // degree-2 terminal chains, and truncate all leaf/terminal edges at a random fraction `t ∈ [0.38, 0.76]`!
+    const visitedV = new Set();
+    const bfsQueue = [];
+    for (const v of vertices.values()) {
+      if (v.isPadVert) {
+        visitedV.add(v.k);
+        bfsQueue.push(v.k);
+      }
+    }
+
+    const directedEdges = [];
+    const childrenMap = new Map();
+    while (bfsQueue.length > 0) {
+      const uk = bfsQueue.shift();
+      const u = vertices.get(uk);
+      if (!u) continue;
+      for (const e of u.edges) {
+        if (!selectedEdges.has(e)) continue;
+        const vk = e.u === uk ? e.v : e.u;
+        if (visitedV.has(vk)) continue;
+        visitedV.add(vk);
+        bfsQueue.push(vk);
+        if (!e.isPad) {
+          const v = vertices.get(vk);
+          const de = {
+            uk,
+            vk,
+            x0: u.x,
+            y0: u.y,
+            x1: v.x,
+            y1: v.y,
+            axis: e.axis,
+            vInterior: v.isInterior,
+            parcels: e.parcels
+          };
+          directedEdges.push(de);
+          let ch = childrenMap.get(uk);
+          if (!ch) {
+            ch = [];
+            childrenMap.set(uk, ch);
+          }
+          ch.push(de);
+        }
+      }
+    }
+
+    // Merge collinear degree-2 chains ending at a leaf (`u -> w -> v_leaf` on same axis)
+    // so fractional truncation `t` applies across the entire straight terminal seam!
+    const absorbed = new Set();
+    for (const de of directedEdges) {
+      if (absorbed.has(de)) continue;
+      let ch = childrenMap.get(de.vk);
+      while (ch && ch.length === 1 && ch[0].axis === de.axis) {
+        const nextDe = ch[0];
+        const grandCh = childrenMap.get(nextDe.vk);
+        if (!grandCh || grandCh.length === 0) {
+          de.vk = nextDe.vk;
+          de.x1 = nextDe.x1;
+          de.y1 = nextDe.y1;
+          de.vInterior = nextDe.vInterior;
+          for (const pIdx of nextDe.parcels) de.parcels.add(pIdx);
+          absorbed.add(nextDe);
+          childrenMap.set(de.uk, [de]);
+          childrenMap.delete(nextDe.uk);
+          break;
+        }
+        break;
+      }
+    }
+
+    const finalTracks = [];
+    for (let i = 0; i < directedEdges.length; i++) {
+      const de = directedEdges[i];
+      if (absorbed.has(de)) continue;
+      const ch = childrenMap.get(de.vk);
+      const isLeaf = !ch || ch.length === 0 || !de.vInterior;
+
+      if (isLeaf) {
+        // Stop fractionally randomly (`t ∈ [0.38, 0.76]`) through the terminal field seam!
+        const hash = Math.abs(de.x0 * 37 + de.y0 * 53 + de.x1 * 19 + de.y1 * 29 + slotIdx * 13 + i * 7) % 39;
+        let t = 0.38 + (hash / 100);
+        const segLen = Math.hypot(de.x1 - de.x0, de.y1 - de.y0);
+        // Ensure at least 1.8 tiles of visible spur and at least 1.6 tiles of margin before an outer contour/fence
+        if (segLen > 3.2) {
+          t = Math.max(1.8 / segLen, Math.min((segLen - 1.6) / segLen, t));
+        } else {
+          t = 0.55;
+        }
+        finalTracks.push({
+          x0: de.x0,
+          y0: de.y0,
+          x1: de.x0 + (de.x1 - de.x0) * t,
+          y1: de.y0 + (de.y1 - de.y0) * t,
+          isLeaf: true
+        });
+      } else {
+        finalTracks.push({
+          x0: de.x0,
+          y0: de.y0,
+          x1: de.x1,
+          y1: de.y1,
+          isLeaf: false
+        });
+      }
+    }
+
+    // For any outer terminal parcel (`w >= 5 && h >= 5`) not yet directly bordered by a track segment,
+    // branch a connected fractional spur strictly from an existing point on `finalTracks` that touches `p`!
+    const pointOnAnyTrack = (px, py) => {
+      for (const tr of finalTracks) {
+        const minX = Math.min(tr.x0, tr.x1) - 0.05, maxX = Math.max(tr.x0, tr.x1) + 0.05;
+        const minY = Math.min(tr.y0, tr.y1) - 0.05, maxY = Math.max(tr.y0, tr.y1) + 0.05;
+        if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
+          const dx = tr.x1 - tr.x0, dy = tr.y1 - tr.y0;
+          if (Math.abs(dx) < 0.05 && Math.abs(px - tr.x0) < 0.1) return true;
+          if (Math.abs(dy) < 0.05 && Math.abs(py - tr.y0) < 0.1) return true;
+        }
+      }
+      return false;
+    };
+
+    for (let pIdx = 0; pIdx < bspParcels.length; pIdx++) {
+      const p = bspParcels[pIdx];
+      const pw = p.x1 - p.x0;
+      const ph = p.y1 - p.y0;
+      if (pw < 5 || ph < 5) continue;
+
+      // Check if any segment in `finalTracks` already runs along or inside `p` for >= 1.5 tiles
+      let servedLen = 0;
+      for (const tr of finalTracks) {
+        const ox0 = Math.max(p.x0, Math.min(tr.x0, tr.x1));
+        const ox1 = Math.min(p.x1, Math.max(tr.x0, tr.x1));
+        const oy0 = Math.max(p.y0, Math.min(tr.y0, tr.y1));
+        const oy1 = Math.min(p.y1, Math.max(tr.y0, tr.y1));
+        if (ox1 >= ox0 - 0.05 && oy1 >= oy0 - 0.05) {
+          servedLen = Math.max(servedLen, Math.hypot(ox1 - ox0, oy1 - oy0));
+        }
+      }
+      if (servedLen >= 1.8) continue;
+
+      const frac = 0.42 + ((pIdx * 17 + slotIdx * 11) % 28) / 100;
+      const midX = Math.round((p.x0 + p.x1) * 0.5);
+      const midY = Math.round((p.y0 + p.y1) * 0.5);
+      if (pointOnAnyTrack(midX, p.y0)) {
+        finalTracks.push({ x0: midX, y0: p.y0, x1: midX, y1: p.y0 + ph * frac, isLeaf: true });
+      } else if (pointOnAnyTrack(midX, p.y1)) {
+        finalTracks.push({ x0: midX, y0: p.y1, x1: midX, y1: p.y1 - ph * frac, isLeaf: true });
+      } else if (pointOnAnyTrack(p.x0, midY)) {
+        finalTracks.push({ x0: p.x0, y0: midY, x1: p.x0 + pw * frac, y1: midY, isLeaf: true });
+      } else if (pointOnAnyTrack(p.x1, midY)) {
+        finalTracks.push({ x0: p.x1, y0: midY, x1: p.x1 - pw * frac, y1: midY, isLeaf: true });
+      }
+    }
+
+    return finalTracks;
   }
 
   /**
@@ -6068,7 +6524,7 @@ export class ProceduralLogisticsWorld {
           );
           d.bspParcels = rebuilt.bspParcels;
           d.estateLoops = rebuilt.estateLoops;
-          d.tractorSpine = rebuilt.tractorSpine;
+          d.tractorTracks = rebuilt.tractorTracks;
           d.windbreakPts = rebuilt.windbreakPts;
         }
       }
@@ -6183,6 +6639,29 @@ export class ProceduralLogisticsWorld {
 
   populateLandscapeTrees() {
     const isIslandHopper = this.config.archetype === 'island-hopper';
+    // Keep woodland tree canopies strictly clear of farm fields (`buildingMask === 5`) and farm roads (`tractorTracks`)
+    const isNearFarmOrTrack = (tx, ty) => {
+      const gx = Math.round(tx), gy = Math.round(ty);
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (this.inBounds(gx + dx, gy + dy, 1) && this.buildingMask[this.idx(gx + dx, gy + dy)] === 5) {
+            return true;
+          }
+        }
+      }
+      for (const d of this.destinations) {
+        if (d.resourceType !== 'FARM' || !d.tractorTracks) continue;
+        for (const tr of d.tractorTracks) {
+          const sdx = tr.x1 - tr.x0, sdy = tr.y1 - tr.y0;
+          const lenSq = sdx * sdx + sdy * sdy;
+          let t = lenSq > 1e-6 ? ((tx - tr.x0) * sdx + (ty - tr.y0) * sdy) / lenSq : 0;
+          t = Math.max(0, Math.min(1, t));
+          if (Math.hypot(tx - (tr.x0 + t * sdx), ty - (tr.y0 + t * sdy)) < 2.8) return true;
+        }
+      }
+      return false;
+    };
+
     // Generate coherent upland woodland groves & windward rain-shadow forests (no confetti sprinkles!)
     for (let y = 5; y < this.H - 5; y += 2.4) {
       for (let x = 5; x < this.W - 5; x += 2.4) {
@@ -6207,6 +6686,7 @@ export class ProceduralLogisticsWorld {
             if (!this.inBounds(gx, gy, 3)) continue;
             const gid = this.idx(gx, gy);
             if (this.waterMask[gid] > 0 || this.buildingMask[gid] > 0 || this.roadGrid[gid] > 0 || this.zoneColorIdx[gid] >= 0) continue;
+            if (isNearFarmOrTrack(tx, ty)) continue;
             this.trees.push({
               x: tx,
               y: ty,
@@ -6317,7 +6797,7 @@ const cloneDestination = (d) => ({
   demandPins: d.demandPins ? [...d.demandPins] : [],
   bspParcels: cloneParcelList(d.bspParcels),
   estateLoops: d.estateLoops ? d.estateLoops.map(loop => loop.map(pt => [pt[0], pt[1]])) : undefined,
-  tractorSpine: d.tractorSpine ? { ...d.tractorSpine } : null,
+  tractorTracks: d.tractorTracks ? d.tractorTracks.map(tr => ({ ...tr })) : undefined,
   windbreakPts: d.windbreakPts ? d.windbreakPts.map(pt => [pt[0], pt[1]]) : undefined
 });
 

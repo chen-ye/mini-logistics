@@ -691,6 +691,21 @@ export class MiniMotorwaysRenderer {
       ctx.clip();
       ctx.clip(arableFillPath);
 
+      const tracks = d.tractorTracks || [];
+      const isNearTrackPx = (ox, oy) => {
+        for (let tIdx = 0; tIdx < tracks.length; tIdx++) {
+          const tr = tracks[tIdx];
+          const x0 = tr.x0 * ts, y0 = tr.y0 * ts;
+          const x1 = tr.x1 * ts, y1 = tr.y1 * ts;
+          const dx = x1 - x0, dy = y1 - y0;
+          const lenSq = dx * dx + dy * dy;
+          let t = lenSq > 1e-6 ? ((ox - x0) * dx + (oy - y0) * dy) / lenSq : 0;
+          t = Math.max(0, Math.min(1, t));
+          if (Math.hypot(ox - (x0 + t * dx), oy - (y0 + t * dy)) < 6.2) return true;
+        }
+        return false;
+      };
+
       for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
         const p = parcels[pIdx];
         const st = cropStyles[p.crop] || cropStyles.wheat;
@@ -710,14 +725,15 @@ export class MiniMotorwaysRenderer {
         if (p.crop === 'orchard') {
           ctx.save();
           ctx.beginPath();
-          ctx.rect(px + 2.4, py + 2.4, Math.max(1, pw - 4.8), Math.max(1, ph - 4.8));
+          ctx.rect(px + 3.8, py + 3.8, Math.max(1, pw - 7.6), Math.max(1, ph - 7.6));
           ctx.clip();
           const step = 6.6;
           let rowIdx = 0;
           ctx.fillStyle = st.furrow;
-          for (let oy = py + 4.5; oy < py + ph - 3.5; oy += step, rowIdx++) {
+          for (let oy = py + 5.6; oy < py + ph - 4.6; oy += step, rowIdx++) {
             const xShift = (rowIdx % 2) * (step * 0.45);
-            for (let ox = px + 4.5 + xShift; ox < px + pw - 3.5; ox += step) {
+            for (let ox = px + 5.6 + xShift; ox < px + pw - 4.6; ox += step) {
+              if (isNearTrackPx(ox, oy)) continue;
               ctx.beginPath();
               ctx.arc(ox, oy, 1.55, 0, Math.PI * 2);
               ctx.fill();
@@ -750,22 +766,29 @@ export class MiniMotorwaysRenderer {
         ctx.strokeRect(px, py, pw, ph);
       }
 
-      // (#6a) Internal Unpaved Tractor Spine branching from the 2×2 barn yard along the primary BSP seam
-      if (d.tractorSpine) {
-        const sp = d.tractorSpine;
+      // (#6a) Broken-Grid Unpaved Farm Track Network (`d.tractorTracks`) serving every field & stopping
+      // fractionally in terminal fields (rendered in 2 unified passes: All Casings -> All Fills!)
+      if (tracks.length > 0) {
         ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
         ctx.strokeStyle = '#d4cab5';
-        ctx.lineWidth = 3.8;
+        ctx.lineWidth = 4.2;
         ctx.beginPath();
-        ctx.moveTo(sp.x0 * ts, sp.y0 * ts);
-        ctx.lineTo(sp.x1 * ts, sp.y1 * ts);
+        for (let tIdx = 0; tIdx < tracks.length; tIdx++) {
+          const tr = tracks[tIdx];
+          ctx.moveTo(tr.x0 * ts, tr.y0 * ts);
+          ctx.lineTo(tr.x1 * ts, tr.y1 * ts);
+        }
         ctx.stroke();
 
         ctx.strokeStyle = PALETTE.bgPaper;
-        ctx.lineWidth = 2.0;
+        ctx.lineWidth = 2.2;
         ctx.beginPath();
-        ctx.moveTo(sp.x0 * ts, sp.y0 * ts);
-        ctx.lineTo(sp.x1 * ts, sp.y1 * ts);
+        for (let tIdx = 0; tIdx < tracks.length; tIdx++) {
+          const tr = tracks[tIdx];
+          ctx.moveTo(tr.x0 * ts, tr.y0 * ts);
+          ctx.lineTo(tr.x1 * ts, tr.y1 * ts);
+        }
         ctx.stroke();
       }
 
