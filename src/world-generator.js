@@ -55,6 +55,13 @@ export class ProceduralLogisticsWorld {
     this.displacedBuildingsCount = 0;
     this.windAngleIndex = 0; // 0: E-W (0°), 1: NE-SW (45°), 2: N-S (90°), 3: NW-SE (135°)
     this.windVector = { x: 1, y: 0, angleDeg: 0, label: '09/27 (E-W)' };
+
+    // Pre-allocated generation-tagged A* scratch buffers (eliminates ~205 TypedArray allocations & .fill() calls per world)
+    this._astarG = new Float32Array(size);
+    this._astarParent = new Int32Array(size);
+    this._astarSeenGen = new Uint32Array(size);
+    this._astarClosedGen = new Uint32Array(size);
+    this._astarGen = 0;
   }
 
   idx(x, y) {
@@ -65,44 +72,283 @@ export class ProceduralLogisticsWorld {
     return x >= margin && x < this.W - margin && y >= margin && y < this.H - margin;
   }
 
-  generate() {
+  setStageRNG(stageTag) {
+    this.rng = new SeededRNG(`${this.config.seed}::${stageTag}`);
+  }
+
+  generate(startStage = 1, ckptStore = null) {
     const t0 = performance.now();
     this.rng = new SeededRNG(this.config.seed);
-    this.noise = new FastNoise2D(this.rng);
-    this.logs = [];
+    if (!this.noise || startStage === 1) {
+      this.noise = new FastNoise2D(new SeededRNG(`${this.config.seed}::noise`));
+    }
+    this.terrainUnchanged = startStage >= 8;
+    this.reusedThroughStage = startStage > 1 ? startStage - 1 : 0;
 
-    // Step 1: Prevailing Wind Vector (governs airport runway orientation & approach cones)
+    // Step 1: Prevailing Wind Vector
+    this.setStageRNG('stage1_wind');
     this.initPrevailingWind();
+    const windLog = this.logs[this.logs.length - 1];
 
-    // Step 2: Latent OpenTTD Topography & Watershed Hydrology (Bays, Valley Lakes & Downhill Rivers)
-    this.generateHydrology();
+    // Step 2A & 2B: Terrain Heightmap & Fluvial Hydrology
+    if (startStage <= 2) {
+      if (startStage === 1 || !ckptStore?.post2A) {
+        this.setStageRNG('stage2a_terrain');
+        const { basins, primarySink } = synthesizeTerrainAndBasins(this);
+        if (ckptStore) {
+          ckptStore.post2A = {
+            elevationField: new Float32Array(this.elevationField),
+            waterMask: new Uint8Array(this.waterMask),
+            seaLevel: this.seaLevel,
+            basins: structuredClone(basins),
+            primarySink: structuredClone(primarySink),
+            hydroFeatures: structuredClone(this.hydroFeatures)
+          };
+        }
+        this.setStageRNG('stage2b_hydro');
+        synthesizeFluvialHydrology(this, basins, primarySink);
+      } else {
+        // Reuse Stage 2A Terrain & Basins (`startStage === 2`, e.g. `hydrologyAlgo` changed)
+        this.elevationField.set(ckptStore.post2A.elevationField);
+        this.waterMask.set(ckptStore.post2A.waterMask);
+        this.seaLevel = ckptStore.post2A.seaLevel;
+        this.hydroFeatures = structuredClone(ckptStore.post2A.hydroFeatures);
+        this.rivers = [];
+        this.drainageField.fill(0);
+        this.setStageRNG('stage2b_hydro');
+        synthesizeFluvialHydrology(
+          this,
+          structuredClone(ckptStore.post2A.basins),
+          structuredClone(ckptStore.post2A.primarySink)
+        );
+      }
+      const tName = this.config.terrainAlgo === 'quilez-erosion'
+        ? 'Quilez Derivative-Eroded fBm'
+        : (this.config.terrainAlgo === 'voronoi-plates' ? 'Voronoi Tectonic Plates' : 'Tectonic Strike fBm');
+      const hName = this.config.hydrologyAlgo === 'd8-strahler'
+        ? 'Priority-Flood D8 Strahler'
+        : (this.config.hydrologyAlgo === 'meandering-plain' ? 'Ikeda Floodplain Meanders' : 'Downhill A* Thalwegs');
+      this.hydroLog = `Synthesized terrain via <b>${tName}</b> & <b>${this.rivers.length} rivers</b> via <b>${hName}</b>.`;
+
+      if (ckptStore) {
+        ckptStore.post2B = {
+          elevationField: new Float32Array(this.elevationField),
+          waterMask: new Uint8Array(this.waterMask),
+          drainageField: new Float32Array(this.drainageField),
+          rivers: structuredClone(this.rivers),
+          hydroFeatures: structuredClone(this.hydroFeatures),
+          confluencePoint: structuredClone(this.confluencePoint),
+          seaLevel: this.seaLevel,
+          hydroLog: this.hydroLog
+        };
+      }
+    } else if (startStage === 3 && ckptStore?.post2B) {
+      // Reuse Stage 2A Terrain + Stage 2B Fluvial Hydrology (`windAxis` changed)
+      const c2b = ckptStore.post2B;
+      this.elevationField.set(c2b.elevationField);
+      this.waterMask.set(c2b.waterMask);
+      this.drainageField.set(c2b.drainageField);
+      this.rivers = structuredClone(c2b.rivers);
+      this.hydroFeatures = structuredClone(c2b.hydroFeatures);
+      this.confluencePoint = structuredClone(c2b.confluencePoint);
+      this.seaLevel = c2b.seaLevel;
+      this.hydroLog = c2b.hydroLog;
+    }
 
     // Step 3: Slope Gradients, Distance Transforms & Valley/Alluvial Suitability
-    this.computeSpatialFields();
+    if (startStage <= 3) {
+      this.computeSpatialFields();
+      if (ckptStore) {
+        ckptStore.post3 = {
+          elevationField: new Float32Array(this.elevationField),
+          waterMask: new Uint8Array(this.waterMask),
+          slopeField: new Float32Array(this.slopeField),
+          drainageField: new Float32Array(this.drainageField),
+          fertilityField: new Float32Array(this.fertilityField),
+          distToWater: new Float32Array(this.distToWater),
+          urbanSuitability: new Float32Array(this.urbanSuitability),
+          landmassId: new Int16Array(this.landmassId),
+          landmasses: structuredClone(this.landmasses),
+          rivers: structuredClone(this.rivers),
+          hydroFeatures: structuredClone(this.hydroFeatures),
+          confluencePoint: structuredClone(this.confluencePoint),
+          seaLevel: this.seaLevel,
+          hydroLog: this.hydroLog
+        };
+      }
+    } else if (ckptStore?.post3) {
+      const c3 = ckptStore.post3;
+      this.elevationField.set(c3.elevationField);
+      this.waterMask.set(c3.waterMask);
+      this.slopeField.set(c3.slopeField);
+      this.drainageField.set(c3.drainageField);
+      this.fertilityField.set(c3.fertilityField);
+      this.distToWater.set(c3.distToWater);
+      this.urbanSuitability.set(c3.urbanSuitability);
+      this.landmassId.set(c3.landmassId);
+      this.landmasses = structuredClone(c3.landmasses);
+      this.rivers = structuredClone(c3.rivers);
+      this.hydroFeatures = structuredClone(c3.hydroFeatures);
+      this.confluencePoint = structuredClone(c3.confluencePoint);
+      this.seaLevel = c3.seaLevel;
+      this.hydroLog = c3.hydroLog;
+    }
 
-    // Step 4: Topography-Guided Central Place Settlement Seeding (Metropolis -> Regional -> Market Towns)
-    this.seedSettlements();
+    // Step 4: Central Place Settlement Seeding
+    if (startStage <= 4) {
+      this.towns = [];
+      this.clusters = [];
+      this.setStageRNG('stage4_settlements');
+      this.seedSettlements();
+      this.settlementLog = this.logs[this.logs.length - 1];
+      if (ckptStore) {
+        ckptStore.post4 = {
+          towns: structuredClone(this.towns),
+          clusters: structuredClone(this.clusters),
+          settlementLog: this.settlementLog
+        };
+      }
+    } else if (ckptStore?.post4) {
+      this.towns = structuredClone(ckptStore.post4.towns);
+      this.clusters = structuredClone(ckptStore.post4.clusters);
+      this.settlementLog = ckptStore.post4.settlementLog;
+    }
 
-    // Step 5: Multi-Tier Airport Solver (1 Intl Dual-Rwy Hub + Regional + Cargo) & Landside Terminal Loops
-    this.solveAndPlaceAirports();
+    // Step 5: Multi-Tier Airport Solver & Terminal Loops
+    if (startStage <= 5) {
+      this.airports = [];
+      this.roads = [];
+      this.roadGrid.fill(0);
+      this.buildingMask.fill(0);
+      this.zoneColorIdx.fill(-1);
+      this.bridgeCount = 0;
+      for (const t of this.towns) t.airportId = null;
+      this.setStageRNG('stage5_airports');
+      this.solveAndPlaceAirports();
+      this.airportLog = this.logs[this.logs.length - 1];
+      if (ckptStore) {
+        ckptStore.post5 = {
+          airports: structuredClone(this.airports),
+          towns: structuredClone(this.towns),
+          airportHeatmap: new Float32Array(this.airportHeatmap),
+          roadGrid: new Uint8Array(this.roadGrid),
+          buildingMask: new Uint8Array(this.buildingMask),
+          roads: structuredClone(this.roads),
+          airportLog: this.airportLog
+        };
+      }
+    } else if (ckptStore?.post5) {
+      const c5 = ckptStore.post5;
+      this.airports = structuredClone(c5.airports);
+      this.towns = structuredClone(c5.towns);
+      this.airportHeatmap.set(c5.airportHeatmap);
+      this.roadGrid.set(c5.roadGrid);
+      this.buildingMask.set(c5.buildingMask);
+      this.zoneColorIdx.fill(-1);
+      this.roads = structuredClone(c5.roads);
+      this.bridgeCount = 0;
+      this.airportLog = c5.airportLog;
+    }
 
-    // Step 6A: Carve Phase-Locked Urban Borough Street Grids (Exact 3-Tile Stride = Intact 2×2 Blocks!)
-    this.carveTownStreetGrids();
+    // Step 6A, 6B & 7: Street Grids, Regional Roads & RCI Buildings
+    if (startStage <= 7) {
+      this.houses = [];
+      this.destinations = [];
+      this.setStageRNG('stage6a_grids');
+      this.carveTownStreetGrids();
+      this.setStageRNG('stage6b_roads');
+      this.buildRegionalRoadNetwork();
+      this.roadLog = this.logs[this.logs.length - 1];
+      this.setStageRNG('stage7_rci');
+      this.growUrbanFabric();
+      this.trees = [];
+      this.setStageRNG('stage9_trees');
+      this.populateLandscapeTrees();
 
-    // Step 6B: Regional A* Road & Perpendicular Bridge Network (Rides Orthogonal Town Avenues Into CBD)
-    this.buildRegionalRoadNetwork();
+      if (ckptStore) {
+        ckptStore.post7 = {
+          towns: structuredClone(this.towns),
+          roadGrid: new Uint8Array(this.roadGrid),
+          buildingMask: new Uint8Array(this.buildingMask),
+          zoneColorIdx: new Int8Array(this.zoneColorIdx),
+          roads: structuredClone(this.roads),
+          houses: structuredClone(this.houses),
+          destinations: structuredClone(this.destinations),
+          trees: structuredClone(this.trees),
+          bridgeCount: this.bridgeCount,
+          roadLog: this.roadLog
+        };
+      }
+    } else if (ckptStore?.post7) {
+      const c7 = ckptStore.post7;
+      this.towns = structuredClone(c7.towns);
+      this.roadGrid.set(c7.roadGrid);
+      this.buildingMask.set(c7.buildingMask);
+      this.zoneColorIdx.set(c7.zoneColorIdx);
+      this.roads = structuredClone(c7.roads);
+      this.houses = structuredClone(c7.houses);
+      this.destinations = structuredClone(c7.destinations);
+      this.trees = structuredClone(c7.trees);
+      this.bridgeCount = c7.bridgeCount;
+      this.roadLog = c7.roadLog;
+    }
 
-    // Step 7: Pack Commercial (CBD/Arterial), Industrial (Peripheral Ring) & Residential Buildings Into Blocks
-    this.growUrbanFabric();
+    // Step 8A: Expressways & Cloverleaf/Trumpet System Interchanges
+    if (startStage <= 8) {
+      this.motorways = [];
+      this.interchanges = [];
+      this.displacedBuildingsCount = 0;
+      for (const ap of this.airports) ap.motorwayId = null;
+      this.setStageRNG('stage8_motorways');
+      this.buildNumberedMotorways();
+      if (ckptStore) {
+        ckptStore.post8 = {
+          towns: structuredClone(this.towns),
+          airports: structuredClone(this.airports),
+          roadGrid: new Uint8Array(this.roadGrid),
+          buildingMask: new Uint8Array(this.buildingMask),
+          roads: structuredClone(this.roads),
+          houses: structuredClone(this.houses),
+          destinations: structuredClone(this.destinations),
+          trees: structuredClone(this.trees),
+          motorways: structuredClone(this.motorways),
+          interchanges: structuredClone(this.interchanges),
+          displacedBuildingsCount: this.displacedBuildingsCount
+        };
+      }
+    } else if (ckptStore?.post8) {
+      const c8 = ckptStore.post8;
+      this.towns = structuredClone(c8.towns);
+      this.airports = structuredClone(c8.airports);
+      this.roadGrid.set(c8.roadGrid);
+      this.buildingMask.set(c8.buildingMask);
+      this.roads = structuredClone(c8.roads);
+      this.houses = structuredClone(c8.houses);
+      this.destinations = structuredClone(c8.destinations);
+      this.trees = structuredClone(c8.trees);
+      this.motorways = structuredClone(c8.motorways);
+      this.interchanges = structuredClone(c8.interchanges);
+      this.displacedBuildingsCount = c8.displacedBuildingsCount;
+    }
 
-    // Step 8: Expressways, Cloverleaf Interchanges, Street-Stub Terminations & Intermediate Ramps (Displaces Buildings!)
-    this.buildNumberedMotorways();
+    // Step 9: Intermediate Diamond Ramps, Mountain Tunnels, Outer Street Pruning & Industrial Cargo Chain
+    this.setStageRNG('stage9_ramps');
+    this.finalizeExpresswayRampsAndTunnels();
+    const mwayLog = this.logs[this.logs.length - 1];
 
-    // Step 8B: Inter-Industrial Cargo Supply Chain (RAW -> MFG -> LOG -> Commercial CBD Sinks)
+    this.setStageRNG('stage8b_cargo');
     this.buildIndustrialCargoChain();
+    const cargoLog = this.logs[this.logs.length - 1];
 
-    // Step 9: Landscape Trees & Upland Forest Belts
-    this.populateLandscapeTrees();
+    this.logs = [
+      windLog,
+      this.hydroLog,
+      this.settlementLog,
+      this.airportLog,
+      this.roadLog,
+      mwayLog,
+      cargoLog
+    ].filter(Boolean);
 
     this.genTimeMs = Math.round(performance.now() - t0);
     return this;
@@ -598,6 +844,7 @@ export class ProceduralLogisticsWorld {
           for (let cx = x0; cx <= x1; cx += 2) {
             const id = this.idx(cx, cy);
             if (this.waterMask[id] > 0) continue;
+            if (this.slopeField[id] > (isIslandHopper ? 0.48 : 0.40) || this.distToWater[id] < (isIslandHopper ? 1.8 : 2.8)) continue;
 
             const distHost = Math.hypot(cx - hostTown.x, cy - hostTown.y);
             const idealDist = hostTown.urbanRadius + (isHub ? 7.5 : 5.5);
@@ -1062,14 +1309,15 @@ export class ProceduralLogisticsWorld {
   }
 
   findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false) {
-    const { W, H } = this;
+    const { W } = this;
     const startId = this.idx(sx, sy);
     const endId = this.idx(ex, ey);
-    const gScore = new Float32Array(W * H).fill(Infinity);
-    const parent = new Int32Array(W * H).fill(-1);
-    const closed = new Uint8Array(W * H);
+    const gen = ++this._astarGen;
+    const gScore = this._astarG;
+    const parent = this._astarParent;
+    const seenGen = this._astarSeenGen;
+    const closedGen = this._astarClosedGen;
 
-    // O(log N) binary min-heap priority queue for fast state-scale A* pathfinding
     const heapId = [startId];
     const heapF = [0];
     const heapPush = (id, f) => {
@@ -1106,9 +1354,11 @@ export class ProceduralLogisticsWorld {
       }
       return topId;
     };
-    gScore[startId] = 0;
 
-    // 8-way octilinear movement (Mini Motorways style 45° and 90° geometry)
+    seenGen[startId] = gen;
+    gScore[startId] = 0;
+    parent[startId] = -1;
+
     const dirs = [
       [1, 0, 1.0], [-1, 0, 1.0], [0, 1, 1.0], [0, -1, 1.0],
       [1, 1, 1.414], [-1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414]
@@ -1131,8 +1381,8 @@ export class ProceduralLogisticsWorld {
         return path.reverse();
       }
 
-      if (closed[cid]) continue;
-      closed[cid] = 1;
+      if (closedGen[cid] === gen) continue;
+      closedGen[cid] = gen;
 
       const cx = cid % W;
       const cy = Math.floor(cid / W);
@@ -1146,7 +1396,7 @@ export class ProceduralLogisticsWorld {
         const ny = cy + dy;
         if (!this.inBounds(nx, ny, 3)) continue;
         const nid = this.idx(nx, ny);
-        if (closed[nid]) continue;
+        if (closedGen[nid] === gen) continue;
 
         // Never tunnel through any placed building (house, commercial/industrial lot, airport, or ramp reserve!)
         if (this.buildingMask[nid] > 0 && nid !== startId && nid !== endId) continue;
@@ -1229,7 +1479,8 @@ export class ProceduralLogisticsWorld {
         }
 
         const tentativeG = gScore[cid] + stepCost;
-        if (tentativeG < gScore[nid]) {
+        if (seenGen[nid] !== gen || tentativeG < gScore[nid]) {
+          seenGen[nid] = gen;
           gScore[nid] = tentativeG;
           parent[nid] = cid;
           const h = Math.hypot(ex - nx, ey - ny) * 0.95;
@@ -2576,7 +2827,54 @@ export class ProceduralLogisticsWorld {
    * Routes freeways through low-slope topographic valleys, around open lakes/bays and airport pads,
    * and tangent to intermediate settlements, then extracts control waypoints for B-spline smoothing.
    */
+  ensureCoarseValleyCostTable() {
+    if (this._coarseBaseCost) return;
+    const stride = 3;
+    const cw = Math.ceil(this.W / stride);
+    const ch = Math.ceil(this.H / stride);
+    const table = new Float32Array(cw * ch);
+    for (let cy = 0; cy < ch; cy++) {
+      const gy = cy * stride;
+      for (let cx = 0; cx < cw; cx++) {
+        const gx = cx * stride;
+        const cid = cy * cw + cx;
+        if (!this.inBounds(gx, gy, 1)) {
+          table[cid] = 1e6;
+          continue;
+        }
+        const id = this.idx(gx, gy);
+        const wm = this.waterMask[id];
+        let c = this.noise.fbm(gx * 0.035 + 4.1, gy * 0.035 + 7.3, 2) * 6.5;
+        if (wm === 1) {
+          c += 22.0;
+        } else if (wm === 0) {
+          const hAbove = Math.max(0, this.elevationField[id] - this.seaLevel);
+          const slope = this.slopeField[id];
+          if (this.distToWater[id] < 2.2) c += 26.0;
+          c += hAbove >= 0.205
+            ? (0.205 * 38.0 + (hAbove - 0.205) * 14.0 + slope * 10.0)
+            : (hAbove * 38.0 + slope * 22.0);
+          for (const t of this.towns) {
+            const dt = Math.hypot(gx - t.x, gy - t.y);
+            if (dt >= 7 && dt <= 16) {
+              c -= 2.8;
+              break;
+            }
+          }
+        }
+        table[cid] = c;
+      }
+    }
+    this._coarseBaseCost = table;
+    this._coarseG = new Float32Array(cw * ch);
+    this._coarseParent = new Int32Array(cw * ch);
+    this._coarseSeenGen = new Uint32Array(cw * ch);
+    this._coarseClosedGen = new Uint32Array(cw * ch);
+    this._coarseGen = 0;
+  }
+
   findValleyMotorwayWaypoints(sx, sy, ex, ey, airportId = null, lateralBias = 0) {
+    this.ensureCoarseValleyCostTable();
     const stride = 3;
     const cw = Math.ceil(this.W / stride);
     const ch = Math.ceil(this.H / stride);
@@ -2587,9 +2885,12 @@ export class ProceduralLogisticsWorld {
 
     const startId = scy * cw + scx;
     const endId = ecy * cw + ecx;
-    const gScore = new Float32Array(cw * ch).fill(Infinity);
-    const parent = new Int32Array(cw * ch).fill(-1);
-    const closed = new Uint8Array(cw * ch);
+    const gen = ++this._coarseGen;
+    const baseCostTable = this._coarseBaseCost;
+    const gScore = this._coarseG;
+    const parent = this._coarseParent;
+    const seenGen = this._coarseSeenGen;
+    const closedGen = this._coarseClosedGen;
 
     const chordDx = ex - sx;
     const chordDy = ey - sy;
@@ -2634,7 +2935,9 @@ export class ProceduralLogisticsWorld {
       return topId;
     };
 
+    seenGen[startId] = gen;
     gScore[startId] = 0;
+    parent[startId] = -1;
     const dirs = [
       [1, 0, 1.0], [-1, 0, 1.0], [0, 1, 1.0], [0, -1, 1.0],
       [1, 1, 1.414], [-1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414]
@@ -2688,8 +2991,8 @@ export class ProceduralLogisticsWorld {
         return nextWps;
       }
 
-      if (closed[cid]) continue;
-      closed[cid] = 1;
+      if (closedGen[cid] === gen) continue;
+      closedGen[cid] = gen;
 
       const cx = cid % cw;
       const cy = Math.floor(cid / cw);
@@ -2702,7 +3005,7 @@ export class ProceduralLogisticsWorld {
         const ncy = cy + dy;
         if (ncx < 2 || ncx >= cw - 2 || ncy < 2 || ncy >= ch - 2) continue;
         const nid = ncy * cw + ncx;
-        if (closed[nid]) continue;
+        if (closedGen[nid] === gen) continue;
 
         if (pid !== -1 && (dx * prevDx + dy * prevDy) < 0) continue; // Forbid sharp reversals
 
@@ -2712,10 +3015,8 @@ export class ProceduralLogisticsWorld {
 
         const id = this.idx(gx, gy);
         const wm = this.waterMask[id];
-        const hAbove = Math.max(0, this.elevationField[id] - this.seaLevel);
-        const slope = this.slopeField[id];
 
-        let cost = baseStep * stride + this.noise.fbm(gx * 0.035 + 4.1, gy * 0.035 + 7.3, 2) * 6.5;
+        let cost = baseStep * stride + baseCostTable[nid];
         if (wm === 2) {
           // Distinguish narrow strait crossings (land within 12 tiles ahead) from deep open lakes/bays
           const aheadX = gx + dx * stride * 4;
@@ -2723,22 +3024,6 @@ export class ProceduralLogisticsWorld {
           const isNarrowStrait =
             this.inBounds(aheadX, aheadY, 2) && this.waterMask[this.idx(aheadX, aheadY)] === 0;
           cost += isNarrowStrait ? 24.0 : 125.0;
-        } else if (wm === 1) {
-          cost += 22.0; // Cross rivers cleanly at perpendicular bridges; never follow river channels!
-        } else {
-          if (this.distToWater[id] < 2.2) cost += 26.0;
-          // Above `hAbove = 0.205`, expressways bore a subterranean mountain tunnel at lower marginal grade cost!
-          cost += hAbove >= 0.205
-            ? (0.205 * 38.0 + (hAbove - 0.205) * 14.0 + slope * 10.0)
-            : (hAbove * 38.0 + slope * 22.0);
-          // Attract highway corridor to pass tangent (7..16 tiles) to intermediate towns along the valley
-          for (const t of this.towns) {
-            const dt = Math.hypot(gx - t.x, gy - t.y);
-            if (dt >= 7 && dt <= 16) {
-              cost -= 2.8;
-              break;
-            }
-          }
         }
 
         // Gentle lateral preference so alternative candidates explore both sides of an obstacle
@@ -2750,7 +3035,8 @@ export class ProceduralLogisticsWorld {
         }
 
         const tentativeG = gScore[cid] + cost;
-        if (tentativeG < gScore[nid]) {
+        if (seenGen[nid] !== gen || tentativeG < gScore[nid]) {
+          seenGen[nid] = gen;
           gScore[nid] = tentativeG;
           parent[nid] = cid;
           const h = Math.hypot(ecx - ncx, ecy - ncy) * stride * 0.92;
@@ -3847,6 +4133,9 @@ export class ProceduralLogisticsWorld {
     }
 
     this.detectAndBuildCloverleafs();
+  }
+
+  finalizeExpresswayRampsAndTunnels() {
     this.buildIntermediateExpresswayRamps();
     this.detectMountainExpresswayTunnels();
     this.pruneEmptyOuterStreets();
@@ -4000,9 +4289,18 @@ export class ProceduralLogisticsWorld {
   }
 }
 export function extractWorldTransferables(world) {
-  // Drop internal PRNG/Noise instances before structured clone transfer
+  // Drop internal PRNG/Noise & pathfinding scratch buffers before structured clone transfer
   delete world.rng;
   delete world.noise;
+  delete world._astarG;
+  delete world._astarParent;
+  delete world._astarSeenGen;
+  delete world._astarClosedGen;
+  delete world._coarseBaseCost;
+  delete world._coarseG;
+  delete world._coarseParent;
+  delete world._coarseSeenGen;
+  delete world._coarseClosedGen;
   const typedArrays = [
     world.waterMask,
     world.elevationField,
@@ -4025,6 +4323,26 @@ export function extractWorldTransferables(world) {
     }
   }
   return buffers;
+}
+
+export function computeEarliestChangedStage(prev, next) {
+  if (
+    !prev ||
+    prev.seed !== next.seed ||
+    prev.archetype !== next.archetype ||
+    prev.terrainAlgo !== next.terrainAlgo ||
+    prev.waterCoverage !== next.waterCoverage
+  ) {
+    return 1;
+  }
+  if (prev.hydrologyAlgo !== next.hydrologyAlgo) return 2;
+  if (prev.windAxis !== next.windAxis) return 3;
+  if (prev.townCount !== next.townCount) return 4;
+  if (prev.airportCount !== next.airportCount || prev.airportMix !== next.airportMix) return 5;
+  if (prev.buildingDensity !== next.buildingDensity) return 6;
+  if (prev.expresswayAlgo !== next.expresswayAlgo) return 8;
+  if (prev.includeIntermediateRamps !== next.includeIntermediateRamps) return 9;
+  return 1;
 }
 
 export function hydrateTransferredWorld(world) {

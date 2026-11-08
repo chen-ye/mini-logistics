@@ -1,5 +1,9 @@
 import { PALETTE } from './palette.js';
-import { ProceduralLogisticsWorld, hydrateTransferredWorld } from './world-generator.js';
+import {
+  ProceduralLogisticsWorld,
+  hydrateTransferredWorld,
+  computeEarliestChangedStage
+} from './world-generator.js';
 import { LogisticsSimulator } from './simulator.js';
 import { MiniMotorwaysRenderer } from './renderer.js';
 
@@ -9,6 +13,8 @@ let currentWorld = null;
 let simulator = null;
 let simSpeed = 1;
 const daysOfWeek = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+const fallbackCkptStore = {};
+let fallbackPrevConfig = null;
 
 window.renderer = renderer;
 window.currentWorld = null;
@@ -150,15 +156,20 @@ export function rebuildWorld(preserveCamera = false) {
   }
 
   // Fallback if Worker is unavailable
-  const world = new ProceduralLogisticsWorld(cfg).generate();
+  const startStage = computeEarliestChangedStage(fallbackPrevConfig, cfg);
+  fallbackPrevConfig = { ...cfg };
+  const world = new ProceduralLogisticsWorld(cfg).generate(startStage, fallbackCkptStore);
   return applyGeneratedWorld(world, preserveCamera, false);
 }
 
 window.rebuildWorld = rebuildWorld;
 
 function updateTelemetryUI(world, fromWorker = false) {
-  document.getElementById('genTimeBadge').textContent =
-    `${world.genTimeMs} ms${fromWorker ? ' · Worker' : ''}`;
+  const cacheSuffix =
+    world.reusedThroughStage > 0
+      ? ` · Cached S1–S${world.reusedThroughStage}`
+      : (fromWorker ? ' · Worker' : '');
+  document.getElementById('genTimeBadge').textContent = `${world.genTimeMs} ms${cacheSuffix}`;
   document.getElementById('statPop').textContent = world.houses.length + world.destinations.length;
   const hubs = world.airports.filter(a => a.airportClass === 'HUB').length;
   const others = world.airports.length - hubs;

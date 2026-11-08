@@ -59,58 +59,94 @@ export class MiniMotorwaysRenderer {
    * Cyan Water & Cream Riverbanks) onto an offscreen canvas using a true
    * Vignelli-style 45°/90° Octilinear Marching-Squares Polygonizer (zero stippling!).
    */
-  buildVignelliWaterPath(world, ts, customTestFn = null) {
+  buildVignelliWaterPath(world, ts, customTestFn = null, outStrokePath = null) {
     const path = new Path2D();
     const { W, H } = world;
-    const isW = (x, y) => {
-      const cx = Math.max(0, Math.min(W - 1, x));
-      const cy = Math.max(0, Math.min(H - 1, y));
-      return customTestFn
-        ? customTestFn(cx, cy)
-        : world.waterMask[world.idx(cx, cy)] === 2;
+    const gw = W + 2;
+    const gh = H + 2;
+    const flags = new Uint8Array(gw * gh);
+    const wm = world.waterMask;
+
+    // 1. Pre-evaluate corner flags once (`O(W * H)` typed array write instead of 4x closure calls per cell)
+    for (let gy = 0; gy < gh; gy++) {
+      const cy = Math.max(0, Math.min(H - 1, gy - 1));
+      const rowOff = gy * gw;
+      const wRowOff = cy * W;
+      if (customTestFn) {
+        for (let gx = 0; gx < gw; gx++) {
+          const cx = Math.max(0, Math.min(W - 1, gx - 1));
+          flags[rowOff + gx] = customTestFn(cx, cy) ? 1 : 0;
+        }
+      } else {
+        for (let gx = 0; gx < gw; gx++) {
+          const cx = Math.max(0, Math.min(W - 1, gx - 1));
+          flags[rowOff + gx] = wm[wRowOff + cx] === 2 ? 1 : 0;
+        }
+      }
+    }
+
+    const poly = (pts) => {
+      path.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0], pts[i][1]);
+      path.closePath();
+    };
+    const seg = (ax, ay, bx, by) => {
+      if (!outStrokePath) return;
+      outStrokePath.moveTo(ax, ay);
+      outStrokePath.lineTo(bx, by);
     };
 
-    // Marching Squares over dual grid: each cell has 4 corners (tl, tr, br, bl).
-    // Diagonal edges split cells at clean 45-degree bevels (Massimo Vignelli transit map style!)
+    // 2. Scanline RLE-merged Marching Squares (`mask === 15` interior runs merge into 1 `path.rect()`,
+    //    eliminating 35,000 Path2D subpaths and 1x1 interior grid hatching!)
     for (let y = -1; y < H; y++) {
+      const r0 = (y + 1) * gw;
+      const r1 = (y + 2) * gw;
+      const y0 = (y + 0.5) * ts;
+      const y1 = (y + 1.5) * ts;
+      const ym = (y + 1.0) * ts;
+      let runStart = null;
+
       for (let x = -1; x < W; x++) {
-        const tl = isW(x, y) ? 1 : 0;
-        const tr = isW(x + 1, y) ? 1 : 0;
-        const br = isW(x + 1, y + 1) ? 1 : 0;
-        const bl = isW(x, y + 1) ? 1 : 0;
+        const c = x + 1;
+        const tl = flags[r0 + c];
+        const tr = flags[r0 + c + 1];
+        const br = flags[r1 + c + 1];
+        const bl = flags[r1 + c];
         const mask = (tl << 3) | (tr << 2) | (br << 1) | bl;
+
+        if (mask === 15) {
+          if (runStart === null) runStart = x;
+          continue;
+        }
+        if (runStart !== null) {
+          path.rect((runStart + 0.5) * ts, y0, (x - runStart) * ts, ts);
+          runStart = null;
+        }
         if (mask === 0) continue;
 
         const x0 = (x + 0.5) * ts;
-        const y0 = (y + 0.5) * ts;
         const x1 = (x + 1.5) * ts;
-        const y1 = (y + 1.5) * ts;
         const xm = (x + 1.0) * ts;
-        const ym = (y + 1.0) * ts;
-
-        const poly = (pts) => {
-          path.moveTo(pts[0][0], pts[0][1]);
-          for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0], pts[i][1]);
-          path.closePath();
-        };
 
         switch (mask) {
-          case 15: poly([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]); break;
-          case 1:  poly([[x0, ym], [xm, y1], [x0, y1]]); break;
-          case 2:  poly([[xm, y1], [x1, ym], [x1, y1]]); break;
-          case 4:  poly([[xm, y0], [x1, y0], [x1, ym]]); break;
-          case 8:  poly([[x0, y0], [xm, y0], [x0, ym]]); break;
-          case 3:  poly([[x0, ym], [x1, ym], [x1, y1], [x0, y1]]); break;
-          case 6:  poly([[xm, y0], [x1, y0], [x1, y1], [xm, y1]]); break;
-          case 9:  poly([[x0, y0], [xm, y0], [xm, y1], [x0, y1]]); break;
-          case 12: poly([[x0, y0], [x1, y0], [x1, ym], [x0, ym]]); break;
-          case 5:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); break;
-          case 10: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [xm, y1], [x0, ym]]); break;
-          case 7:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, y1], [x0, y1]]); break;
-          case 11: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [x0, y1]]); break;
-          case 13: poly([[x0, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); break;
-          case 14: poly([[x0, y0], [x1, y0], [x1, y1], [xm, y1], [x0, ym]]); break;
+          case 1:  poly([[x0, ym], [xm, y1], [x0, y1]]); seg(x0, ym, xm, y1); break;
+          case 2:  poly([[xm, y1], [x1, ym], [x1, y1]]); seg(xm, y1, x1, ym); break;
+          case 4:  poly([[xm, y0], [x1, y0], [x1, ym]]); seg(xm, y0, x1, ym); break;
+          case 8:  poly([[x0, y0], [xm, y0], [x0, ym]]); seg(x0, ym, xm, y0); break;
+          case 3:  poly([[x0, ym], [x1, ym], [x1, y1], [x0, y1]]); seg(x0, ym, x1, ym); break;
+          case 6:  poly([[xm, y0], [x1, y0], [x1, y1], [xm, y1]]); seg(xm, y0, xm, y1); break;
+          case 9:  poly([[x0, y0], [xm, y0], [xm, y1], [x0, y1]]); seg(xm, y0, xm, y1); break;
+          case 12: poly([[x0, y0], [x1, y0], [x1, ym], [x0, ym]]); seg(x0, ym, x1, ym); break;
+          case 5:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); seg(x0, ym, xm, y0); seg(xm, y1, x1, ym); break;
+          case 10: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [xm, y1], [x0, ym]]); seg(xm, y0, x1, ym); seg(x0, ym, xm, y1); break;
+          case 7:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, y1], [x0, y1]]); seg(x0, ym, xm, y0); break;
+          case 11: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [x0, y1]]); seg(xm, y0, x1, ym); break;
+          case 13: poly([[x0, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); seg(xm, y1, x1, ym); break;
+          case 14: poly([[x0, y0], [x1, y0], [x1, y1], [xm, y1], [x0, ym]]); seg(x0, ym, xm, y1); break;
         }
+      }
+      if (runStart !== null) {
+        path.rect((runStart + 0.5) * ts, y0, (W - runStart) * ts, ts);
       }
     }
     return path;
@@ -138,108 +174,135 @@ export class MiniMotorwaysRenderer {
     staging.height = ph;
     const ctx = staging.getContext('2d');
 
-    ctx.fillStyle = PALETTE.bgPaper;
-    ctx.fillRect(0, 0, pw, ph);
+    if (world.reusedThroughStage >= 7 && this._cachedPreTreeCanvas) {
+      ctx.drawImage(this._cachedPreTreeCanvas, 0, 0);
+    } else {
+      ctx.fillStyle = PALETTE.bgPaper;
+      ctx.fillRect(0, 0, pw, ph);
 
-    // Draw subtle architectural paper grid on the base paper sheet BEFORE elevation contours
-    // so the hypsometric mountain terraces remain crisp vector steps without plaid cross-hatching!
-    ctx.strokeStyle = PALETTE.gridLine;
-    ctx.lineWidth = 1;
-    const gridStep = ts * 4;
-    ctx.beginPath();
-    for (let x = 0; x <= pw; x += gridStep) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, ph);
-    }
-    for (let y = 0; y <= ph; y += gridStep) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(pw, y);
-    }
-    ctx.stroke();
+      // Draw subtle architectural paper grid on the base paper sheet BEFORE elevation contours
+      // so the hypsometric mountain terraces remain crisp vector steps without plaid cross-hatching!
+      ctx.strokeStyle = PALETTE.gridLine;
+      ctx.lineWidth = 1;
+      const gridStep = ts * 4;
+      ctx.beginPath();
+      for (let x = 0; x <= pw; x += gridStep) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, ph);
+      }
+      for (let y = 0; y <= ph; y += gridStep) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(pw, y);
+      }
+      ctx.stroke();
 
-    const contourTerraces = [
-      { dh: 0.13, fill: '#ebe7de', stroke: '#dfdace' },
-      { dh: 0.24, fill: '#e3ded2', stroke: '#d5cfc0' },
-      { dh: 0.36, fill: '#dad4c5', stroke: '#cac3b2' }
-    ];
-    ctx.save();
-    ctx.lineJoin = 'bevel';
-    ctx.lineWidth = 1.2;
-    for (const { dh, fill, stroke } of contourTerraces) {
-      const thresh = world.seaLevel + dh;
-      const cPath = this.buildVignelliWaterPath(
-        world,
-        ts,
-        (cx, cy) => world.waterMask[world.idx(cx, cy)] === 0 && world.elevationField[world.idx(cx, cy)] >= thresh
-      );
-      ctx.fillStyle = fill;
-      ctx.fill(cPath);
-      ctx.strokeStyle = stroke;
-      ctx.stroke(cPath);
-      deadline = await this.yieldToMainIfNeeded(deadline);
-    }
-    ctx.restore();
+      const contourTerraces = [
+        { dh: 0.13, fill: '#ebe7de', stroke: '#dfdace' },
+        { dh: 0.24, fill: '#e3ded2', stroke: '#d5cfc0' },
+        { dh: 0.36, fill: '#dad4c5', stroke: '#cac3b2' }
+      ];
+      const canReuseVectorPaths = Boolean(world.reusedThroughStage >= 2 && this._cachedVectorPaths);
+      let contourLayers;
+      let waterPath;
+      let waterEdgePath;
 
-    ctx.save();
-    ctx.fillStyle = PALETTE.urbanBlushPink;
-    ctx.beginPath();
-    for (let y = 0; y < world.H; y += 2) {
-      for (let x = 0; x < world.W; x += 2) {
-        if (world.zoneColorIdx[world.idx(x, y)] >= 0) {
-          ctx.moveTo((x + 4.5) * ts, (y + 1) * ts);
-          ctx.arc((x + 1) * ts, (y + 1) * ts, 3.5 * ts, 0, Math.PI * 2);
+      if (canReuseVectorPaths) {
+        ({ contourLayers, waterPath, waterEdgePath } = this._cachedVectorPaths);
+      } else {
+        contourLayers = [];
+        for (const { dh, fill, stroke } of contourTerraces) {
+          const thresh = world.seaLevel + dh;
+          const cEdgePath = new Path2D();
+          const cPath = this.buildVignelliWaterPath(
+            world,
+            ts,
+            (cx, cy) => world.waterMask[world.idx(cx, cy)] === 0 && world.elevationField[world.idx(cx, cy)] >= thresh,
+            cEdgePath
+          );
+          contourLayers.push({ fill, stroke, cPath, cEdgePath });
+          deadline = await this.yieldToMainIfNeeded(deadline);
+        }
+        waterEdgePath = new Path2D();
+        waterPath = this.buildVignelliWaterPath(world, ts, null, waterEdgePath);
+        this._cachedVectorPaths = { contourLayers, waterPath, waterEdgePath };
+        deadline = await this.yieldToMainIfNeeded(deadline);
+      }
+
+      ctx.save();
+      ctx.lineJoin = 'bevel';
+      ctx.lineWidth = 1.2;
+      for (const { fill, stroke, cPath, cEdgePath } of contourLayers) {
+        ctx.fillStyle = fill;
+        ctx.fill(cPath);
+        ctx.strokeStyle = stroke;
+        ctx.stroke(cEdgePath);
+      }
+      ctx.restore();
+
+      ctx.save();
+      ctx.fillStyle = PALETTE.urbanBlushPink;
+      ctx.beginPath();
+      for (let y = 0; y < world.H; y += 2) {
+        for (let x = 0; x < world.W; x += 2) {
+          if (world.zoneColorIdx[world.idx(x, y)] >= 0) {
+            ctx.moveTo((x + 4.5) * ts, (y + 1) * ts);
+            ctx.arc((x + 1) * ts, (y + 1) * ts, 3.5 * ts, 0, Math.PI * 2);
+          }
         }
       }
-    }
-    ctx.fill();
+      ctx.fill();
 
-    const waterPath = this.buildVignelliWaterPath(world, ts);
-    deadline = await this.yieldToMainIfNeeded(deadline);
+      ctx.lineCap = 'butt';
+      ctx.lineJoin = 'bevel';
+      ctx.strokeStyle = PALETTE.bgPaper;
+      ctx.lineWidth = ts * 1.45;
+      ctx.stroke(waterEdgePath);
+      ctx.fillStyle = PALETTE.bgPaper;
+      ctx.fill(waterPath);
 
-    ctx.lineCap = 'butt';
-    ctx.lineJoin = 'bevel';
-    ctx.strokeStyle = PALETTE.bgPaper;
-    ctx.lineWidth = ts * 1.45;
-    ctx.stroke(waterPath);
-    ctx.fillStyle = PALETTE.bgPaper;
-    ctx.fill(waterPath);
-
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    for (const pass of ['bank', 'water']) {
-      ctx.strokeStyle = pass === 'bank' ? PALETTE.bgPaper : PALETTE.waterCyan;
-      const bankExtra = pass === 'bank' ? ts * 1.15 : 0;
-      for (const rObj of world.rivers) {
-        const pts = Array.isArray(rObj) ? rObj : rObj.points;
-        const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
-        if (!pts || pts.length < 4) continue;
-        const startW = isMain ? 0.84 : 0.56;
-        const endW = isMain ? 1.44 : 1.08;
-        for (let i = 0; i < pts.length - 1; i++) {
-          const p0 = pts[i];
-          const p1 = pts[i + 1];
-          const p2 = pts[Math.min(pts.length - 1, i + 2)];
-          const frac = i / (pts.length - 1);
-          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.90));
-          ctx.lineWidth = ts * w + bankExtra;
-          ctx.beginPath();
-          const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
-          const y0 = i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
-          const x1 = (p1.x + 0.5) * ts;
-          const y1 = (p1.y + 0.5) * ts;
-          const x2 = i === pts.length - 2 ? (p1.x + 0.5) * ts : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
-          const y2 = i === pts.length - 2 ? (p1.y + 0.5) * ts : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
-          ctx.moveTo(x0, y0);
-          ctx.quadraticCurveTo(x1, y1, x2, y2);
-          ctx.stroke();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const pass of ['bank', 'water']) {
+        ctx.strokeStyle = pass === 'bank' ? PALETTE.bgPaper : PALETTE.waterCyan;
+        const bankExtra = pass === 'bank' ? ts * 1.15 : 0;
+        for (const rObj of world.rivers) {
+          const pts = Array.isArray(rObj) ? rObj : rObj.points;
+          const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
+          if (!pts || pts.length < 4) continue;
+          const startW = isMain ? 0.84 : 0.56;
+          const endW = isMain ? 1.44 : 1.08;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = pts[i];
+            const p1 = pts[i + 1];
+            const p2 = pts[Math.min(pts.length - 1, i + 2)];
+            const frac = i / (pts.length - 1);
+            const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.90));
+            ctx.lineWidth = ts * w + bankExtra;
+            ctx.beginPath();
+            const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
+            const y0 = i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
+            const x1 = (p1.x + 0.5) * ts;
+            const y1 = (p1.y + 0.5) * ts;
+            const x2 = i === pts.length - 2 ? (p1.x + 0.5) * ts : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
+            const y2 = i === pts.length - 2 ? (p1.y + 0.5) * ts : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
+            ctx.moveTo(x0, y0);
+            ctx.quadraticCurveTo(x1, y1, x2, y2);
+            ctx.stroke();
+          }
         }
+        deadline = await this.yieldToMainIfNeeded(deadline);
       }
-      deadline = await this.yieldToMainIfNeeded(deadline);
-    }
 
-    ctx.fillStyle = PALETTE.waterCyan;
-    ctx.fill(waterPath);
-    ctx.restore();
+      ctx.fillStyle = PALETTE.waterCyan;
+      ctx.fill(waterPath);
+      ctx.restore();
+
+      const preTree = this._cachedPreTreeCanvas || document.createElement('canvas');
+      preTree.width = pw;
+      preTree.height = ph;
+      preTree.getContext('2d').drawImage(staging, 0, 0);
+      this._cachedPreTreeCanvas = preTree;
+    }
 
     // Soft pastel woodland canopy underlay beneath tree clusters so forests read as cohesive groves
     ctx.fillStyle = 'rgba(186, 208, 181, 0.28)';
@@ -254,18 +317,30 @@ export class MiniMotorwaysRenderer {
     }
     ctx.fill();
 
+    // Batch all tree shadows into a single path fill
+    ctx.fillStyle = 'rgba(54, 56, 62, 0.1)';
+    ctx.beginPath();
     for (const tree of world.trees) {
-      const tx = tree.x * ts;
-      const ty = tree.y * ts;
+      const tx = tree.x * ts + 2.5;
+      const ty = tree.y * ts + 2.5;
       const tr = tree.r * ts;
-      ctx.fillStyle = 'rgba(54, 56, 62, 0.1)';
-      ctx.beginPath();
-      ctx.arc(tx + 2.5, ty + 2.5, tr, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = tree.color;
-      ctx.beginPath();
+      ctx.moveTo(tx + tr, ty);
       ctx.arc(tx, ty, tr, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    // Batch tree dots by palette color (3 draw calls instead of N)
+    for (const color of PALETTE.treeDots) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      for (const tree of world.trees) {
+        if (tree.color !== color) continue;
+        const tx = tree.x * ts;
+        const ty = tree.y * ts;
+        const tr = tree.r * ts;
+        ctx.moveTo(tx + tr, ty);
+        ctx.arc(tx, ty, tr, 0, Math.PI * 2);
+      }
       ctx.fill();
     }
 
@@ -295,15 +370,17 @@ export class MiniMotorwaysRenderer {
     ctx.lineWidth = 1.2;
     for (const { dh, fill, stroke } of contourTerraces) {
       const thresh = world.seaLevel + dh;
+      const cEdgePath = new Path2D();
       const cPath = this.buildVignelliWaterPath(
         world,
         ts,
-        (cx, cy) => world.waterMask[world.idx(cx, cy)] === 0 && world.elevationField[world.idx(cx, cy)] >= thresh
+        (cx, cy) => world.waterMask[world.idx(cx, cy)] === 0 && world.elevationField[world.idx(cx, cy)] >= thresh,
+        cEdgePath
       );
       ctx.fillStyle = fill;
       ctx.fill(cPath);
       ctx.strokeStyle = stroke;
-      ctx.stroke(cPath);
+      ctx.stroke(cEdgePath);
     }
     ctx.restore();
 
@@ -322,7 +399,8 @@ export class MiniMotorwaysRenderer {
     ctx.fill();
 
     // Build Vignelli 45°/90° Octilinear Marching-Squares Open-Water Basin Path (`waterMask === 2`)
-    const waterPath = this.buildVignelliWaterPath(world, ts);
+    const waterEdgePath = new Path2D();
+    const waterPath = this.buildVignelliWaterPath(world, ts, null, waterEdgePath);
 
     // Use beveled/mitered joins so 45-degree Vignelli shoreline angles stay crisp & architectural
     ctx.lineCap = 'butt';
@@ -331,7 +409,7 @@ export class MiniMotorwaysRenderer {
     // 3. Cream Sand/Bank Casing around Open Water Basins
     ctx.strokeStyle = PALETTE.bgPaper;
     ctx.lineWidth = ts * 1.45;
-    ctx.stroke(waterPath);
+    ctx.stroke(waterEdgePath);
     ctx.fillStyle = PALETTE.bgPaper;
     ctx.fill(waterPath);
 
