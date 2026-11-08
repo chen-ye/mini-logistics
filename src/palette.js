@@ -3,7 +3,7 @@
  ***************************************************************************/
 export const PALETTE = {
   bgPaper: '#f2efe9',
-  gridLine: 'rgba(54, 56, 62, 0.045)',
+  gridLine: 'rgba(54, 56, 62, 0.022)',
   waterCyan: '#85d4de',
   waterDeep: '#6ec4d0',
   waterBankCream: '#f7f5f0',

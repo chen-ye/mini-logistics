@@ -389,11 +389,11 @@ export class ProceduralLogisticsWorld {
       for (let y = 14; y < this.H - 14; y += 3) {
         for (let x = 14; x < this.W - 14; x += 3) {
           const id = this.idx(x, y);
-          // Allow waterfront-hugging cities right up to 2.2 tiles from the shoreline!
-          if (this.waterMask[id] > 0 || this.distToWater[id] < 2.2) continue;
+          // Allow waterfront-hugging cities right up to 2.8 tiles from the shoreline (preserving riverbank esplanades!)
+          if (this.waterMask[id] > 0 || this.distToWater[id] < 2.8) continue;
           const lmId = this.landmassId[id];
           if (lmId < 0) continue;
-          if (this.slopeField[id] > (tier <= 2 ? 0.36 : 0.44) || this.elevationField[id] > this.seaLevel + 0.36) continue;
+          if (this.slopeField[id] > (tier <= 2 ? 0.38 : 0.48) || this.elevationField[id] > this.seaLevel + 0.42) continue;
 
           let tooClose = false;
           for (const t of this.towns) {
@@ -1473,7 +1473,7 @@ export class ProceduralLogisticsWorld {
     const isPassable = (x, y) => {
       if (!this.inBounds(x, y, 3)) return false;
       const id = this.idx(x, y);
-      if (this.waterMask[id] !== 0 || this.buildingMask[id] !== 0 || this.distToWater[id] < 1.15) return false;
+      if (this.waterMask[id] !== 0 || this.buildingMask[id] !== 0 || this.distToWater[id] < 2.1) return false;
       if (this.slopeField[id] > (isIH ? 0.58 : 0.46) || this.elevationField[id] - baseElev > (isIH ? 0.22 : 0.14)) return false;
       if (hasParallelNeighbor(x, y)) return false;
       return true;
@@ -1540,7 +1540,7 @@ export class ProceduralLogisticsWorld {
       for (let dy = 0; dy < hTiles; dy++) {
         for (let dx = 0; dx < wTiles; dx++) {
           const id = this.idx(gx + dx, gy + dy);
-          if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) {
+          if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0 || this.distToWater[id] < 2.0) {
             return null;
           }
         }
@@ -1792,7 +1792,7 @@ export class ProceduralLogisticsWorld {
       for (let gx = town.x - scanR; gx <= town.x + scanR; gx++) {
         if (!this.inBounds(gx, gy, 3)) continue;
         const id = this.idx(gx, gy);
-        if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) continue;
+        if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0 || this.distToWater[id] < 1.9) continue;
         if (this.zoneColorIdx[id] !== town.colorIdx) continue;
 
         let driveway = null;
@@ -2357,6 +2357,7 @@ export class ProceduralLogisticsWorld {
     let penalty = Math.abs(candidateOff - preferOff) * 0.25 + Math.abs(candidateOff) * 0.12;
     let waterArc = 0;
     let totalWaterArc = 0;
+    let riverProxArc = 0;
 
     for (let i = 0; i < samples.length; i++) {
       const pt = samples[i];
@@ -2365,23 +2366,41 @@ export class ProceduralLogisticsWorld {
       const id = this.idx(gx, gy);
       const segLen = i > 0 ? Math.hypot(pt.x - samples[i - 1].x, pt.y - samples[i - 1].y) : 1.0;
 
+      // Forbid acute hairpin turns (> 70° bend over a 4-sample window)
+      if (i >= 2 && i <= samples.length - 3) {
+        const vx1 = pt.x - samples[i - 2].x;
+        const vy1 = pt.y - samples[i - 2].y;
+        const vx2 = samples[i + 2].x - pt.x;
+        const vy2 = samples[i + 2].y - pt.y;
+        const l1 = Math.hypot(vx1, vy1) || 1;
+        const l2 = Math.hypot(vx2, vy2) || 1;
+        const cosTurn = (vx1 * vx2 + vy1 * vy2) / (l1 * l2);
+        if (cosTurn < 0.32) return Infinity;
+      }
+
+      if (this.waterMask[id] === 1 || (this.waterMask[id] === 0 && this.distToWater[id] < 1.35)) {
+        riverProxArc += segLen;
+        // Never allow an expressway to run longitudinally inside or on top of a river channel!
+        if (riverProxArc > 11.5) return Infinity;
+      }
+
       if (this.waterMask[id] > 0) {
         const wWeight = this.waterMask[id] === 2 ? 1.25 : 1.0;
         waterArc += segLen * wWeight;
         totalWaterArc += segLen * wWeight;
         // Hard invariant 6: Never build long causeways across wide open lakes/bays/sea channels!
         const isIH = this.config.archetype === 'island-hopper';
-        if (waterArc > (isIH ? 13.5 : 22.0) || totalWaterArc > (isIH ? 16.5 : 30.0)) {
+        if (waterArc > (isIH ? 13.5 : 19.0) || totalWaterArc > (isIH ? 16.5 : 26.0)) {
           return Infinity;
         }
-        penalty += segLen * (this.waterMask[id] === 2 ? 4.8 : 2.8);
+        penalty += segLen * (this.waterMask[id] === 2 ? 5.8 : 3.4);
       } else {
         // In `island-hopper`, never use a tiny uninhabited skerry (`landmassId < 0`) as a motorway bridge pier!
         if (this.config.archetype === 'island-hopper' && this.landmassId[id] < 0) {
           return Infinity;
         }
         waterArc = 0;
-        if (this.distToWater[id] < 1.8) penalty += segLen * 0.6;
+        if (this.distToWater[id] < 2.2) penalty += segLen * 2.2;
         // Topographic valley preference (weighted by segLen so sample density never biases the score!)
         const ridgeElev = Math.max(0, this.elevationField[id] - this.seaLevel - 0.14);
         penalty += segLen * (ridgeElev * 6.5 + this.slopeField[id] * 2.5);
@@ -2574,8 +2593,9 @@ export class ProceduralLogisticsWorld {
             this.inBounds(aheadX, aheadY, 2) && this.waterMask[this.idx(aheadX, aheadY)] === 0;
           cost += isNarrowStrait ? 24.0 : 125.0;
         } else if (wm === 1) {
-          cost += 5.5; // Cross rivers economically at narrow points
+          cost += 22.0; // Cross rivers cleanly at perpendicular bridges; never follow river channels!
         } else {
+          if (this.distToWater[id] < 2.2) cost += 26.0;
           // Above `hAbove = 0.205`, expressways bore a subterranean mountain tunnel at lower marginal grade cost!
           cost += hAbove >= 0.205
             ? (0.205 * 38.0 + (hAbove - 0.205) * 14.0 + slope * 10.0)
@@ -3705,15 +3725,16 @@ export class ProceduralLogisticsWorld {
    * (`elevationField >= seaLevel + 0.21`) and marks subterranean tunnel portals (`mw.tunnels`).
    */
   detectMountainExpresswayTunnels() {
-    const tunnelThresh = this.seaLevel + 0.205;
+    const tunnelThresh = this.seaLevel + 0.21;
     for (const mw of this.motorways) {
       mw.tunnels = [];
       const samples = mw.samples;
       if (!samples || samples.length < 16) continue;
 
+      const rawSpans = [];
       let inTunnel = false;
       let startIdx = -1;
-      for (let i = 5; i <= samples.length - 6; i++) {
+      for (let i = 6; i <= samples.length - 7; i++) {
         const pt = samples[i];
         const gx = Math.round(pt.x);
         const gy = Math.round(pt.y);
@@ -3722,40 +3743,41 @@ export class ProceduralLogisticsWorld {
         const isHighRidge =
           this.waterMask[id] === 0 &&
           this.elevationField[id] >= tunnelThresh &&
-          !this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 8.5);
+          !this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 11.5);
 
         if (isHighRidge && !inTunnel) {
           inTunnel = true;
           startIdx = i;
         } else if (!isHighRidge && inTunnel) {
           if (i - 1 - startIdx >= 3) {
-            const p0 = samples[startIdx];
-            const p0Next = samples[startIdx + 1];
-            const p1 = samples[i - 1];
-            const p1Prev = samples[i - 2];
-            mw.tunnels.push({
-              i0: startIdx,
-              i1: i - 1,
-              x0: p0.x,
-              y0: p0.y,
-              x1: p1.x,
-              y1: p1.y,
-              ang0: Math.atan2(p0Next.y - p0.y, p0Next.x - p0.x),
-              ang1: Math.atan2(p1.y - p1Prev.y, p1.x - p1Prev.x)
-            });
+            rawSpans.push({ i0: startIdx, i1: i - 1 });
           }
           inTunnel = false;
         }
       }
-      if (inTunnel && samples.length - 6 - startIdx >= 3) {
-        const endI = samples.length - 6;
-        const p0 = samples[startIdx];
-        const p0Next = samples[startIdx + 1];
-        const p1 = samples[endI];
-        const p1Prev = samples[endI - 1];
+      if (inTunnel && samples.length - 7 - startIdx >= 3) {
+        rawSpans.push({ i0: startIdx, i1: samples.length - 7 });
+      }
+
+      // Coalesce adjacent tunnel spans separated by a short (< 10 sample) surface speck
+      const mergedSpans = [];
+      for (const sp of rawSpans) {
+        if (mergedSpans.length > 0 && sp.i0 - mergedSpans[mergedSpans.length - 1].i1 <= 10) {
+          mergedSpans[mergedSpans.length - 1].i1 = sp.i1;
+        } else {
+          mergedSpans.push({ ...sp });
+        }
+      }
+
+      for (const { i0, i1 } of mergedSpans) {
+        if (i1 - i0 < 4) continue;
+        const p0 = samples[i0];
+        const p0Next = samples[i0 + 1];
+        const p1 = samples[i1];
+        const p1Prev = samples[i1 - 1];
         mw.tunnels.push({
-          i0: startIdx,
-          i1: endI,
+          i0,
+          i1,
           x0: p0.x,
           y0: p0.y,
           x1: p1.x,
@@ -3783,7 +3805,7 @@ export class ProceduralLogisticsWorld {
         // Orographic windward bonus (`fertilityField` encodes windward upslope moisture!)
         const moistureBias = (this.fertilityField[id] - 0.35) * 0.45;
         const forestPatch = this.noise.fbm(x * 0.055 + 3.1, y * 0.055 + 8.4, 2) + moistureBias;
-        if ((hillHeight > 0.12 && forestPatch + hillHeight * 0.75 > 0.62) || (isSmallIslet && forestPatch > 0.40)) {
+        if ((hillHeight > 0.12 && forestPatch + hillHeight * 1.15 > 0.60) || (isSmallIslet && forestPatch > 0.40)) {
           const groveCount = isSmallIslet ? this.rng.int(1, 3) : (moistureBias > 0.06 ? this.rng.int(3, 5) : this.rng.int(1, 3));
           for (let g = 0; g < groveCount; g++) {
             const tx = x + this.rng.range(-1.3, 1.3);

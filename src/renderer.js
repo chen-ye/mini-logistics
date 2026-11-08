@@ -48,7 +48,8 @@ export class MiniMotorwaysRenderer {
 
     const scaleX = this.canvas.width / worldPxW;
     const scaleY = this.canvas.height / worldPxH;
-    this.camera.zoom = Math.min(scaleX, scaleY) * 0.94;
+    // Fill viewport edge-to-edge on landscape screens so map-border bays & rivers bleed cleanly to the screen edge
+    this.camera.zoom = Math.max(scaleX, scaleY);
     this.camera.x = (this.canvas.width - worldPxW * this.camera.zoom) * 0.5;
     this.camera.y = (this.canvas.height - worldPxH * this.camera.zoom) * 0.5;
   }
@@ -140,6 +141,22 @@ export class MiniMotorwaysRenderer {
     ctx.fillStyle = PALETTE.bgPaper;
     ctx.fillRect(0, 0, pw, ph);
 
+    // Draw subtle architectural paper grid on the base paper sheet BEFORE elevation contours
+    // so the hypsometric mountain terraces remain crisp vector steps without plaid cross-hatching!
+    ctx.strokeStyle = PALETTE.gridLine;
+    ctx.lineWidth = 1;
+    const gridStep = ts * 4;
+    ctx.beginPath();
+    for (let x = 0; x <= pw; x += gridStep) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, ph);
+    }
+    for (let y = 0; y <= ph; y += gridStep) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(pw, y);
+    }
+    ctx.stroke();
+
     const contourTerraces = [
       { dh: 0.13, fill: '#ebe7de', stroke: '#dfdace' },
       { dh: 0.24, fill: '#e3ded2', stroke: '#d5cfc0' },
@@ -224,19 +241,18 @@ export class MiniMotorwaysRenderer {
     ctx.fill(waterPath);
     ctx.restore();
 
-    ctx.strokeStyle = PALETTE.gridLine;
-    ctx.lineWidth = 1;
-    const gridStep = ts * 4;
+    // Soft pastel woodland canopy underlay beneath tree clusters so forests read as cohesive groves
+    ctx.fillStyle = 'rgba(186, 208, 181, 0.28)';
     ctx.beginPath();
-    for (let x = 0; x <= pw; x += gridStep) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, ph);
+    for (let i = 0; i < world.trees.length; i += 2) {
+      const tree = world.trees[i];
+      const tx = tree.x * ts;
+      const ty = tree.y * ts;
+      const tr = tree.r * ts * 2.15;
+      ctx.moveTo(tx + tr, ty);
+      ctx.arc(tx, ty, tr, 0, Math.PI * 2);
     }
-    for (let y = 0; y <= ph; y += gridStep) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(pw, y);
-    }
-    ctx.stroke();
+    ctx.fill();
 
     for (const tree of world.trees) {
       const tx = tree.x * ts;
@@ -1402,11 +1418,22 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
       }
 
-      // 2. Subterranean Dashed Alignment Line inside Mountain Tunnels (no shadow!)
+      // 2. Subterranean Mountain Tunnel Bore (Full-width dashed charcoal bore casing + bold dashed pink deck, zero drop shadow!)
       if (tunnels.length > 0) {
-        ctx.strokeStyle = 'rgba(217, 67, 118, 0.48)';
-        ctx.lineWidth = ts * 0.40;
-        ctx.setLineDash([5, 5]);
+        ctx.lineCap = 'butt';
+        ctx.strokeStyle = 'rgba(54, 56, 62, 0.42)';
+        ctx.lineWidth = ts * 0.84;
+        ctx.setLineDash([7, 5]);
+        for (const tun of tunnels) {
+          const tSamples = samples.slice(tun.i0, tun.i1 + 1);
+          if (tSamples.length >= 2) {
+            this.traceMotorwaySamples(ctx, tSamples, ts, 0, 0);
+            ctx.stroke();
+          }
+        }
+
+        ctx.strokeStyle = 'rgba(232, 92, 144, 0.72)';
+        ctx.lineWidth = ts * 0.56;
         for (const tun of tunnels) {
           const tSamples = samples.slice(tun.i0, tun.i1 + 1);
           if (tSamples.length >= 2) {
@@ -1415,6 +1442,7 @@ export class MiniMotorwaysRenderer {
           }
         }
         ctx.setLineDash([]);
+        ctx.lineCap = 'round';
       }
 
       // 3. Vibrant Pink Motorway Outer Casing (above-ground spans only)

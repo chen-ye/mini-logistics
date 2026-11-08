@@ -211,13 +211,14 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           world.noise.fbm(nx * 0.045 + seedPhase, ny * 0.045 + seedPhase * 1.3, 2) * 3.8 +
           Math.sin(nx * 0.12 + ny * 0.10 + seedPhase) * 1.05;
 
-        const stepCost =
-          baseStep * (0.72 + Math.max(0, nextElev - seaLevel) * 2.2) +
-          uphill * 85.0 -
-          downhill * 4.2 +
-          meanderWave +
-          straightPenalty +
-          earlyWaterPenalty;
+        const stepCost = (!hasLeft && world.waterMask[nid] === 2)
+          ? baseStep * 0.14
+          : baseStep * (0.72 + Math.max(0, nextElev - seaLevel) * 2.2) +
+            uphill * 85.0 -
+            downhill * 4.2 +
+            meanderWave +
+            straightPenalty +
+            earlyWaterPenalty;
 
         const tentativeG = gScore[cid] + stepCost;
         if (tentativeG < gScore[nid]) {
@@ -304,12 +305,12 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
 
     const last = path[path.length - 1];
     const prev = path[Math.max(0, path.length - 3)];
-    if (world.waterMask[world.idx(last.x, last.y)] === 2) {
+    if (world.waterMask[world.idx(last.x, last.y)] > 0) {
       const dx = last.x - prev.x;
       const dy = last.y - prev.y;
       const len = Math.hypot(dx, dy) || 1;
-      const ex = Math.round(last.x + (dx / len) * 2.2);
-      const ey = Math.round(last.y + (dy / len) * 2.2);
+      const ex = Math.round(last.x + (dx / len) * 2.0);
+      const ey = Math.round(last.y + (dy / len) * 2.0);
       if (world.inBounds(ex, ey, 1) && (ex !== last.x || ey !== last.y)) {
         path.push({ x: ex, y: ey, width: last.width });
       }
