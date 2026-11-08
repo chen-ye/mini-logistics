@@ -87,6 +87,8 @@ export function getGeneratorConfig() {
   return {
     seed: document.getElementById('seedInput').value.trim() || 'MINI-TYCOON',
     archetype: document.getElementById('archetypeSelect').value,
+    terrainAlgo: document.getElementById('terrainAlgoSelect')?.value || 'tectonic-fbm',
+    hydrologyAlgo: document.getElementById('hydrologyAlgoSelect')?.value || 'thalweg-astar',
     expresswayAlgo: document.getElementById('expresswayAlgoSelect').value,
     airportMix: document.getElementById('airportMixSelect').value,
     includeIntermediateRamps: document.getElementById('toggleInterRamps').checked,
@@ -442,6 +444,8 @@ document.getElementById('archetypeSelect').addEventListener('change', (e) => {
   }
   rebuildWorld(false);
 });
+document.getElementById('terrainAlgoSelect').addEventListener('change', () => rebuildWorld(true));
+document.getElementById('hydrologyAlgoSelect').addEventListener('change', () => rebuildWorld(true));
 document.getElementById('expresswayAlgoSelect').addEventListener('change', () => rebuildWorld(true));
 document.getElementById('airportMixSelect').addEventListener('change', () => rebuildWorld(true));
 document.getElementById('toggleInterRamps').addEventListener('change', () => rebuildWorld(true));

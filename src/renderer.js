@@ -203,7 +203,8 @@ export class MiniMotorwaysRenderer {
           const p1 = pts[i + 1];
           const p2 = pts[Math.min(pts.length - 1, i + 2)];
           const frac = i / (pts.length - 1);
-          ctx.lineWidth = ts * (startW + (endW - startW) * Math.pow(frac, 0.85)) + bankExtra;
+          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.85));
+          ctx.lineWidth = ts * w + bankExtra;
           ctx.beginPath();
           const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
           const y0 = i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
@@ -335,7 +336,8 @@ export class MiniMotorwaysRenderer {
           const p1 = pts[i + 1];
           const p2 = pts[Math.min(pts.length - 1, i + 2)];
           const frac = i / (pts.length - 1);
-          ctx.lineWidth = ts * (startW + (endW - startW) * Math.pow(frac, 0.85)) + bankExtra;
+          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.85));
+          ctx.lineWidth = ts * w + bankExtra;
           ctx.beginPath();
           const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
           const y0 = i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
@@ -1398,6 +1400,54 @@ export class MiniMotorwaysRenderer {
       ctx.lineWidth = 2.0;
       this.traceMotorwaySamples(ctx, samples, ts, 0, 0);
       ctx.stroke();
+
+      // Mountain Tunnel Spans & Concrete Portal Mouths (`mw.tunnels`)
+      if (mw.tunnels && mw.tunnels.length > 0) {
+        for (const tun of mw.tunnels) {
+          const tSamples = samples.slice(tun.i0, tun.i1 + 1);
+          if (tSamples.length >= 2) {
+            // Cover surface deck with upper-mountain terrace stone so the motorway goes underground!
+            ctx.strokeStyle = '#e3ded2';
+            ctx.lineWidth = ts * 1.18;
+            ctx.lineCap = 'butt';
+            this.traceMotorwaySamples(ctx, tSamples, ts, 0, 0);
+            ctx.stroke();
+
+            // Subterranean dashed alignment line inside the mountain
+            ctx.strokeStyle = 'rgba(217, 67, 118, 0.52)';
+            ctx.lineWidth = ts * 0.42;
+            ctx.setLineDash([5, 5]);
+            this.traceMotorwaySamples(ctx, tSamples, ts, 0, 0);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.lineCap = 'round';
+          }
+
+          // Draw dark charcoal concrete tunnel portal mouths at entry and exit
+          for (const [px, py, ang] of [
+            [tun.x0 * ts + ts * 0.5, tun.y0 * ts + ts * 0.5, tun.ang0],
+            [tun.x1 * ts + ts * 0.5, tun.y1 * ts + ts * 0.5, tun.ang1 + Math.PI]
+          ]) {
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.rotate(ang);
+            // Concrete portal headwall collar
+            ctx.fillStyle = '#36383e';
+            ctx.strokeStyle = '#f2efe9';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.roundRect(-3.5, -ts * 0.56, 7.0, ts * 1.12, 2.5);
+            ctx.fill();
+            ctx.stroke();
+            // Dark tunnel bore mouth
+            ctx.fillStyle = '#1f2024';
+            ctx.beginPath();
+            ctx.arc(1.5, 0, ts * 0.34, -Math.PI * 0.5, Math.PI * 0.5);
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+      }
 
       // Grade-Separated Roundabout Interchange Rings at non-pruned Street-Stub Terminations
       const termEndpoints = [];

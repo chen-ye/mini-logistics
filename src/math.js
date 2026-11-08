@@ -81,4 +81,72 @@ export class FastNoise2D {
     }
     return total / maxValue;
   }
+
+  /**
+   * 2D Gradient Noise with Analytic Partial Derivatives `(val, dx, dy)`
+   * (Inigo Quilez formulation using quintic C2 fade curve `6t^5 - 15t^4 + 10t^3` and `dfade/dt = 30t^2(t-1)^2`).
+   */
+  noiseDeriv(x, y) {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    const fx = x - Math.floor(x);
+    const fy = y - Math.floor(y);
+
+    const u = this.fade(fx);
+    const v = this.fade(fy);
+    const du = 30.0 * fx * fx * (fx - 1.0) * (fx - 1.0);
+    const dv = 30.0 * fy * fy * (fy - 1.0) * (fy - 1.0);
+
+    const A = this.perm[X] + Y;
+    const B = this.perm[X + 1] + Y;
+    const va = this.grad(this.perm[A], fx, fy);
+    const vb = this.grad(this.perm[B], fx - 1, fy);
+    const vc = this.grad(this.perm[A + 1], fx, fy - 1);
+    const vd = this.grad(this.perm[B + 1], fx - 1, fy - 1);
+
+    const k0 = va;
+    const k1 = vb - va;
+    const k2 = vc - va;
+    const k3 = va - vb - vc + vd;
+
+    const rawVal = k0 + k1 * u + k2 * v + k3 * u * v;
+    const dx = (k1 + k3 * v) * du * 0.5;
+    const dy = (k2 + k3 * u) * dv * 0.5;
+    return {
+      val: Math.max(0, Math.min(1, rawVal * 0.5 + 0.5)),
+      dx,
+      dy
+    };
+  }
+
+  /**
+   * Inigo Quilez Analytic Derivative-Eroded fBm (`1 / (1 + k * |∇H|²)`):
+   * Suppresses high-frequency octaves on steep slopes to produce wide, flat-bottomed
+   * alluvial valleys and sharp, water-eroded mountain ridge crests in a single pass.
+   */
+  fbmEroded(x, y, octaves = 5, erosionStrength = 1.45) {
+    let total = 0;
+    let maxWeight = 0;
+    let amp = 0.52;
+    let px = x;
+    let py = y;
+    let sumDx = 0;
+    let sumDy = 0;
+
+    // 2D octave rotation matrix (cos ≈ 0.8, sin ≈ 0.6) to break grid axis alignment across octaves
+    for (let i = 0; i < octaves; i++) {
+      const n = this.noiseDeriv(px, py);
+      sumDx += n.dx;
+      sumDy += n.dy;
+      const slopeAtten = 1.0 / (1.0 + erosionStrength * (sumDx * sumDx + sumDy * sumDy));
+      total += amp * n.val * slopeAtten;
+      maxWeight += amp * 0.82;
+      amp *= 0.50;
+      const nx = (0.8 * px - 0.6 * py) * 2.02;
+      const ny = (0.6 * px + 0.8 * py) * 2.02;
+      px = nx;
+      py = ny;
+    }
+    return Math.max(0, Math.min(1, total / (maxWeight || 1)));
+  }
 }

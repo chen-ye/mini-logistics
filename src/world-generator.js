@@ -8,6 +8,8 @@ import {
   SYLLABLES_ROOT_COAST,
   SYLLABLES_ROOT_HILL
 } from "./palette.js";
+import { synthesizeTerrainAndBasins } from "./terrain-solvers.js";
+import { synthesizeFluvialHydrology } from "./hydrology-solvers.js";
 
 /***************************************************************************
  * 3. PROCEDURAL WORLD GENERATOR CLASS
@@ -138,598 +140,15 @@ export class ProceduralLogisticsWorld {
    *   trace downhill along valley thalwegs and taper continuously from thin rills to estuaries.
    */
   generateHydrology() {
-    const { W, H } = this;
-    const waterRatio = this.config.waterCoverage / 100; // 0.20 .. 0.80
-    const arch = this.config.archetype;
-    this.hydroFeatures = [];
-    this.rivers = [];
-    this.drainageField.fill(0);
-
-    // Seed-unique geological strike axis & primary coastal drainage direction
-    const strikeAng = this.rng.range(-0.85, 0.85);
-    const cosS = Math.cos(strikeAng);
-    const sinS = Math.sin(strikeAng);
-    const coastAng = this.rng.pick([0, Math.PI * 0.5, Math.PI, Math.PI * 1.5]) + this.rng.range(-0.38, 0.38);
-    const cosC = Math.cos(coastAng);
-    const sinC = Math.sin(coastAng);
-    const offX = this.rng.range(10, 90);
-    const offY = this.rng.range(10, 90);
-    const foldPhase = this.rng.range(0, Math.PI * 2);
-
-    // Emergent Tectonic Archipelago Spine, Multi-Lobe Massifs & Satellite Skerries for `island-hopper`
-    const islandMassifs = [];
-    const islandBites = [];
-    if (arch === 'island-hopper') {
-      // 1. Seed-unique primary curved volcanic/cordillera arc + secondary divergent rift branch (zero fixed 3×2 grid!)
-      const baseTheta = this.rng.range(-Math.PI, Math.PI);
-      const arcCurvature = (this.rng.next() < 0.5 ? 1 : -1) * this.rng.range(0.28, 0.52);
-      const forkSide = this.rng.next() < 0.5 ? 1 : -1;
-      const forkTheta = baseTheta + forkSide * this.rng.range(1.05, 1.48);
-
-      const sampleArcPoint = (t) => {
-        // t in [-0.42 .. +0.42] along the curved primary arc
-        const s = t * 0.82;
-        const n = (arcCurvature * (t * t - 0.09)) + Math.sin(t * Math.PI * 2.0 + foldPhase) * 0.05;
-        return {
-          x: Math.max(-0.39, Math.min(0.39, s * Math.cos(baseTheta) - n * Math.sin(baseTheta))),
-          y: Math.max(-0.37, Math.min(0.37, s * Math.sin(baseTheta) + n * Math.cos(baseTheta))),
-          tangent: baseTheta + 2 * arcCurvature * t
-        };
-      };
-
-      // Place 6 distinct island centers along a seed-unique curved tectonic arc + secondary rift branch
-      const majorCenters = [];
-      const arcTs = [
-        -0.38 + this.rng.range(-0.03, 0.03),
-        -0.13 + this.rng.range(-0.04, 0.04),
-        0.13 + this.rng.range(-0.04, 0.04),
-        0.38 + this.rng.range(-0.03, 0.03)
-      ];
-      for (let idx = 0; idx < arcTs.length; idx++) {
-        const pt = sampleArcPoint(arcTs[idx]);
-        const isMain = idx === 1 || idx === 2;
-        majorCenters.push({
-          x: Math.max(-0.35, Math.min(0.35, pt.x + this.rng.range(-0.03, 0.03))),
-          y: Math.max(-0.33, Math.min(0.33, pt.y + this.rng.range(-0.03, 0.03))),
-          ang: pt.tangent + this.rng.range(-0.55, 0.55),
-          scale: isMain ? this.rng.range(0.96, 1.12) : this.rng.range(0.74, 0.88),
-          height: isMain ? this.rng.range(0.92, 1.00) : this.rng.range(0.80, 0.90)
-        });
-      }
-
-      // Add 2 outer islands in the opposite oceanic quadrants (enforcing >= 0.25 separation so islands stay distinct)
-      for (const sideMul of [1, -1]) {
-        for (let attempt = 0; attempt < 30; attempt++) {
-          const rDist = this.rng.range(0.24, 0.36);
-          const ang = baseTheta + sideMul * Math.PI * 0.5 + this.rng.range(-0.55, 0.55) + (attempt > 15 ? this.rng.range(-1.0, 1.0) : 0);
-          const fx = Math.max(-0.35, Math.min(0.35, Math.cos(ang) * rDist));
-          const fy = Math.max(-0.33, Math.min(0.33, Math.sin(ang) * rDist));
-          const minSep = attempt < 18 ? 0.24 : 0.19;
-          if (majorCenters.every(mc => Math.hypot(mc.x - fx, mc.y - fy) >= minSep)) {
-            majorCenters.push({
-              x: fx,
-              y: fy,
-              ang: ang + this.rng.range(-0.7, 0.7),
-              scale: this.rng.range(0.80, 0.98),
-              height: this.rng.range(0.82, 0.94)
-            });
-            break;
-          }
-        }
-      }
-
-      // Build each island out of 2–3 intersecting elongated tectonic ridge lobes + a harbor embayment bite
-      for (let mIdx = 0; mIdx < majorCenters.length; mIdx++) {
-        const mc = majorCenters[mIdx];
-        const lobeCount = mc.scale > 0.92 ? 3 : 2;
-        for (let l = 0; l < lobeCount; l++) {
-          const lobeAng = mc.ang + (l === 0 ? 0 : (l === 1 ? this.rng.range(0.65, 1.40) : this.rng.range(-1.40, -0.65)));
-          const lobeOff = l === 0 ? 0 : mc.scale * this.rng.range(0.026, 0.046);
-          const lx = mc.x + Math.cos(lobeAng) * lobeOff;
-          const ly = mc.y + Math.sin(lobeAng) * lobeOff;
-          const rx = (l === 0 ? 0.092 : 0.062) * mc.scale * this.rng.range(0.90, 1.16);
-          const ry = (l === 0 ? 0.050 : 0.038) * mc.scale * this.rng.range(0.86, 1.14);
-          islandMassifs.push({
-            group: mIdx,
-            x: lx,
-            y: ly,
-            rx,
-            ry,
-            ang: lobeAng,
-            height: mc.height * (l === 0 ? 1.0 : this.rng.range(0.82, 0.95)),
-            isIslet: false
-          });
-        }
-
-        // Carve a natural harbor cove / caldera embayment into one flank of the island
-        const biteAng = mc.ang + Math.PI * 0.5 * (this.rng.next() < 0.5 ? 1 : -1) + this.rng.range(-0.4, 0.4);
-        const biteDist = mc.scale * this.rng.range(0.036, 0.056);
-        islandBites.push({
-          x: mc.x + Math.cos(biteAng) * biteDist,
-          y: mc.y + Math.sin(biteAng) * biteDist,
-          r: mc.scale * this.rng.range(0.030, 0.046),
-          depth: this.rng.range(0.22, 0.34)
-        });
-      }
-
-      // 2. Scatter 14 small Satellite Islets, Skerries & Stepping-Stone Keys off capes and along straits
-      for (let s = 0; s < 14; s++) {
-        const host = this.rng.pick(majorCenters);
-        const tailAng = host.ang + (this.rng.next() < 0.5 ? 0 : Math.PI) + this.rng.range(-0.75, 0.75);
-        const tailDist = host.scale * this.rng.range(0.088, 0.145);
-        const ix = Math.max(-0.41, Math.min(0.41, host.x + Math.cos(tailAng) * tailDist));
-        const iy = Math.max(-0.39, Math.min(0.39, host.y + Math.sin(tailAng) * tailDist));
-        if (majorCenters.some(mc => Math.hypot(mc.x - ix, mc.y - iy) < 0.072)) continue;
-        islandMassifs.push({
-          group: 100 + s,
-          x: ix,
-          y: iy,
-          rx: this.rng.range(0.020, 0.036),
-          ry: this.rng.range(0.013, 0.024),
-          ang: tailAng + this.rng.range(-0.5, 0.5),
-          height: this.rng.range(0.62, 0.78),
-          isIslet: true
-        });
-      }
-    }
-
-    // 2A. Synthesize Seed-Unique Multi-Octave Tectonic + Fold-Valley Heightmap
-    const sampleElevs = [];
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        const nx = (x / W) - 0.5;
-        const ny = (y / H) - 0.5;
-
-        // Gentle tectonic domain warp so ridge chains and valleys curve naturally
-        const warpU = this.noise.fbm((nx + 0.5) * 1.9 + offX, (ny + 0.5) * 1.9 + offY, 2) * 0.18 - 0.09;
-        const warpV = this.noise.fbm((nx + 0.5) * 1.9 + offY, (ny + 0.5) * 1.9 + offX, 2) * 0.18 - 0.09;
-        const wx = nx + warpU;
-        const wy = ny + warpV;
-
-        // Coordinates in the seed's geological strike frame
-        const uStrike = wx * cosS + wy * sinS;
-        const vStrike = -wx * sinS + wy * cosS;
-
-        // 5-octave anisotropic Perlin + Ridged Multifractal mountain spines
-        const macroPlate = this.noise.fbm(uStrike * 2.1 + offX * 0.3, vStrike * 2.8 + offY * 0.3, 3);
-        const foldValleys = Math.cos(vStrike * Math.PI * 3.4 + foldPhase + macroPlate * 2.1) * 0.14;
-        const ridgeRaw = this.noise.noise(uStrike * 3.8 + 13.7, vStrike * 4.4 + 9.2);
-        const ridgedSpines = Math.pow(Math.max(0, 1.0 - Math.abs(2.0 * ridgeRaw - 1.0)), 1.6) * 0.24;
-        const fineDetail = this.noise.fbm((x / 32) + offX, (y / 32) + offY, 2) * 0.10;
-
-        // Regional coastal embayment (indents 22%-34% from the coastal edge, never slicing the whole map in half!)
-        const cProj = nx * cosC + ny * sinC;
-        const coastDepth = Math.max(0, (cProj - 0.14) / 0.42);
-        const bayIndent = Math.exp(-Math.pow(vStrike / 0.18, 2)) * Math.pow(coastDepth, 1.25) * 0.48;
-
-        // Bounded interior tectonic lake basins along the fold valleys (separated by broad dry land corridors!)
-        const lakeWell1 = Math.exp(-Math.pow((uStrike + 0.18) / 0.16, 2) - Math.pow((vStrike - 0.08) / 0.11, 2)) * 0.28;
-        const lakeWell2 = Math.exp(-Math.pow((uStrike - 0.22) / 0.15, 2) - Math.pow((vStrike + 0.14) / 0.10, 2)) * 0.26;
-
-        let elev = macroPlate * 0.52 + foldValleys * 0.75 + ridgedSpines + fineDetail;
-
-        if (arch === 'island-hopper') {
-          // Meso-scale coastal fjord/headland warp so island shorelines carve peninsulas, coves & rocky capes
-          const coveU = (this.noise.fbm(nx * 5.6 + offX * 0.7, ny * 5.6 + offY * 0.7, 2) - 0.5) * 0.085;
-          const coveV = (this.noise.fbm(nx * 5.6 + offY * 0.7, ny * 5.6 + offX * 0.7, 2) - 0.5) * 0.085;
-          const ixW = nx + warpU * 0.52 + coveU;
-          const iyW = ny + warpV * 0.52 + coveV;
-
-          let bestVal = 0;
-          let bestGroup = -1;
-          let sameGroupSecond = 0;
-          let diffGroupSecond = 0;
-          for (const m of islandMassifs) {
-            const dxI = ixW - m.x;
-            const dyI = iyW - m.y;
-            const cI = Math.cos(m.ang), sI = Math.sin(m.ang);
-            const uI = (dxI * cI + dyI * sI) / m.rx;
-            const vI = (-dxI * sI + dyI * cI) / m.ry;
-            const d2 = uI * uI + vI * vI;
-            if (d2 > 9.5) continue;
-            const val = Math.exp(-d2 * (m.isIslet ? 2.4 : 1.95)) * m.height;
-            if (val > bestVal) {
-              if (bestGroup === m.group) {
-                sameGroupSecond = Math.max(sameGroupSecond, bestVal);
-              } else if (bestGroup !== -1) {
-                diffGroupSecond = Math.max(diffGroupSecond, bestVal);
-              }
-              bestVal = val;
-              bestGroup = m.group;
-            } else if (m.group === bestGroup) {
-              if (val > sameGroupSecond) sameGroupSecond = val;
-            } else {
-              if (val > diffGroupSecond) diffGroupSecond = val;
-            }
-          }
-
-          // Smoothly unite sub-lobes of the SAME island while eroding navigable sea straits between DIFFERENT islands!
-          let massifShelf = bestVal + sameGroupSecond * 0.22 - diffGroupSecond * 0.90;
-          for (const bite of islandBites) {
-            const db2 = (Math.pow(ixW - bite.x, 2) + Math.pow(iyW - bite.y, 2)) / (bite.r * bite.r);
-            if (db2 < 4.0) {
-              massifShelf -= Math.exp(-db2 * 1.65) * bite.depth;
-            }
-          }
-          massifShelf = Math.max(0, massifShelf);
-
-          // High-amplitude fractal coastal noise gated by `shelfEnvelope` (0 in deep ocean ->
-          // zero border clipping, 100% fractal modulation along island shorelines -> ragged coves, peninsulas & headlands!)
-          const shelfEnvelope = Math.min(1.0, Math.pow(massifShelf * 2.5, 1.10));
-          const coastalFractal = (macroPlate - 0.48) * 0.44 + (fineDetail - 0.48) * 0.26 + foldValleys * 0.30;
-          const interiorSpine = ridgedSpines * Math.min(1.1, massifShelf * 1.40) * 1.15;
-          elev = Math.max(0, massifShelf * 0.74 + coastalFractal * shelfEnvelope + interiorSpine);
-        } else if (arch === 'estuary') {
-          elev += -coastDepth * 0.22 - bayIndent * 1.15 - lakeWell1 * 0.95 - lakeWell2 * 0.85;
-        } else if (arch === 'archipelago') {
-          const straitWave = Math.cos(uStrike * Math.PI * 2.8 + offX) * Math.sin(vStrike * Math.PI * 2.4 + offY) * 0.22;
-          elev += straitWave - bayIndent * 0.90 - lakeWell1 - lakeWell2;
-        } else if (arch === 'inland') {
-          const lakeWell3 = Math.exp(-Math.pow(uStrike / 0.18, 2) - Math.pow((vStrike - 0.22) / 0.11, 2)) * 0.28;
-          elev += -lakeWell1 * 1.15 - lakeWell2 * 1.15 - lakeWell3 * 1.10;
-        } else {
-          // 'confluence': Coastal harbor bay on one edge + 2 bounded interior valley lakes + broad river valleys
-          elev += -coastDepth * 0.18 - bayIndent - lakeWell1 - lakeWell2;
-        }
-
-        const id = this.idx(x, y);
-        this.elevationField[id] = elev;
-        if ((x & 1) === 0 && (y & 1) === 0) {
-          sampleElevs.push(elev);
-        }
-      }
-    }
-
-    // Normalize `elevationField` to [0.02 .. 0.98] and quantile-calibrate `seaLevel`
-    sampleElevs.sort((a, b) => a - b);
-    const minE = sampleElevs[0];
-    const maxE = sampleElevs[sampleElevs.length - 1] || (minE + 1);
-    const spanE = Math.max(0.01, maxE - minE);
-    for (let i = 0; i < W * H; i++) {
-      this.elevationField[i] = 0.02 + ((this.elevationField[i] - minE) / spanE) * 0.96;
-    }
-
-    const baseFrac = arch === 'island-hopper'
-      ? 0.71
-      : (arch === 'archipelago' ? 0.22 : (arch === 'estuary' ? 0.19 : (arch === 'inland' ? 0.14 : 0.17)));
-    const maxFrac = arch === 'island-hopper' ? 0.78 : 0.32;
-    const targetWaterFrac = Math.max(0.10, Math.min(maxFrac, baseFrac * (0.68 + waterRatio * 0.65)));
-    const qIdx = Math.floor(sampleElevs.length * targetWaterFrac);
-    const rawSeaLevel = 0.02 + ((sampleElevs[qIdx] - minE) / spanE) * 0.96;
-    const seaLevel = arch === 'island-hopper' ? Math.max(0.068, rawSeaLevel) : rawSeaLevel;
-    this.seaLevel = seaLevel;
-
-    for (let i = 0; i < W * H; i++) {
-      if (this.elevationField[i] < seaLevel) {
-        this.waterMask[i] = 2;
-      }
-    }
-
-    // 2-pass Cellular Automata cleanup on `waterMask === 2`
-    for (let pass = 0; pass < 2; pass++) {
-      const nextMask = new Uint8Array(this.waterMask);
-      for (let y = 1; y < H - 1; y++) {
-        for (let x = 1; x < W - 1; x++) {
-          let waterNeighbors = 0;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              if (dx === 0 && dy === 0) continue;
-              if (this.waterMask[this.idx(x + dx, y + dy)] > 0) waterNeighbors++;
-            }
-          }
-          const curr = this.waterMask[this.idx(x, y)];
-          if (curr > 0 && waterNeighbors <= 2) nextMask[this.idx(x, y)] = 0;
-          else if (curr === 0 && waterNeighbors >= 6) nextMask[this.idx(x, y)] = 2;
-        }
-      }
-      this.waterMask = nextMask;
-    }
-
-    // 2B. Identify Emergent Water Basins (`waterMask === 2` components), Remove Tiny Puddles (< 85 tiles),
-    //     and Build a Non-Bifurcating Downhill Drainage Tree (Each Inland Lake -> 1 Lower Basin/Sea)
-    const basins = [];
-    const visitedW2 = new Uint8Array(W * H);
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        const startId = this.idx(x, y);
-        if (this.waterMask[startId] !== 2 || visitedW2[startId]) continue;
-        const comp = [startId];
-        visitedW2[startId] = 1;
-        let sumX = 0, sumY = 0, touchesBorder = false, minElev = Infinity, deepX = x, deepY = y;
-        for (let h = 0; h < comp.length; h++) {
-          const cid = comp[h];
-          const cx = cid % W;
-          const cy = Math.floor(cid / W);
-          sumX += cx;
-          sumY += cy;
-          if (cx <= 2 || cx >= W - 3 || cy <= 2 || cy >= H - 3) touchesBorder = true;
-          if (this.elevationField[cid] < minElev) {
-            minElev = this.elevationField[cid];
-            deepX = cx;
-            deepY = cy;
-          }
-          for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-            const nx = cx + dx, ny = cy + dy;
-            if (this.inBounds(nx, ny)) {
-              const nid = this.idx(nx, ny);
-              if (this.waterMask[nid] === 2 && !visitedW2[nid]) {
-                visitedW2[nid] = 1;
-                comp.push(nid);
-              }
-            }
-          }
-        }
-        if (comp.length < 85) {
-          for (const cid of comp) {
-            this.waterMask[cid] = 0;
-            this.elevationField[cid] = Math.max(this.elevationField[cid], seaLevel + 0.03);
-          }
-        } else {
-          basins.push({
-            id: basins.length,
-            size: comp.length,
-            touchesBorder,
-            cx: Math.round(sumX / comp.length),
-            cy: Math.round(sumY / comp.length),
-            deepX,
-            deepY,
-            minElev
-          });
-        }
-      }
-    }
-
-    // Sort basins so coastal/largest basins come first (sinks of the watershed)
-    basins.sort((a, b) => (b.touchesBorder ? 1 : 0) - (a.touchesBorder ? 1 : 0) || b.size - a.size);
-    for (const b of basins) {
-      this.hydroFeatures.push({ x: b.cx, y: b.cy, type: b.touchesBorder ? 'firth' : 'lake' });
-    }
-
-    // Downhill Thalweg A* Router: follows the actual valley floor (`-∇elevationField`)
-    const routeValleyThalwegAStar = (sx, sy, ex, ey, stopOnAnyWaterAfterLeave = false, salt = 0) => {
-      const startId = this.idx(sx, sy);
-      const endId = this.idx(ex, ey);
-      const gScore = new Float32Array(W * H).fill(Infinity);
-      const parent = new Int32Array(W * H).fill(-1);
-      const closed = new Uint8Array(W * H);
-      const leftSource = new Uint8Array(W * H);
-      const runLen = new Uint8Array(W * H);
-
-      const heapId = [startId];
-      const heapF = [0];
-      const heapPush = (id, f) => {
-        let i = heapId.length;
-        heapId.push(id);
-        heapF.push(f);
-        while (i > 0) {
-          const p = (i - 1) >> 1;
-          if (heapF[p] <= f) break;
-          heapId[i] = heapId[p];
-          heapF[i] = heapF[p];
-          i = p;
-        }
-        heapId[i] = id;
-        heapF[i] = f;
-      };
-      const heapPopId = () => {
-        const topId = heapId[0];
-        const lastId = heapId.pop();
-        const lastF = heapF.pop();
-        const n = heapId.length;
-        if (n > 0) {
-          let i = 0;
-          while ((i << 1) + 1 < n) {
-            let c = (i << 1) + 1;
-            if (c + 1 < n && heapF[c + 1] < heapF[c]) c++;
-            if (lastF <= heapF[c]) break;
-            heapId[i] = heapId[c];
-            heapF[i] = heapF[c];
-            i = c;
-          }
-          heapId[i] = lastId;
-          heapF[i] = lastF;
-        }
-        return topId;
-      };
-
-      gScore[startId] = 0;
-      leftSource[startId] = this.waterMask[startId] === 0 ? 1 : 0;
-      runLen[startId] = 1;
-
-      const dirs = [
-        [1, 0, 1.0], [-1, 0, 1.0], [0, 1, 1.0], [0, -1, 1.0],
-        [1, 1, 1.414], [-1, 1, 1.414], [1, -1, 1.414], [-1, -1, 1.414]
-      ];
-
-      while (heapId.length > 0) {
-        const cid = heapPopId();
-        const cx = cid % W;
-        const cy = Math.floor(cid / W);
-
-        const hitExistingWater =
-          stopOnAnyWaterAfterLeave &&
-          leftSource[cid] === 1 &&
-          this.waterMask[cid] > 0 &&
-          Math.hypot(cx - sx, cy - sy) > 14;
-
-        if (cid === endId || hitExistingWater) {
-          const path = [];
-          let trace = cid;
-          while (trace !== -1) {
-            path.push({ x: trace % W, y: Math.floor(trace / W) });
-            trace = parent[trace];
-          }
-          path.reverse();
-          if (hitExistingWater && this.waterMask[cid] === 1) {
-            this.hydroFeatures.push({ x: cx, y: cy, type: 'confluence' });
-          }
-          return path;
-        }
-
-        if (closed[cid]) continue;
-        closed[cid] = 1;
-
-        const pid = parent[cid];
-        const prevDx = pid !== -1 ? cx - (pid % W) : 0;
-        const prevDy = pid !== -1 ? cy - Math.floor(pid / W) : 0;
-        const currElev = this.elevationField[cid];
-        const currRun = runLen[cid];
-
-        for (const [dx, dy, baseStep] of dirs) {
-          const nx = cx + dx;
-          const ny = cy + dy;
-          if (!this.inBounds(nx, ny, 3)) continue;
-          const nid = this.idx(nx, ny);
-          if (closed[nid]) continue;
-
-          // Forbid >=90° sharp corners so rivers flow smoothly along valley contours
-          if (pid !== -1 && (dx * prevDx + dy * prevDy) <= 0) continue;
-
-          const sameDir = pid !== -1 && dx === prevDx && dy === prevDy;
-          const nextRun = sameDir ? currRun + 1 : 1;
-
-          const nextElev = this.elevationField[nid];
-          const heightAboveSea = Math.max(0, nextElev - seaLevel);
-          const uphill = Math.max(0, nextElev - currElev);
-
-          const valleyMeander =
-            this.noise.fbm(nx * 0.075 + 7.1 + salt, ny * 0.075 + 3.9 + salt, 2) * 7.5 +
-            this.noise.noise(nx * 0.19 + 3.4, ny * 0.19 + 8.1) * 3.8;
-
-          let stepCost = baseStep + heightAboveSea * 22.0 + uphill * 65.0 + valleyMeander;
-
-          const maxCleanRun = (dx !== 0 && dy !== 0) ? 1 : 3;
-          if (sameDir && nextRun > maxCleanRun) {
-            stepCost += (nextRun - maxCleanRun) * 6.5;
-          }
-
-          if (this.waterMask[nid] === 1) {
-            stepCost *= 0.14; // Merge naturally into existing river stems at acute V-confluences
-          } else if (this.waterMask[nid] === 2 && leftSource[cid] === 0) {
-            stepCost *= 0.25;
-          }
-
-          const tentativeG = gScore[cid] + stepCost;
-          if (tentativeG < gScore[nid]) {
-            gScore[nid] = tentativeG;
-            parent[nid] = cid;
-            runLen[nid] = nextRun;
-            leftSource[nid] = (leftSource[cid] === 1 || this.waterMask[nid] === 0) ? 1 : 0;
-            const h = Math.hypot(ex - nx, ey - ny) * 0.78;
-            heapPush(nid, tentativeG + h);
-          }
-        }
-      }
-      return null;
-    };
-
-    const carveTaperingRiverPath = (rawPath, isMainOutflow) => {
-      if (!rawPath || rawPath.length < 6) return;
-      // Trim leading points that are deep inside the source lake (keep 2 points inside the rim)
-      let i0 = 0;
-      if (isMainOutflow) {
-        while (i0 < rawPath.length - 4 && this.waterMask[this.idx(rawPath[i0 + 2].x, rawPath[i0 + 2].y)] === 2) {
-          i0++;
-        }
-      }
-      const path = rawPath.slice(i0);
-      if (path.length < 5) return;
-
-      this.rivers.push({ points: path, isMainOutflow });
-      for (let i = 0; i < path.length; i++) {
-        const { x, y } = path[i];
-        const progress = i / (path.length - 1);
-        const id = this.idx(x, y);
-        this.drainageField[id] += isMainOutflow ? 2.5 : (0.5 + progress * 1.5);
-        // Mark the 1-tile river centerline (`waterMask = 1`) for distance transforms & A* bridges,
-        // erode a flat-floored valley terrace into `elevationField`, and only expand into `waterMask = 2`
-        // at the final 12% estuary flare (`progress > 0.88`) where the river enters a lake/sea basin!
-        if (this.waterMask[id] === 0) {
-          this.waterMask[id] = 1;
-        }
-        if (progress > 0.88 && this.waterMask[this.idx(path[path.length - 1].x, path[path.length - 1].y)] === 2) {
-          const flareRad = 0.85 + ((progress - 0.88) / 0.12) * 1.15;
-          this.carveValleyChannel(x, y, flareRad, 2);
-        } else {
-          this.carveValleyChannel(x, y, 0.45, 0);
-        }
-      }
-    };
-
-    // 1. Non-Bifurcating Lake Drainage: Each interior lake drains via at most ONE outflow river
-    if (basins.length >= 2) {
-      for (let bIdx = 1; bIdx < basins.length; bIdx++) {
-        const srcB = basins[bIdx];
-        if (srcB.touchesBorder && srcB.size > 950 && bIdx > 1) continue;
-        let bestSink = basins[0];
-        let minD = Infinity;
-        for (let sIdx = 0; sIdx < bIdx; sIdx++) {
-          const candSink = basins[sIdx];
-          const d = Math.hypot(srcB.deepX - candSink.deepX, srcB.deepY - candSink.deepY);
-          if (d < minD) {
-            minD = d;
-            bestSink = candSink;
-          }
-        }
-        const outPath = routeValleyThalwegAStar(srcB.deepX, srcB.deepY, bestSink.deepX, bestSink.deepY, true, bIdx * 1.7);
-        carveTaperingRiverPath(outPath, true);
-      }
-    }
-
-    // 2. Seed 9 Upland Springs on Highland Ridges (`elevation > seaLevel + 0.22`) and Route Downhill
-    const primarySink = basins[0] || { deepX: Math.round((0.5 + cosC * 0.42) * W), deepY: Math.round((0.5 + sinC * 0.42) * H) };
-    const placedSprings = [];
-    for (let sPass = 0; sPass < 9; sPass++) {
-      let bestSp = null;
-      let bestElev = -1;
-      for (let attempt = 0; attempt < 35; attempt++) {
-        const sx = this.rng.int(16, W - 17);
-        const sy = this.rng.int(16, H - 17);
-        const id = this.idx(sx, sy);
-        if (this.waterMask[id] > 0) continue;
-        const el = this.elevationField[id];
-        if (el < seaLevel + 0.18) continue;
-        if (placedSprings.some(p => Math.hypot(p.x - sx, p.y - sy) < 42)) continue;
-        if (el > bestElev) {
-          bestElev = el;
-          bestSp = { x: sx, y: sy };
-        }
-      }
-      if (bestSp) {
-        placedSprings.push(bestSp);
-        // Target the nearest water basin sink (or nearest island coastline in `island-hopper`!)
-        let targetSink = primarySink;
-        let minSD = Infinity;
-        if (arch === 'island-hopper') {
-          for (let wy = Math.max(4, bestSp.y - 45); wy <= Math.min(H - 5, bestSp.y + 45); wy += 3) {
-            for (let wx = Math.max(4, bestSp.x - 45); wx <= Math.min(W - 5, bestSp.x + 45); wx += 3) {
-              if (this.waterMask[this.idx(wx, wy)] === 2) {
-                const d = Math.hypot(bestSp.x - wx, bestSp.y - wy);
-                if (d < minSD) {
-                  minSD = d;
-                  targetSink = { deepX: wx, deepY: wy };
-                }
-              }
-            }
-          }
-        } else {
-          for (const b of basins) {
-            const d = Math.hypot(bestSp.x - b.deepX, bestSp.y - b.deepY);
-            if (d < minSD) {
-              minSD = d;
-              targetSink = b;
-            }
-          }
-        }
-        const rPath = routeValleyThalwegAStar(bestSp.x, bestSp.y, targetSink.deepX, targetSink.deepY, true, sPass * 2.1);
-        carveTaperingRiverPath(rPath, sPass < 2 && arch !== 'island-hopper');
-      }
-    }
-
-    this.confluencePoint =
-      this.hydroFeatures.find(f => f.type === 'confluence') ||
-      this.hydroFeatures[0] ||
-      { x: Math.round(W * 0.5), y: Math.round(H * 0.5) };
+    const { basins, primarySink } = synthesizeTerrainAndBasins(this);
+    synthesizeFluvialHydrology(this, basins, primarySink);
+    const tName = this.config.terrainAlgo === "quilez-erosion"
+      ? "Quilez Derivative-Eroded fBm"
+      : (this.config.terrainAlgo === "voronoi-plates" ? "Voronoi Tectonic Plates" : "Tectonic Strike fBm");
+    const hName = this.config.hydrologyAlgo === "d8-strahler"
+      ? "Priority-Flood D8 Strahler"
+      : (this.config.hydrologyAlgo === "meandering-plain" ? "Ikeda Floodplain Meanders" : "Downhill A* Thalwegs");
+    this.logs.push(`Synthesized terrain via <b>${tName}</b> & <b>${this.rivers.length} rivers</b> via <b>${hName}</b>.`);
   }
 
   /**
@@ -837,7 +256,12 @@ export class ProceduralLogisticsWorld {
         const borderDist = Math.min(x, W - 1 - x, y, H - 1 - y);
         const borderFactor = Math.min(1, Math.max(0, (borderDist - 12) / 12));
 
-        this.fertilityField[id] = Math.min(1, flatBonus * 0.45 + riverBonus * 0.35 + lowValleyBonus * 0.20);
+        // Orographic Windward/Leeward Moisture: wind blowing upslope (`dzdx * wx + dzdy * wy > 0`)
+        // creates moist windward slopes; leeward downslopes create rain shadows!
+        const orographicDot = dzdx * this.windVector.x + dzdy * this.windVector.y;
+        const rainShadowMod = Math.max(-0.22, Math.min(0.26, orographicDot * 0.45));
+
+        this.fertilityField[id] = Math.min(1, Math.max(0, flatBonus * 0.42 + riverBonus * 0.35 + lowValleyBonus * 0.20 + rainShadowMod));
         this.urbanSuitability[id] = Math.min(
           1,
           (flatBonus * 0.32 + lowValleyBonus * 0.22 + riverBonus * 0.32 + featureBonus * 0.14) * borderFactor
@@ -3152,7 +2576,10 @@ export class ProceduralLogisticsWorld {
         } else if (wm === 1) {
           cost += 5.5; // Cross rivers economically at narrow points
         } else {
-          cost += hAbove * 45.0 + slope * 26.0;
+          // Above `hAbove = 0.205`, expressways bore a subterranean mountain tunnel at lower marginal grade cost!
+          cost += hAbove >= 0.205
+            ? (0.205 * 38.0 + (hAbove - 0.205) * 14.0 + slope * 10.0)
+            : (hAbove * 38.0 + slope * 22.0);
           // Attract highway corridor to pass tangent (7..16 tiles) to intermediate towns along the valley
           for (const t of this.towns) {
             const dt = Math.hypot(gx - t.x, gy - t.y);
@@ -4263,31 +3690,101 @@ export class ProceduralLogisticsWorld {
 
     this.detectAndBuildCloverleafs();
     this.buildIntermediateExpresswayRamps();
+    this.detectMountainExpresswayTunnels();
 
     const cloverCount = this.interchanges.filter(i => i.type === 'cloverleaf' || i.type === 'trumpet').length;
     const rampCount = this.interchanges.filter(i => i.type === 'diamond-ramp').length;
+    const tunnelCount = this.motorways.reduce((acc, m) => acc + (m.tunnels ? m.tunnels.length : 0), 0);
     this.logs.push(
-      `Built <b>${this.motorways.length} expressways</b>, <b>${cloverCount} system interchanges</b> & <b>${rampCount} intermediate ramps</b> (displaced ${this.displacedBuildingsCount} buildings).`
+      `Built <b>${this.motorways.length} expressways</b>, <b>${cloverCount} system interchanges</b>, <b>${rampCount} ramps</b>${tunnelCount > 0 ? ` & <b>${tunnelCount} mountain tunnels</b>` : ''} (displaced ${this.displacedBuildingsCount} buildings).`
     );
+  }
+
+  /**
+   * Scans interior spans of all numbered expressways for high-elevation mountain ridge crossings
+   * (`elevationField >= seaLevel + 0.21`) and marks subterranean tunnel portals (`mw.tunnels`).
+   */
+  detectMountainExpresswayTunnels() {
+    const tunnelThresh = this.seaLevel + 0.205;
+    for (const mw of this.motorways) {
+      mw.tunnels = [];
+      const samples = mw.samples;
+      if (!samples || samples.length < 16) continue;
+
+      let inTunnel = false;
+      let startIdx = -1;
+      for (let i = 5; i <= samples.length - 6; i++) {
+        const pt = samples[i];
+        const gx = Math.round(pt.x);
+        const gy = Math.round(pt.y);
+        if (!this.inBounds(gx, gy, 2)) continue;
+        const id = this.idx(gx, gy);
+        const isHighRidge =
+          this.waterMask[id] === 0 &&
+          this.elevationField[id] >= tunnelThresh &&
+          !this.interchanges.some(ic => Math.hypot(ic.x - pt.x, ic.y - pt.y) < 8.5);
+
+        if (isHighRidge && !inTunnel) {
+          inTunnel = true;
+          startIdx = i;
+        } else if (!isHighRidge && inTunnel) {
+          if (i - 1 - startIdx >= 3) {
+            const p0 = samples[startIdx];
+            const p0Next = samples[startIdx + 1];
+            const p1 = samples[i - 1];
+            const p1Prev = samples[i - 2];
+            mw.tunnels.push({
+              i0: startIdx,
+              i1: i - 1,
+              x0: p0.x,
+              y0: p0.y,
+              x1: p1.x,
+              y1: p1.y,
+              ang0: Math.atan2(p0Next.y - p0.y, p0Next.x - p0.x),
+              ang1: Math.atan2(p1.y - p1Prev.y, p1.x - p1Prev.x)
+            });
+          }
+          inTunnel = false;
+        }
+      }
+      if (inTunnel && samples.length - 6 - startIdx >= 3) {
+        const endI = samples.length - 6;
+        const p0 = samples[startIdx];
+        const p0Next = samples[startIdx + 1];
+        const p1 = samples[endI];
+        const p1Prev = samples[endI - 1];
+        mw.tunnels.push({
+          i0: startIdx,
+          i1: endI,
+          x0: p0.x,
+          y0: p0.y,
+          x1: p1.x,
+          y1: p1.y,
+          ang0: Math.atan2(p0Next.y - p0.y, p0Next.x - p0.x),
+          ang1: Math.atan2(p1.y - p1Prev.y, p1.x - p1Prev.x)
+        });
+      }
+    }
   }
 
   populateLandscapeTrees() {
     const isIslandHopper = this.config.archetype === 'island-hopper';
-    // Generate coherent upland woodland groves & riparian tree clusters (no confetti sprinkles!)
+    // Generate coherent upland woodland groves & windward rain-shadow forests (no confetti sprinkles!)
     for (let y = 5; y < this.H - 5; y += 3) {
       for (let x = 5; x < this.W - 5; x += 3) {
         const id = this.idx(x, y);
         if (this.waterMask[id] > 0 || this.buildingMask[id] > 0 || this.roadGrid[id] > 0) continue;
-        if (this.zoneColorIdx[id] >= 0) continue; // Keep urban districts clean
+        if (this.zoneColorIdx[id] >= 0) continue;
         const dWater = this.distToWater[id];
         const isSmallIslet = isIslandHopper && this.landmassId[id] < 0;
         if (dWater < (isSmallIslet ? 1.5 : 4.2)) continue;
 
         const hillHeight = Math.max(0, this.elevationField[id] - this.seaLevel);
-        const forestPatch = this.noise.fbm(x * 0.055 + 3.1, y * 0.055 + 8.4, 2);
-        // Concentrate woodlands in upland hill bands (`hillHeight > 0.13`), or on uninhabited satellite islets
-        if ((hillHeight > 0.13 && forestPatch + hillHeight * 0.75 > 0.66) || (isSmallIslet && forestPatch > 0.42)) {
-          const groveCount = isSmallIslet ? this.rng.int(1, 3) : this.rng.int(2, 4);
+        // Orographic windward bonus (`fertilityField` encodes windward upslope moisture!)
+        const moistureBias = (this.fertilityField[id] - 0.35) * 0.45;
+        const forestPatch = this.noise.fbm(x * 0.055 + 3.1, y * 0.055 + 8.4, 2) + moistureBias;
+        if ((hillHeight > 0.12 && forestPatch + hillHeight * 0.75 > 0.62) || (isSmallIslet && forestPatch > 0.40)) {
+          const groveCount = isSmallIslet ? this.rng.int(1, 3) : (moistureBias > 0.06 ? this.rng.int(3, 5) : this.rng.int(1, 3));
           for (let g = 0; g < groveCount; g++) {
             const tx = x + this.rng.range(-1.3, 1.3);
             const ty = y + this.rng.range(-1.3, 1.3);

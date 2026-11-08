@@ -102,6 +102,26 @@
         </select>
       </div>
 
+      <!-- Pluggable Terrain & Hydrology Engine Selectors -->
+      <div class="grid grid-cols-1 gap-2 bg-white/60 p-2.5 rounded-xl border border-stone-300/60">
+        <div>
+          <label for="terrainAlgoSelect" class="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">Terrain Synthesis Engine (Stage 2A)</label>
+          <select id="terrainAlgoSelect" class="w-full text-xs font-semibold bg-white border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
+            <option value="tectonic-fbm">1. Anisotropic Strike fBm + Ridged Spines</option>
+            <option value="quilez-erosion">2. Quilez Derivative Gradient-Eroded fBm</option>
+            <option value="voronoi-plates">3. Voronoi Tectonic Plates & Fault Rifts</option>
+          </select>
+        </div>
+        <div>
+          <label for="hydrologyAlgoSelect" class="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">Fluvial Hydrology Engine (Stage 2B)</label>
+          <select id="hydrologyAlgoSelect" class="w-full text-xs font-semibold bg-white border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
+            <option value="thalweg-astar">1. Basin Tree + Downhill A* Thalwegs</option>
+            <option value="d8-strahler">2. Priority-Flood + D8 Strahler Tributaries</option>
+            <option value="meandering-plain">3. Ikeda Floodplain Meanders & S-Bends</option>
+          </select>
+        </div>
+      </div>
+
       <!-- Expressway Generation Algorithm Selector -->
       <div>
         <label class="block text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-1">Expressway Realism Algorithm</label>
