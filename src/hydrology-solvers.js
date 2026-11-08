@@ -156,7 +156,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     ];
 
     let steps = 0;
-    while (heapNodes.length > 0 && steps++ < 56000) {
+    const maxAStarSteps = Math.max(56000, Math.round(W * H * 0.72));
+    while (heapNodes.length > 0 && steps++ < maxAStarSteps) {
       const cid = heapPop();
       if (closed[cid]) continue;
       closed[cid] = 1;
@@ -535,7 +536,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       const rawPts = [{ x: entry.x, y: entry.y }];
       const seen = new Set();
       let steps = 0;
-      while (curr !== -1 && !seen.has(curr) && steps++ < 320) {
+      const maxD8Steps = Math.max(320, cw + ch);
+      while (curr !== -1 && !seen.has(curr) && steps++ < maxD8Steps) {
         seen.add(curr);
         const cx = (curr % cw) * stride + 1;
         const cy = Math.floor(curr / cw) * stride + 1;

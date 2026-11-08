@@ -104,6 +104,7 @@ async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
 export function getGeneratorConfig() {
   return {
     seed: document.getElementById('seedInput').value.trim() || 'MINI-TYCOON',
+    worldSize: document.getElementById('worldSizeSelect')?.value || 'standard',
     archetype: document.getElementById('archetypeSelect').value,
     terrainAlgo: document.getElementById('terrainAlgoSelect')?.value || 'tectonic-fbm',
     hydrologyAlgo: document.getElementById('hydrologyAlgoSelect')?.value || 'thalweg-astar',
@@ -174,6 +175,10 @@ export function rebuildWorld(preserveCamera = false) {
 window.rebuildWorld = rebuildWorld;
 
 function updateTelemetryUI(world, fromWorker = false) {
+  const gridLabelEl = document.getElementById('telemetryGridLabel');
+  if (gridLabelEl) {
+    gridLabelEl.textContent = `State Telemetry (${world.W}×${world.H} Grid)`;
+  }
   const displayMs = world.wallTimeMs ?? world.genTimeMs;
   const cacheSuffix =
     world.reusedThroughStage > 0
@@ -462,6 +467,25 @@ document.getElementById('archetypeSelect').addEventListener('change', (e) => {
       apSlider.value = '5';
       updateAirportSliderLabel();
     }
+  }
+  rebuildWorld(false);
+});
+const worldSizeDefaults = {
+  compact: { towns: 14, airports: 2 },
+  standard: { towns: 20, airports: 3 },
+  large: { towns: 28, airports: 4 },
+  huge: { towns: 36, airports: 5 }
+};
+
+document.getElementById('worldSizeSelect').addEventListener('change', (e) => {
+  const def = worldSizeDefaults[e.target.value];
+  if (def) {
+    const tSlider = document.getElementById('sliderTowns');
+    const aSlider = document.getElementById('sliderAirports');
+    tSlider.value = String(def.towns);
+    document.getElementById('valTowns').textContent = `${def.towns} Towns`;
+    aSlider.value = String(def.airports);
+    updateAirportSliderLabel();
   }
   rebuildWorld(false);
 });

@@ -14,54 +14,70 @@ import { synthesizeFluvialHydrology } from "./hydrology-solvers.js";
 /***************************************************************************
  * 3. PROCEDURAL WORLD GENERATOR CLASS
  ***************************************************************************/
-export class ProceduralLogisticsWorld {
-  constructor(config) {
-    this.config = config;
-    this.W = 360; // OpenTTD State/Region scale width in tiles
-    this.H = 224; // OpenTTD State/Region scale height in tiles
-    this.tileSize = 15; // Base world pixel size per tile
+export const WORLD_SIZE_PRESETS = Object.freeze({
+  compact: Object.freeze({ W: 240, H: 150, tileSize: 15, label: '240×150 Grid' }),
+  standard: Object.freeze({ W: 360, H: 224, tileSize: 15, label: '360×224 Grid' }),
+  large: Object.freeze({ W: 540, H: 336, tileSize: 12, label: '540×336 Grid' }),
+  huge: Object.freeze({ W: 720, H: 448, tileSize: 10, label: '720×448 Grid' })
+});
 
-    // Flat TypedArrays for fast spatial & topographic fields
-    const size = this.W * this.H;
-    this.elevationField = new Float32Array(size); // [0..1] Latent OpenTTD heightmap (sea, plains, valleys, ridges)
-    this.slopeField = new Float32Array(size);     // [0..1] Local topographic gradient magnitude
-    this.drainageField = new Float32Array(size);  // Downhill watershed flow accumulation
+export class ProceduralLogisticsWorld {
+  constructor(config = {}) {
+    this.config = config;
+    this.W = 0;
+    this.H = 0;
+    this.tileSize = 15;
     this.seaLevel = 0.34;
-    this.waterMask = new Uint8Array(size);        // 0 = Land, 1 = River, 2 = Sea/Lake
-    this.fertilityField = new Float32Array(size); // [0..1] Alluvial & valley fertility score
-    this.distToWater = new Float32Array(size);    // Euclidean distance to nearest water tile
-    this.urbanSuitability = new Float32Array(size); // Topography + Central Place Theory suitability
-    this.airportHeatmap = new Float32Array(size);   // Multi-criteria airport suitability score
-    this.roadGrid = new Uint8Array(size);         // 0 = none, 1 = street, 2 = arterial, 3 = bridge, 4 = airport-loop
-    this.buildingMask = new Uint8Array(size);     // 0 = free, 1 = house, 2 = destination, 3 = airport, 4 = interchange/ramp reserve
-    this.zoneColorIdx = new Int8Array(size).fill(-1);
-    this.landmassId = new Int16Array(size).fill(-1); // Connected dry-land island ID (0 = largest mainland)
-    this.landmasses = [];
+    this.ensureGridSize(config.worldSize || 'standard');
 
     // High-level generated entities
     this.rivers = [];
-    this.hydroFeatures = []; // Multiple regional hydro landmarks (confluences, bays, lake basins)
-    this.clusters = [];      // Metropolitan conurbation clusters across the state
+    this.hydroFeatures = [];
+    this.clusters = [];
     this.towns = [];
     this.airports = [];
-    this.roads = [];        // Graph edges for vector rendering & pathfinding
-    this.motorways = [];    // Numbered expressways
-    this.interchanges = []; // Cloverleafs, Trumpets, Street-Stubs & Intermediate Diamond Ramps
+    this.roads = [];
+    this.motorways = [];
+    this.interchanges = [];
     this.houses = [];
     this.destinations = [];
-    this.cargoLinks = [];   // Inter-industrial supply chain routes (RAW -> MFG -> LOG -> COM)
+    this.cargoLinks = [];
     this.trees = [];
     this.logs = [];
     this.displacedBuildingsCount = 0;
-    this.windAngleIndex = 0; // 0: E-W (0°), 1: NE-SW (45°), 2: N-S (90°), 3: NW-SE (135°)
+    this.windAngleIndex = 0;
     this.windVector = { x: 1, y: 0, angleDeg: 0, label: '09/27 (E-W)' };
+  }
 
-    // Pre-allocated generation-tagged A* scratch buffers (eliminates ~205 TypedArray allocations & .fill() calls per world)
+  ensureGridSize(worldSize = 'standard') {
+    const preset = WORLD_SIZE_PRESETS[worldSize] || WORLD_SIZE_PRESETS.standard;
+    if (this.W === preset.W && this.H === preset.H && this.tileSize === preset.tileSize && this.elevationField) {
+      return;
+    }
+    this.W = preset.W;
+    this.H = preset.H;
+    this.tileSize = preset.tileSize;
+    const size = this.W * this.H;
+    this.elevationField = new Float32Array(size);
+    this.slopeField = new Float32Array(size);
+    this.drainageField = new Float32Array(size);
+    this.waterMask = new Uint8Array(size);
+    this.fertilityField = new Float32Array(size);
+    this.distToWater = new Float32Array(size);
+    this.urbanSuitability = new Float32Array(size);
+    this.airportHeatmap = new Float32Array(size);
+    this.roadGrid = new Uint8Array(size);
+    this.buildingMask = new Uint8Array(size);
+    this.zoneColorIdx = new Int8Array(size).fill(-1);
+    this.landmassId = new Int16Array(size).fill(-1);
+    this.landmasses = [];
+
     this._astarG = new Float32Array(size);
     this._astarParent = new Int32Array(size);
     this._astarSeenGen = new Uint32Array(size);
     this._astarClosedGen = new Uint32Array(size);
     this._astarGen = 0;
+    this._coarseBaseCost = null;
   }
 
   idx(x, y) {
@@ -351,58 +367,77 @@ export class ProceduralLogisticsWorld {
 
     const isIslandHopper = this.config.archetype === 'island-hopper';
     const landmassTownCount = new Int16Array(Math.max(1, this.landmasses.length));
+    const spanScale = Math.sqrt(this.W / 360);
+
+    // Pre-collect dry-land settlement candidate sites once (`O(N)` instead of rescanning the full grid `T` times)
+    const candidateSites = [];
+    for (let y = 14; y < this.H - 14; y += 3) {
+      for (let x = 14; x < this.W - 14; x += 3) {
+        const id = this.idx(x, y);
+        if (this.waterMask[id] > 0 || this.distToWater[id] < 2.8) continue;
+        const lmId = this.landmassId[id];
+        if (lmId < 0) continue;
+        const slope = this.slopeField[id];
+        if (slope > 0.48 || this.elevationField[id] > this.seaLevel + 0.42) continue;
+        const dW = this.distToWater[id];
+        candidateSites.push({
+          x,
+          y,
+          lmId,
+          slope,
+          baseSuit: this.urbanSuitability[id] * 0.72,
+          wfBonus13: Math.exp(-Math.pow((dW - 3.0) / 3.8, 2)) * 0.34,
+          wfBonus4: Math.exp(-Math.pow((dW - 6.0) / 7.5, 2)) * 0.16
+        });
+      }
+    }
 
     for (let i = 0; i < targetCount; i++) {
       const isClusterAnchor = i < numRegional;
       const tier = i < numMetros ? 1 : (i < numRegional ? 2 : (i < Math.round(targetCount * 0.65) ? 3 : 4));
       const urbanRadius = tier === 1 ? (isIslandHopper ? 17 : 21) : (tier === 2 ? 12 : (tier === 3 ? 8 : 5));
-      const minSpacing = tier === 1 ? (isIslandHopper ? 78 : 105) : (tier === 2 ? (isIslandHopper ? 38 : 52) : (tier === 3 ? 25 : 18));
+      const minSpacing =
+        (tier === 1 ? (isIslandHopper ? 78 : 105) : (tier === 2 ? (isIslandHopper ? 38 : 52) : (tier === 3 ? 25 : 18))) *
+        (tier <= 2 ? spanScale : 1.0);
+      const maxSlope = tier <= 2 ? 0.38 : 0.48;
 
       let bestScore = -1;
       let bestPt = null;
 
-      for (let y = 14; y < this.H - 14; y += 3) {
-        for (let x = 14; x < this.W - 14; x += 3) {
-          const id = this.idx(x, y);
-          // Allow waterfront-hugging cities right up to 2.8 tiles from the shoreline (preserving riverbank esplanades!)
-          if (this.waterMask[id] > 0 || this.distToWater[id] < 2.8) continue;
-          const lmId = this.landmassId[id];
-          if (lmId < 0) continue;
-          if (this.slopeField[id] > (tier <= 2 ? 0.38 : 0.48) || this.elevationField[id] > this.seaLevel + 0.42) continue;
+      for (let cIdx = 0; cIdx < candidateSites.length; cIdx++) {
+        const site = candidateSites[cIdx];
+        if (site.slope > maxSlope) continue;
+        const { x, y, lmId } = site;
 
-          let tooClose = false;
-          for (const t of this.towns) {
-            const d = Math.hypot(x - t.x, y - t.y);
-            const reqDist = (tier === 1 && t.tier === 1)
-              ? (isIslandHopper ? 78 : 105)
-              : Math.max(minSpacing, (t.urbanRadius + urbanRadius) * 1.38);
-            if (d < reqDist) {
-              tooClose = true;
-              break;
-            }
+        let tooClose = false;
+        for (const t of this.towns) {
+          const reqDist = (tier === 1 && t.tier === 1)
+            ? (isIslandHopper ? 78 : 105) * spanScale
+            : Math.max(minSpacing, (t.urbanRadius + urbanRadius) * 1.38);
+          const dx = x - t.x;
+          const dy = y - t.y;
+          if (dx * dx + dy * dy < reqDist * reqDist) {
+            tooClose = true;
+            break;
           }
-          if (tooClose) continue;
+        }
+        if (tooClose) continue;
 
-          const dW = this.distToWater[id];
-          const waterfrontBonus = tier <= 3
-            ? Math.exp(-Math.pow((dW - 3.0) / 3.8, 2)) * 0.34
-            : Math.exp(-Math.pow((dW - 6.0) / 7.5, 2)) * 0.16;
+        const waterfrontBonus = tier <= 3 ? site.wfBonus13 : site.wfBonus4;
+        let score = site.baseSuit + waterfrontBonus + this.rng.range(-0.025, 0.025);
 
-          let score = this.urbanSuitability[id] * 0.72 + waterfrontBonus + this.rng.range(-0.025, 0.025);
+        // In `island-hopper`, guarantee every island gets seeded with settlements!
+        if (isIslandHopper && landmassTownCount[lmId] === 0 && this.landmasses[lmId].size >= 160) {
+          score += 0.65;
+        } else if (isClusterAnchor) {
+          const sec = sectorCenters[i % sectorCenters.length];
+          const dSec = Math.hypot(x - sec.x, y - sec.y);
+          score += Math.exp(-Math.pow(dSec / (this.W * 0.24), 2)) * 0.42;
+        }
 
-          // In `island-hopper`, guarantee every island gets seeded with settlements!
-          if (isIslandHopper && landmassTownCount[lmId] === 0 && this.landmasses[lmId].size >= 160) {
-            score += 0.65;
-          } else if (isClusterAnchor) {
-            const sec = sectorCenters[i % sectorCenters.length];
-            const dSec = Math.hypot(x - sec.x, y - sec.y);
-            score += Math.exp(-Math.pow(dSec / (this.W * 0.24), 2)) * 0.42;
-          }
-
-          if (score > bestScore) {
-            bestScore = score;
-            bestPt = { x, y, score, lmId };
-          }
+        if (score > bestScore) {
+          bestScore = score;
+          bestPt = { x, y, score, lmId };
         }
       }
 
@@ -1011,16 +1046,17 @@ export class ProceduralLogisticsWorld {
     // in `island-hopper`, only connect towns on the same island or across narrow straits (<= 54 tiles)
     // so deep ocean channels between outer islands are served by the aircraft fleet!
     const isIslandHopper = this.config.archetype === 'island-hopper';
+    const scaleSpan = Math.max(1, this.W / 360);
     const townRoadDegree = new Int8Array(nodes.length);
     const skippedEdges = [];
     for (const [i, j] of edges) {
       const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
       const sameLandmass = nodes[i].ref.landmassId === nodes[j].ref.landmassId;
       const sameCluster = nodes[i].ref.clusterId === nodes[j].ref.clusterId;
-      if (isIslandHopper && !sameLandmass && d > 54) {
+      if (isIslandHopper && !sameLandmass && d > 54 * scaleSpan) {
         continue;
       }
-      if (!sameCluster && d > 112) {
+      if (!sameCluster && d > 112 * scaleSpan) {
         skippedEdges.push([i, j]);
         continue;
       }
@@ -2675,7 +2711,8 @@ export class ProceduralLogisticsWorld {
     ];
 
     let iterCount = 0;
-    while (heapId.length > 0 && iterCount++ < 4500) {
+    const maxValleyIter = Math.max(4500, Math.round(cw * ch * 0.55));
+    while (heapId.length > 0 && iterCount++ < maxValleyIter) {
       const cid = heapPopId();
       if (cid === endId) {
         const rawPts = [];
@@ -3022,7 +3059,8 @@ export class ProceduralLogisticsWorld {
         if (!this.isTrumpetFootprintDry(hitPt.x, hitPt.y, angleMain, sideSign)) continue;
 
         const chord = Math.hypot(hitPt.x - originX, hitPt.y - originY);
-        const maxChord = ap ? (ap.isHub ? 115 : 64) : 165;
+        const scaleSpan = Math.max(1, this.W / 360);
+        const maxChord = (ap ? (ap.isHub ? 115 : 64) : 165) * scaleSpan;
         if (chord < 11 || chord > maxChord) continue;
 
         // Ensure the origin lies beside the trunk (not collinearly far beyond its endpoints)
@@ -3424,6 +3462,7 @@ export class ProceduralLogisticsWorld {
     };
 
     const isIslandHopper = this.config.archetype === 'island-hopper';
+    const scaleSpan = Math.max(1, this.W / 360);
     // Only Tier-1 Metropolises, Tier-2 Regional Cities, and Airport Host Cities serve as motorway termini
     const isMajorMotorwayHub = (t) => t.tier <= 2 || t.airportId !== null || (isIslandHopper && t.tier <= 3);
 
@@ -3437,11 +3476,11 @@ export class ProceduralLogisticsWorld {
         if (!isMajorMotorwayHub(tB)) continue;
         const d = Math.hypot(tA.x - tB.x, tA.y - tB.y);
         const minPairD = isIslandHopper ? 30 : 58;
-        if (d < minPairD || d > 245) continue;
+        if (d < minPairD || d > 245 * scaleSpan) continue;
         const sameIslandBonus = isIslandHopper && tA.landmassId === tB.landmassId ? 3.5 : 1.0;
         const diffClusterBonus = tA.clusterId !== tB.clusterId ? 2.40 : 0.45;
         const metroBonus = (tA.tier === 1 ? 1.6 : 1.0) * (tB.tier === 1 ? 1.6 : 1.0);
-        const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 135) / 56, 2));
+        const spanBell = 0.70 + 0.60 * Math.exp(-Math.pow((d - 135 * scaleSpan) / (56 * scaleSpan), 2));
         const gravity = ((townPop(tA) * townPop(tB)) / Math.pow(d, 0.38)) * diffClusterBonus * metroBonus * spanBell * sameIslandBonus;
         pairs.push({ tA, tB, gravity, d });
       }
@@ -3507,7 +3546,7 @@ export class ProceduralLogisticsWorld {
           const sideD = (tD.x - mw1.sx) * mNx + (tD.y - mw1.sy) * mNy;
           if (Math.abs(sideD) < 16 || sideC * sideD >= 0) continue; // Must sit on opposite sides of M-1!
           const d = Math.hypot(tD.x - tC.x, tD.y - tC.y);
-          if (d < 46 || d > 235) continue;
+          if (d < 46 || d > 235 * scaleSpan) continue;
           const tierWeight = (tC.tier <= 2 ? 1.8 : 1.0) * (tD.tier <= 2 ? 1.8 : 1.0);
           const score = ((townPop(tC) * townPop(tD)) / Math.pow(d, 0.35)) * tierWeight;
           crossPairs.push({ tC, tD, score });
@@ -3642,7 +3681,7 @@ export class ProceduralLogisticsWorld {
           for (const hubTown of hubCandidates) {
             if (townMotorwayDegree[hubTown.id] >= 2) continue;
             const d = Math.hypot(hubTown.x - cTown.x, hubTown.y - cTown.y);
-            if (d < (isIslandHopper ? 24 : 34) || d > 225) continue;
+            if (d < (isIslandHopper ? 24 : 34) || d > 225 * scaleSpan) continue;
             const canShare =
               townMotorwayDegree[hubTown.id] === 1 &&
               this.findPassThroughStubAtTown(hubTown, cTown.x, cTown.y) !== null;
@@ -3728,7 +3767,7 @@ export class ProceduralLogisticsWorld {
 
           const gateDist = Math.hypot(t.x - ap.gateX, t.y - ap.gateY);
           const minSpan = (canSharePassThrough || townMotorwayDegree[t.id] >= 1) ? (ap.isHub ? 18 : 26) : 44;
-          if (gateDist < minSpan || gateDist > 185) continue;
+          if (gateDist < minSpan || gateDist > 185 * scaleSpan) continue;
 
           const alignCos = ((t.x - ap.gateX) * ap.landNx + (t.y - ap.gateY) * ap.landNy) / (gateDist || 1);
           if (alignCos < minAlign) continue;
@@ -4049,9 +4088,10 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
 
   // Stage 2A: Terrain Heightmap & Sea Basins
   const stage2a_terrain = createMemoStage(
-    (cfg, noise) => [cfg.seed, cfg.archetype, cfg.terrainAlgo, cfg.waterCoverage, noise],
-    (seed, archetype, terrainAlgo, waterCoverage, noise) => {
-      w.config = { seed, archetype, terrainAlgo, waterCoverage };
+    (cfg, noise) => [cfg.seed, cfg.worldSize || 'standard', cfg.archetype, cfg.terrainAlgo, cfg.waterCoverage, noise],
+    (seed, worldSize, archetype, terrainAlgo, waterCoverage, noise) => {
+      w.ensureGridSize(worldSize);
+      w.config = { seed, worldSize, archetype, terrainAlgo, waterCoverage };
       w.noise = noise;
       w.elevationField.fill(0);
       w.waterMask.fill(0);
@@ -4060,6 +4100,10 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
       w.setStageRNG('stage2a_terrain');
       const { basins, primarySink } = synthesizeTerrainAndBasins(w);
       return {
+        worldSize,
+        W: w.W,
+        H: w.H,
+        tileSize: w.tileSize,
         elevationField: new Float32Array(w.elevationField),
         waterMask: new Uint8Array(w.waterMask),
         seaLevel: w.seaLevel,
@@ -4379,6 +4423,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
 
   return (config, targetWorld = null) => {
     const t0 = performance.now();
+    w.ensureGridSize(config.worldSize || 'standard');
     const noise = memoNoise(config.seed).value;
     const s1 = stage1_wind(config);
     const s2a = stage2a_terrain(config, noise);
@@ -4422,6 +4467,9 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
 
     const out = targetWorld || new ProceduralLogisticsWorld(config);
     out.config = { ...config };
+    out.W = s2b.value.W;
+    out.H = s2b.value.H;
+    out.tileSize = s2b.value.tileSize;
     out.windAngleIndex = s1.value.windAngleIndex;
     out.windVector = s1.value.windVector;
     out.elevationField = s2b.value.elevationField;

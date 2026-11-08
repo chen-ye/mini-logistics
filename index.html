@@ -90,16 +90,27 @@
         </div>
       </div>
 
-      <!-- Geography Archetype -->
-      <div>
-        <label class="block text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-1">Geography Archetype</label>
-        <select id="archetypeSelect" class="w-full text-xs font-semibold bg-white/80 border border-stone-300/80 rounded-xl px-3 py-2 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
-          <option value="confluence">Confluence River Basin (Classic Mini Motorways)</option>
-          <option value="estuary">Coastal Estuary & Bay Harbor</option>
-          <option value="archipelago">Twin-Channel Delta & Islands</option>
-          <option value="inland">Inland Lakes & Meandering Valley</option>
-          <option value="island-hopper">🏝️ Island Hopper (Multi-Island Air & Causeway Chain)</option>
-        </select>
+      <!-- Geography Archetype & World Map Size -->
+      <div class="grid grid-cols-1 gap-2">
+        <div>
+          <label for="archetypeSelect" class="block text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-1">Geography Archetype</label>
+          <select id="archetypeSelect" class="w-full text-xs font-semibold bg-white/80 border border-stone-300/80 rounded-xl px-3 py-2 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
+            <option value="confluence">Confluence River Basin (Classic Mini Motorways)</option>
+            <option value="estuary">Coastal Estuary & Bay Harbor</option>
+            <option value="archipelago">Twin-Channel Delta & Islands</option>
+            <option value="inland">Inland Lakes & Meandering Valley</option>
+            <option value="island-hopper">🏝️ Island Hopper (Multi-Island Air & Causeway Chain)</option>
+          </select>
+        </div>
+        <div>
+          <label for="worldSizeSelect" class="block text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-1">World Map Scale</label>
+          <select id="worldSizeSelect" class="w-full text-xs font-semibold bg-white/80 border border-stone-300/80 rounded-xl px-3 py-2 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
+            <option value="compact">Compact Metro Valley (240×150 · 0.44× Area)</option>
+            <option value="standard" selected>Standard State Scale (360×224 · 1.00× Area)</option>
+            <option value="large">Large Macro Region (540×336 · 2.25× Area)</option>
+            <option value="huge">Huge Continental Scale (720×448 · 4.00× Area)</option>
+          </select>
+        </div>
       </div>
 
       <!-- Pluggable Terrain & Hydrology Engine Selectors -->
@@ -157,7 +168,7 @@
             <span>Town & Settlement Count</span>
             <span id="valTowns" class="mono text-[11px] text-stone-600">20 Towns</span>
           </div>
-          <input id="sliderTowns" type="range" min="8" max="28" value="20" class="w-full" />
+          <input id="sliderTowns" type="range" min="8" max="44" value="20" class="w-full" />
         </div>
 
         <div>
@@ -173,7 +184,7 @@
             <span>Target Airports (Hubs + Regional)</span>
             <span id="valAirports" class="mono text-[11px] text-stone-600">3 (1 Hub, 2 Reg)</span>
           </div>
-          <input id="sliderAirports" type="range" min="1" max="6" value="3" class="w-full" />
+          <input id="sliderAirports" type="range" min="1" max="8" value="3" class="w-full" />
         </div>
 
         <div>
@@ -188,7 +199,7 @@
       <!-- Generation Pipeline Telemetry Summary -->
       <div class="bg-white/70 rounded-xl p-3 border border-stone-200/80 space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-[11px] font-bold uppercase tracking-wider text-stone-500">State Telemetry (360×224 Grid)</span>
+          <span id="telemetryGridLabel" class="text-[11px] font-bold uppercase tracking-wider text-stone-500">State Telemetry (360×224 Grid)</span>
           <span id="genTimeBadge" class="mono text-[10px] font-bold text-stone-500">42 ms</span>
         </div>
         <div class="grid grid-cols-3 gap-1.5 text-center">
