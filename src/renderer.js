@@ -1418,12 +1418,18 @@ export class MiniMotorwaysRenderer {
         ctx.fill();
         ctx.stroke();
 
-        // Yellow-amber freight loading apron stripes along bottom edge of industrial yard
-        ctx.fillStyle = 'rgba(217, 119, 6, 0.48)';
-        const stripeCount = Math.max(3, wT * 2);
-        for (let s = 0; s < stripeCount; s++) {
-          const sx = cx - lotW * 0.36 + (s / (stripeCount - 1)) * (lotW * 0.72);
-          ctx.fillRect(sx - 2, cy + lotH * 0.36, 4, 2.8);
+        // Yellow-amber freight loading apron stripes on heavy industrial yards (omitted on rural farmsteads)
+        if (d.resourceType !== 'FARM') {
+          ctx.fillStyle = 'rgba(217, 119, 6, 0.48)';
+          const stripeCount = Math.max(3, wT * 2);
+          for (let s = 0; s < stripeCount; s++) {
+            const sx = cx - lotW * 0.36 + (s / (stripeCount - 1)) * (lotW * 0.72);
+            ctx.fillRect(sx - 2, cy + lotH * 0.36, 4, 2.8);
+          }
+        } else {
+          // Warm timber/gravel barnyard gate apron on rural farmsteads
+          ctx.fillStyle = 'rgba(168, 152, 124, 0.42)';
+          ctx.fillRect(cx - lotW * 0.32, cy + lotH * 0.35, lotW * 0.64, 2.4);
         }
 
         // 45° Industrial Shadow
@@ -1480,53 +1486,129 @@ export class MiniMotorwaysRenderer {
               ctx.fill();
             }
           } else if (d.resourceType === 'FARM') {
-            // Alluvial Agribusiness Farm (`FARM`): Pitched-Roof Terracotta Barn on Left (under pins) + Twin Grain Silos on Right
-            ctx.fillStyle = '#a34232';
+            // Alluvial Agribusiness Farm (`FARM`):
+            // Left half (under pins): Cross-Gable Terracotta Timber Barn (`+` white roof ridge)
+            // Right half: Single Tall White Grain Silo (top-right) + Glazed Greenhouse Nursery Bay (bottom-right)
+            ctx.fillStyle = '#9e3b2b';
             ctx.beginPath();
             ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.50, bldH * 0.84, 2.5);
             ctx.fill();
-            ctx.fillStyle = '#c85a48';
+            ctx.fillStyle = '#c85644';
             ctx.beginPath();
-            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.42, bldH * 0.66, 2);
+            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.42, bldH * 0.68, 2);
             ctx.fill();
-            // White barn roof ridge line
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-            ctx.fillRect(cx - bldW * 0.24, cy - bldH * 0.38, 1.6, bldH * 0.62);
+            // White cross-gable barn roof ridges (`+`)
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.52)';
+            ctx.fillRect(cx - bldW * 0.235, cy - bldH * 0.38, 1.5, bldH * 0.64);
+            ctx.fillRect(cx - bldW * 0.42, cy - bldH * 0.08, bldW * 0.38, 1.4);
 
-            const siloR = Math.min(bldW, bldH) * 0.20;
-            for (const syOff of [-bldH * 0.22, bldH * 0.18]) {
-              ctx.fillStyle = '#6b7078';
-              ctx.beginPath();
-              ctx.arc(cx + bldW * 0.25, cy + syOff, siloR, 0, Math.PI * 2);
-              ctx.fill();
-              ctx.fillStyle = '#f5f5f4';
-              ctx.beginPath();
-              ctx.arc(cx + bldW * 0.25, cy + syOff - 1, siloR * 0.76, 0, Math.PI * 2);
-              ctx.fill();
-            }
+            // Top-Right: Single White Domed Grain Tower Silo + Auger Chute
+            const siloR = Math.min(bldW, bldH) * 0.19;
+            const siloX = cx + bldW * 0.24;
+            const siloY = cy - bldH * 0.22;
+            ctx.strokeStyle = '#9ca3af';
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(cx + bldW * 0.02, siloY);
+            ctx.lineTo(siloX, siloY);
+            ctx.stroke();
+
+            ctx.fillStyle = '#6b7078';
+            ctx.beginPath();
+            ctx.arc(siloX, siloY, siloR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#f5f5f4';
+            ctx.beginPath();
+            ctx.arc(siloX, siloY - 0.9, siloR * 0.78, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bottom-Right: Glazed Farm Greenhouse / Nursery Bay
+            const ghX = cx + bldW * 0.06;
+            const ghY = cy + bldH * 0.03;
+            const ghW = bldW * 0.38;
+            const ghH = bldH * 0.35;
+            ctx.fillStyle = '#84a595';
+            ctx.beginPath();
+            ctx.roundRect(ghX, ghY, ghW, ghH, 2);
+            ctx.fill();
+            ctx.fillStyle = '#d7ebe2';
+            ctx.beginPath();
+            ctx.roundRect(ghX + 1.2, ghY + 1.2, ghW - 2.4, ghH - 2.4, 1.5);
+            ctx.fill();
+            // Glass roof mullions
+            ctx.strokeStyle = '#84a595';
+            ctx.lineWidth = 0.85;
+            ctx.beginPath();
+            ctx.moveTo(ghX + ghW * 0.35, ghY + 1);
+            ctx.lineTo(ghX + ghW * 0.35, ghY + ghH - 1);
+            ctx.moveTo(ghX + ghW * 0.68, ghY + 1);
+            ctx.lineTo(ghX + ghW * 0.68, ghY + ghH - 1);
+            ctx.stroke();
           } else {
-            // Urban Primary Extraction (`RAW`): Hopper Headhouse + Twin Cylindrical Storage Silos
+            // Urban Bulk Feedstock & Chemical Works (`RAW`):
+            // Left half (under pins): Heavy Process & Boiler Hall
+            // Right half: Steel Pipe-Rack Manifold + 3 Dark-Slate Spherical Pressure Vats + Industrial Flue Stack
             ctx.fillStyle = baseCol;
             ctx.beginPath();
-            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.52, bldH * 0.84, 2.5);
+            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.48, bldH * 0.84, 2.5);
             ctx.fill();
 
             ctx.fillStyle = roofCol;
             ctx.beginPath();
-            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.44, bldH * 0.65, 2);
+            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.40, bldH * 0.65, 2);
             ctx.fill();
 
-            const siloR = Math.min(bldW, bldH) * 0.20;
-            for (const syOff of [-bldH * 0.22, bldH * 0.18]) {
-              ctx.fillStyle = '#6b7078';
+            // Steel Pipe-Rack Gantry Manifold on right half
+            const rackX = cx + bldW * 0.16;
+            ctx.strokeStyle = '#64748b';
+            ctx.lineWidth = 2.0;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - bldH * 0.26);
+            ctx.lineTo(cx + bldW * 0.36, cy - bldH * 0.26);
+            ctx.moveTo(cx, cy + bldH * 0.02);
+            ctx.lineTo(cx + bldW * 0.36, cy + bldH * 0.02);
+            ctx.moveTo(rackX, cy - bldH * 0.32);
+            ctx.lineTo(rackX, cy + bldH * 0.30);
+            ctx.stroke();
+
+            // 3 Dark-Steel Spherical Pressure Vats (`2×1` + `1×1` Chemical/Refinery Tank Farm)
+            const vatR = Math.min(bldW, bldH) * 0.135;
+            const vatCoords = [
+              [cx + bldW * 0.15, cy - bldH * 0.26],
+              [cx + bldW * 0.35, cy - bldH * 0.26],
+              [cx + bldW * 0.15, cy + bldH * 0.06]
+            ];
+            for (const [vx, vy] of vatCoords) {
+              ctx.fillStyle = '#334155';
               ctx.beginPath();
-              ctx.arc(cx + bldW * 0.25, cy + syOff, siloR, 0, Math.PI * 2);
+              ctx.arc(vx, vy, vatR, 0, Math.PI * 2);
               ctx.fill();
-              ctx.fillStyle = '#e5e2dc';
+              ctx.fillStyle = '#64748b';
               ctx.beginPath();
-              ctx.arc(cx + bldW * 0.25, cy + syOff - 1, siloR * 0.75, 0, Math.PI * 2);
+              ctx.arc(vx, vy - 0.6, vatR * 0.78, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.fillStyle = '#cbd5e1';
+              ctx.beginPath();
+              ctx.arc(vx - 0.5, vy - 0.9, vatR * 0.32, 0, Math.PI * 2);
               ctx.fill();
             }
+
+            // Bottom-Right: Heavy Industrial Flue Smokestack with dark-slate collar
+            const stX = cx + bldW * 0.34;
+            const stY = cy + bldH * 0.22;
+            const stR = Math.min(bldW, bldH) * 0.13;
+            ctx.fillStyle = '#1e293b';
+            ctx.beginPath();
+            ctx.arc(stX, stY, stR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#94a3b8';
+            ctx.beginPath();
+            ctx.arc(stX, stY, stR * 0.65, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#0f172a';
+            ctx.beginPath();
+            ctx.arc(stX, stY, stR * 0.35, 0, Math.PI * 2);
+            ctx.fill();
           }
         } else if (d.subType === 'LOG') {
           // Logistics Distribution Center (`LOG`): Elongated Cross-Dock Freight Terminal
