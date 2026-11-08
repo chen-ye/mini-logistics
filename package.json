@@ -1,0 +1,17 @@
+{
+  "name": "mini-logistics",
+  "version": "1.0.0",
+  "description": "2D procedural world generator and multi-modal transportation logistics simulator inspired by OpenTTD and Mini Motorways",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chen-ye/mini-logistics.git"
+  },
+  "scripts": {
+    "dev": "bunx serve . -p 8788",
+    "start": "bunx serve . -p 8788"
+  },
+  "devDependencies": {
+    "serve": "^14.2.4"
+  }
+}
