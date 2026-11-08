@@ -76,282 +76,9 @@ export class ProceduralLogisticsWorld {
     this.rng = new SeededRNG(`${this.config.seed}::${stageTag}`);
   }
 
-  generate(startStage = 1, ckptStore = null) {
-    const t0 = performance.now();
-    this.rng = new SeededRNG(this.config.seed);
-    if (!this.noise || startStage === 1) {
-      this.noise = new FastNoise2D(new SeededRNG(`${this.config.seed}::noise`));
-    }
-    this.terrainUnchanged = startStage >= 8;
-    this.reusedThroughStage = startStage > 1 ? startStage - 1 : 0;
-
-    // Step 1: Prevailing Wind Vector
-    this.setStageRNG('stage1_wind');
-    this.initPrevailingWind();
-    const windLog = this.logs[this.logs.length - 1];
-
-    // Step 2A & 2B: Terrain Heightmap & Fluvial Hydrology
-    if (startStage <= 2) {
-      if (startStage === 1 || !ckptStore?.post2A) {
-        this.setStageRNG('stage2a_terrain');
-        const { basins, primarySink } = synthesizeTerrainAndBasins(this);
-        if (ckptStore) {
-          ckptStore.post2A = {
-            elevationField: new Float32Array(this.elevationField),
-            waterMask: new Uint8Array(this.waterMask),
-            seaLevel: this.seaLevel,
-            basins: structuredClone(basins),
-            primarySink: structuredClone(primarySink),
-            hydroFeatures: structuredClone(this.hydroFeatures)
-          };
-        }
-        this.setStageRNG('stage2b_hydro');
-        synthesizeFluvialHydrology(this, basins, primarySink);
-      } else {
-        // Reuse Stage 2A Terrain & Basins (`startStage === 2`, e.g. `hydrologyAlgo` changed)
-        this.elevationField.set(ckptStore.post2A.elevationField);
-        this.waterMask.set(ckptStore.post2A.waterMask);
-        this.seaLevel = ckptStore.post2A.seaLevel;
-        this.hydroFeatures = structuredClone(ckptStore.post2A.hydroFeatures);
-        this.rivers = [];
-        this.drainageField.fill(0);
-        this.setStageRNG('stage2b_hydro');
-        synthesizeFluvialHydrology(
-          this,
-          structuredClone(ckptStore.post2A.basins),
-          structuredClone(ckptStore.post2A.primarySink)
-        );
-      }
-      const tName = this.config.terrainAlgo === 'quilez-erosion'
-        ? 'Quilez Derivative-Eroded fBm'
-        : (this.config.terrainAlgo === 'voronoi-plates' ? 'Voronoi Tectonic Plates' : 'Tectonic Strike fBm');
-      const hName = this.config.hydrologyAlgo === 'd8-strahler'
-        ? 'Priority-Flood D8 Strahler'
-        : (this.config.hydrologyAlgo === 'meandering-plain' ? 'Ikeda Floodplain Meanders' : 'Downhill A* Thalwegs');
-      this.hydroLog = `Synthesized terrain via <b>${tName}</b> & <b>${this.rivers.length} rivers</b> via <b>${hName}</b>.`;
-
-      if (ckptStore) {
-        ckptStore.post2B = {
-          elevationField: new Float32Array(this.elevationField),
-          waterMask: new Uint8Array(this.waterMask),
-          drainageField: new Float32Array(this.drainageField),
-          rivers: structuredClone(this.rivers),
-          hydroFeatures: structuredClone(this.hydroFeatures),
-          confluencePoint: structuredClone(this.confluencePoint),
-          seaLevel: this.seaLevel,
-          hydroLog: this.hydroLog
-        };
-      }
-    } else if (startStage === 3 && ckptStore?.post2B) {
-      // Reuse Stage 2A Terrain + Stage 2B Fluvial Hydrology (`windAxis` changed)
-      const c2b = ckptStore.post2B;
-      this.elevationField.set(c2b.elevationField);
-      this.waterMask.set(c2b.waterMask);
-      this.drainageField.set(c2b.drainageField);
-      this.rivers = structuredClone(c2b.rivers);
-      this.hydroFeatures = structuredClone(c2b.hydroFeatures);
-      this.confluencePoint = structuredClone(c2b.confluencePoint);
-      this.seaLevel = c2b.seaLevel;
-      this.hydroLog = c2b.hydroLog;
-    }
-
-    // Step 3: Slope Gradients, Distance Transforms & Valley/Alluvial Suitability
-    if (startStage <= 3) {
-      this.computeSpatialFields();
-      if (ckptStore) {
-        ckptStore.post3 = {
-          elevationField: new Float32Array(this.elevationField),
-          waterMask: new Uint8Array(this.waterMask),
-          slopeField: new Float32Array(this.slopeField),
-          drainageField: new Float32Array(this.drainageField),
-          fertilityField: new Float32Array(this.fertilityField),
-          distToWater: new Float32Array(this.distToWater),
-          urbanSuitability: new Float32Array(this.urbanSuitability),
-          landmassId: new Int16Array(this.landmassId),
-          landmasses: structuredClone(this.landmasses),
-          rivers: structuredClone(this.rivers),
-          hydroFeatures: structuredClone(this.hydroFeatures),
-          confluencePoint: structuredClone(this.confluencePoint),
-          seaLevel: this.seaLevel,
-          hydroLog: this.hydroLog
-        };
-      }
-    } else if (ckptStore?.post3) {
-      const c3 = ckptStore.post3;
-      this.elevationField.set(c3.elevationField);
-      this.waterMask.set(c3.waterMask);
-      this.slopeField.set(c3.slopeField);
-      this.drainageField.set(c3.drainageField);
-      this.fertilityField.set(c3.fertilityField);
-      this.distToWater.set(c3.distToWater);
-      this.urbanSuitability.set(c3.urbanSuitability);
-      this.landmassId.set(c3.landmassId);
-      this.landmasses = structuredClone(c3.landmasses);
-      this.rivers = structuredClone(c3.rivers);
-      this.hydroFeatures = structuredClone(c3.hydroFeatures);
-      this.confluencePoint = structuredClone(c3.confluencePoint);
-      this.seaLevel = c3.seaLevel;
-      this.hydroLog = c3.hydroLog;
-    }
-
-    // Step 4: Central Place Settlement Seeding
-    if (startStage <= 4) {
-      this.towns = [];
-      this.clusters = [];
-      this.setStageRNG('stage4_settlements');
-      this.seedSettlements();
-      this.settlementLog = this.logs[this.logs.length - 1];
-      if (ckptStore) {
-        ckptStore.post4 = {
-          towns: structuredClone(this.towns),
-          clusters: structuredClone(this.clusters),
-          settlementLog: this.settlementLog
-        };
-      }
-    } else if (ckptStore?.post4) {
-      this.towns = structuredClone(ckptStore.post4.towns);
-      this.clusters = structuredClone(ckptStore.post4.clusters);
-      this.settlementLog = ckptStore.post4.settlementLog;
-    }
-
-    // Step 5: Multi-Tier Airport Solver & Terminal Loops
-    if (startStage <= 5) {
-      this.airports = [];
-      this.roads = [];
-      this.roadGrid.fill(0);
-      this.buildingMask.fill(0);
-      this.zoneColorIdx.fill(-1);
-      this.bridgeCount = 0;
-      for (const t of this.towns) t.airportId = null;
-      this.setStageRNG('stage5_airports');
-      this.solveAndPlaceAirports();
-      this.airportLog = this.logs[this.logs.length - 1];
-      if (ckptStore) {
-        ckptStore.post5 = {
-          airports: structuredClone(this.airports),
-          towns: structuredClone(this.towns),
-          airportHeatmap: new Float32Array(this.airportHeatmap),
-          roadGrid: new Uint8Array(this.roadGrid),
-          buildingMask: new Uint8Array(this.buildingMask),
-          roads: structuredClone(this.roads),
-          airportLog: this.airportLog
-        };
-      }
-    } else if (ckptStore?.post5) {
-      const c5 = ckptStore.post5;
-      this.airports = structuredClone(c5.airports);
-      this.towns = structuredClone(c5.towns);
-      this.airportHeatmap.set(c5.airportHeatmap);
-      this.roadGrid.set(c5.roadGrid);
-      this.buildingMask.set(c5.buildingMask);
-      this.zoneColorIdx.fill(-1);
-      this.roads = structuredClone(c5.roads);
-      this.bridgeCount = 0;
-      this.airportLog = c5.airportLog;
-    }
-
-    // Step 6A, 6B & 7: Street Grids, Regional Roads & RCI Buildings
-    if (startStage <= 7) {
-      this.houses = [];
-      this.destinations = [];
-      this.setStageRNG('stage6a_grids');
-      this.carveTownStreetGrids();
-      this.setStageRNG('stage6b_roads');
-      this.buildRegionalRoadNetwork();
-      this.roadLog = this.logs[this.logs.length - 1];
-      this.setStageRNG('stage7_rci');
-      this.growUrbanFabric();
-      this.trees = [];
-      this.setStageRNG('stage9_trees');
-      this.populateLandscapeTrees();
-
-      if (ckptStore) {
-        ckptStore.post7 = {
-          towns: structuredClone(this.towns),
-          roadGrid: new Uint8Array(this.roadGrid),
-          buildingMask: new Uint8Array(this.buildingMask),
-          zoneColorIdx: new Int8Array(this.zoneColorIdx),
-          roads: structuredClone(this.roads),
-          houses: structuredClone(this.houses),
-          destinations: structuredClone(this.destinations),
-          trees: structuredClone(this.trees),
-          bridgeCount: this.bridgeCount,
-          roadLog: this.roadLog
-        };
-      }
-    } else if (ckptStore?.post7) {
-      const c7 = ckptStore.post7;
-      this.towns = structuredClone(c7.towns);
-      this.roadGrid.set(c7.roadGrid);
-      this.buildingMask.set(c7.buildingMask);
-      this.zoneColorIdx.set(c7.zoneColorIdx);
-      this.roads = structuredClone(c7.roads);
-      this.houses = structuredClone(c7.houses);
-      this.destinations = structuredClone(c7.destinations);
-      this.trees = structuredClone(c7.trees);
-      this.bridgeCount = c7.bridgeCount;
-      this.roadLog = c7.roadLog;
-    }
-
-    // Step 8A: Expressways & Cloverleaf/Trumpet System Interchanges
-    if (startStage <= 8) {
-      this.motorways = [];
-      this.interchanges = [];
-      this.displacedBuildingsCount = 0;
-      for (const ap of this.airports) ap.motorwayId = null;
-      this.setStageRNG('stage8_motorways');
-      this.buildNumberedMotorways();
-      if (ckptStore) {
-        ckptStore.post8 = {
-          towns: structuredClone(this.towns),
-          airports: structuredClone(this.airports),
-          roadGrid: new Uint8Array(this.roadGrid),
-          buildingMask: new Uint8Array(this.buildingMask),
-          roads: structuredClone(this.roads),
-          houses: structuredClone(this.houses),
-          destinations: structuredClone(this.destinations),
-          trees: structuredClone(this.trees),
-          motorways: structuredClone(this.motorways),
-          interchanges: structuredClone(this.interchanges),
-          displacedBuildingsCount: this.displacedBuildingsCount
-        };
-      }
-    } else if (ckptStore?.post8) {
-      const c8 = ckptStore.post8;
-      this.towns = structuredClone(c8.towns);
-      this.airports = structuredClone(c8.airports);
-      this.roadGrid.set(c8.roadGrid);
-      this.buildingMask.set(c8.buildingMask);
-      this.roads = structuredClone(c8.roads);
-      this.houses = structuredClone(c8.houses);
-      this.destinations = structuredClone(c8.destinations);
-      this.trees = structuredClone(c8.trees);
-      this.motorways = structuredClone(c8.motorways);
-      this.interchanges = structuredClone(c8.interchanges);
-      this.displacedBuildingsCount = c8.displacedBuildingsCount;
-    }
-
-    // Step 9: Intermediate Diamond Ramps, Mountain Tunnels, Outer Street Pruning & Industrial Cargo Chain
-    this.setStageRNG('stage9_ramps');
-    this.finalizeExpresswayRampsAndTunnels();
-    const mwayLog = this.logs[this.logs.length - 1];
-
-    this.setStageRNG('stage8b_cargo');
-    this.buildIndustrialCargoChain();
-    const cargoLog = this.logs[this.logs.length - 1];
-
-    this.logs = [
-      windLog,
-      this.hydroLog,
-      this.settlementLog,
-      this.airportLog,
-      this.roadLog,
-      mwayLog,
-      cargoLog
-    ].filter(Boolean);
-
-    this.genTimeMs = Math.round(performance.now() - t0);
-    return this;
+  generate() {
+    const pipeline = createWorldPipeline();
+    return pipeline(this.config, this);
   }
 
   initPrevailingWind() {
@@ -836,36 +563,68 @@ export class ProceduralLogisticsWorld {
       const x0 = Math.max(10, hostTown.x - scanR);
       const x1 = Math.min(this.W - 10, hostTown.x + scanR);
 
-      for (const rad of angleCandidates) {
-        const cosA = Math.cos(rad);
-        const sinA = Math.sin(rad);
+      let sumMetroX = 0, sumMetroY = 0;
+      for (const otherT of this.towns) {
+        sumMetroX += otherT.x;
+        sumMetroY += otherT.y;
+      }
+      const metroCx = sumMetroX / (this.towns.length || 1);
+      const metroCy = sumMetroY / (this.towns.length || 1);
+      const angleTrig = angleCandidates.map(rad => ({ rad, cosA: Math.cos(rad), sinA: Math.sin(rad) }));
+      const minInscribedDistToWater = isIslandHopper ? 1.8 : Math.min(4.2, halfWid + 1.0);
+      const maxCenterSlope = isIslandHopper ? 0.48 : 0.40;
+      const idealDist = hostTown.urbanRadius + (isHub ? 7.5 : 5.5);
+      const minHostDist = hostTown.urbanRadius * (isIslandHopper ? 0.72 : 0.82);
+      const maxHostDist = idealDist + 24;
+      const candStubDist = isHub ? 5.8 : (isIslandHopper ? 4.0 : 4.6);
 
-        for (let cy = y0; cy <= y1; cy += 2) {
-          for (let cx = x0; cx <= x1; cx += 2) {
-            const id = this.idx(cx, cy);
-            if (this.waterMask[id] > 0) continue;
-            if (this.slopeField[id] > (isIslandHopper ? 0.48 : 0.40) || this.distToWater[id] < (isIslandHopper ? 1.8 : 2.8)) continue;
+      // Hoist (cx, cy) candidate site filtering outside the angle loop so angle-independent
+      // terrain, shoreline inscribed-circle, NIMBY, and airspace checks run once per cell
+      for (let cy = y0; cy <= y1; cy += 2) {
+        for (let cx = x0; cx <= x1; cx += 2) {
+          const id = this.idx(cx, cy);
+          if (this.waterMask[id] > 0) continue;
+          if (this.slopeField[id] > maxCenterSlope || this.distToWater[id] < minInscribedDistToWater) continue;
 
-            const distHost = Math.hypot(cx - hostTown.x, cy - hostTown.y);
-            const idealDist = hostTown.urbanRadius + (isHub ? 7.5 : 5.5);
-            if (distHost < hostTown.urbanRadius * (isIslandHopper ? 0.72 : 0.82) || distHost > idealDist + 24) continue;
-            const proximityScore = Math.exp(-Math.pow((distHost - idealDist) / 11.0, 2));
+          const distHost = Math.hypot(cx - hostTown.x, cy - hostTown.y);
+          if (distHost < minHostDist || distHost > maxHostDist) continue;
 
-            const toTownX = hostTown.x - cx;
-            const toTownY = hostTown.y - cy;
+          // NIMBY & Urban Core Exclusion against ALL towns (angle-independent)
+          let nimbyViolation = false;
+          for (const t of this.towns) {
+            const dTown = Math.hypot(cx - t.x, cy - t.y);
+            if (dTown < t.urbanRadius * (isIslandHopper ? 0.72 : 0.80) + (isHub ? 1.8 : 1.0)) {
+              nimbyViolation = true;
+              break;
+            }
+          }
+          if (nimbyViolation) continue;
+
+          // Minimum airspace separation from already placed airports (angle-independent)
+          let tooCloseToAirport = false;
+          for (const ap of this.airports) {
+            if (Math.hypot(cx - ap.x, cy - ap.y) < (isIslandHopper ? 34 : 42)) {
+              tooCloseToAirport = true;
+              break;
+            }
+          }
+          if (tooCloseToAirport) continue;
+
+          const proximityScore = Math.exp(-Math.pow((distHost - idealDist) / 11.0, 2));
+          const toTownX = hostTown.x - cx;
+          const toTownY = hostTown.y - cy;
+          const toMetroDist = Math.hypot(metroCx - cx, metroCy - cy) || 1;
+
+          for (const { rad, cosA, sinA } of angleTrig) {
             const dotNormal = toTownX * (-sinA) + toTownY * cosA;
             const broadsideAlignment = Math.abs(dotNormal) / (distHost || 1);
             if (broadsideAlignment < (isIslandHopper ? 0.18 : 0.34)) continue;
             const candidateApronSide = dotNormal >= 0 ? 1 : -1;
             const candLandNx = -sinA * candidateApronSide;
             const candLandNy = cosA * candidateApronSide;
-            const candStubDist = isHub ? 5.8 : (isIslandHopper ? 4.0 : 4.6);
 
             let landsideTownsCount = 0;
-            let sumMetroX = 0, sumMetroY = 0;
             for (const otherT of this.towns) {
-              sumMetroX += otherT.x;
-              sumMetroY += otherT.y;
               const odx = otherT.x - cx;
               const ody = otherT.y - cy;
               const odist = Math.hypot(odx, ody);
@@ -875,34 +634,10 @@ export class ProceduralLogisticsWorld {
               }
             }
             if (!isIslandHopper && landsideTownsCount < (isHub && this.towns.length >= 4 ? 2 : 1)) continue;
-            const metroCx = sumMetroX / (this.towns.length || 1);
-            const metroCy = sumMetroY / (this.towns.length || 1);
-            const toMetroDist = Math.hypot(metroCx - cx, metroCy - cy) || 1;
             const inwardMetroDot = ((metroCx - cx) * candLandNx + (metroCy - cy) * candLandNy) / toMetroDist;
             if (!isIslandHopper && isHub && inwardMetroDot < -0.25) continue;
 
-            // 2. NIMBY & Urban Core Exclusion against ALL towns
-            let nimbyViolation = false;
-            for (const t of this.towns) {
-              const dTown = Math.hypot(cx - t.x, cy - t.y);
-              if (dTown < t.urbanRadius * (isIslandHopper ? 0.72 : 0.80) + (isHub ? 1.8 : 1.0)) {
-                nimbyViolation = true;
-                break;
-              }
-            }
-            if (nimbyViolation) continue;
-
-            // 3. Minimum airspace separation from already placed airports
-            let tooCloseToAirport = false;
-            for (const ap of this.airports) {
-              if (Math.hypot(cx - ap.x, cy - ap.y) < (isIslandHopper ? 34 : 42)) {
-                tooCloseToAirport = true;
-                break;
-              }
-            }
-            if (tooCloseToAirport) continue;
-
-            // 4. Oriented Bounding Box Footprint & Flat-Terrain Slope Check
+            // Oriented Bounding Box Footprint & Flat-Terrain Slope Check
             let landOk = true;
             let slopeSum = 0;
             let obbCount = 0;
@@ -4326,8 +4061,507 @@ export class ProceduralLogisticsWorld {
     }
   }
 }
+/**
+ * Pure reactive/functional memoized stage combinator:
+ * Compares the dependency tuple returned by `selectDeps(...args)` via `Object.is` (`===`).
+ * Returns `{ value: Readonly<T>, cached: boolean, version: number }` in O(1) on cache hit.
+ */
+export function createMemoStage(selectDeps, computeFn) {
+  let prevDeps = null;
+  let cachedOutput = null;
+  let version = 0;
+  return (...args) => {
+    const nextDeps = selectDeps(...args);
+    const hit =
+      prevDeps !== null &&
+      prevDeps.length === nextDeps.length &&
+      nextDeps.every((val, idx) => Object.is(val, prevDeps[idx]));
+    if (hit) {
+      return { value: cachedOutput, cached: true, version };
+    }
+    prevDeps = nextDeps;
+    version++;
+    cachedOutput = Object.freeze(computeFn(...nextDeps, version));
+    return { value: cachedOutput, cached: false, version };
+  };
+}
+
+const cloneTown = (t) => ({
+  ...t,
+  boroughs: t.boroughs ? t.boroughs.map(b => ({ ...b })) : []
+});
+
+const cloneRoad = (r) => ({
+  type: r.type,
+  points: r.points.map(p => ({ ...p }))
+});
+
+const cloneAirport = (a) => ({
+  ...a,
+  demandSchedule: a.demandSchedule ? { ...a.demandSchedule } : undefined
+});
+
+const cloneDestination = (d) => ({
+  ...d,
+  demandPins: d.demandPins ? [...d.demandPins] : []
+});
+
+/**
+ * Creates a stateful reactive memoized 9-stage world-generation DAG pipeline.
+ * Each stage is a pure function of its explicit config slice + immutable upstream stage snapshots.
+ * Optional `onHydrologyReady(s2bState, recomputed)` callback fires immediately after Stage 2B
+ * so a parallel `TerrainBakeWorker` can begin rasterizing contours & rivers while Stages 3–9 run.
+ */
+export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = null } = {}) {
+  // Single shared scratch workspace for stage execution (eliminates 8×16 TypedArray allocations per world)
+  const w = new ProceduralLogisticsWorld({});
+
+  const memoNoise = createMemoStage(
+    (seed) => [seed],
+    (seed) => new FastNoise2D(new SeededRNG(`${seed}::noise`))
+  );
+
+  // Stage 1: Prevailing Wind Vector
+  const stage1_wind = createMemoStage(
+    (cfg) => [cfg.seed, cfg.windAxis],
+    (seed, windAxis) => {
+      w.config = { seed, windAxis };
+      w.logs = [];
+      w.setStageRNG('stage1_wind');
+      w.initPrevailingWind();
+      return {
+        windAngleIndex: w.windAngleIndex,
+        windVector: Object.freeze({ ...w.windVector }),
+        windLog: w.logs[w.logs.length - 1]
+      };
+    }
+  );
+
+  // Stage 2A: Terrain Heightmap & Sea Basins
+  const stage2a_terrain = createMemoStage(
+    (cfg, noise) => [cfg.seed, cfg.archetype, cfg.terrainAlgo, cfg.waterCoverage, noise],
+    (seed, archetype, terrainAlgo, waterCoverage, noise) => {
+      w.config = { seed, archetype, terrainAlgo, waterCoverage };
+      w.noise = noise;
+      w.elevationField.fill(0);
+      w.waterMask.fill(0);
+      w.hydroFeatures = [];
+      w.confluencePoint = null;
+      w.setStageRNG('stage2a_terrain');
+      const { basins, primarySink } = synthesizeTerrainAndBasins(w);
+      return {
+        elevationField: new Float32Array(w.elevationField),
+        waterMask: new Uint8Array(w.waterMask),
+        seaLevel: w.seaLevel,
+        basins: basins.map(b => ({ ...b })),
+        primarySink: primarySink ? { ...primarySink } : null,
+        hydroFeatures: w.hydroFeatures.map(f => ({ ...f }))
+      };
+    }
+  );
+
+  // Stage 2B: Fluvial Hydrology (Rivers, Springs & Mouths)
+  const stage2b_hydrology = createMemoStage(
+    (cfg, noise, s2a) => [cfg.seed, cfg.archetype, cfg.terrainAlgo, cfg.hydrologyAlgo, noise, s2a],
+    (seed, archetype, terrainAlgo, hydrologyAlgo, noise, s2a, version) => {
+      w.config = { seed, archetype, terrainAlgo, hydrologyAlgo };
+      w.noise = noise;
+      w.elevationField.set(s2a.elevationField);
+      w.waterMask.set(s2a.waterMask);
+      w.drainageField.fill(0);
+      w.seaLevel = s2a.seaLevel;
+      w.rivers = [];
+      w.confluencePoint = null;
+      w.hydroFeatures = s2a.hydroFeatures.map(f => ({ ...f }));
+      w.setStageRNG('stage2b_hydro');
+      synthesizeFluvialHydrology(
+        w,
+        s2a.basins.map(b => ({ ...b })),
+        s2a.primarySink ? { ...s2a.primarySink } : null
+      );
+      const tName = terrainAlgo === 'quilez-erosion'
+        ? 'Quilez Derivative-Eroded fBm'
+        : (terrainAlgo === 'voronoi-plates' ? 'Voronoi Tectonic Plates' : 'Tectonic Strike fBm');
+      const hName = hydrologyAlgo === 'd8-strahler'
+        ? 'Priority-Flood D8 Strahler'
+        : (hydrologyAlgo === 'meandering-plain' ? 'Ikeda Floodplain Meanders' : 'Downhill A* Thalwegs');
+      const hydroLog = `Synthesized terrain via <b>${tName}</b> & <b>${w.rivers.length} rivers</b> via <b>${hName}</b>.`;
+      return {
+        hydroVersion: version,
+        W: w.W,
+        H: w.H,
+        tileSize: w.tileSize,
+        elevationField: new Float32Array(w.elevationField),
+        waterMask: new Uint8Array(w.waterMask),
+        drainageField: new Float32Array(w.drainageField),
+        rivers: w.rivers.map(r => ({
+          ...r,
+          points: r.points.map(p => ({ ...p })),
+          headwaterPt: r.headwaterPt ? { ...r.headwaterPt } : null
+        })),
+        hydroFeatures: w.hydroFeatures.map(f => ({ ...f })),
+        confluencePoint: w.confluencePoint ? { ...w.confluencePoint } : null,
+        seaLevel: w.seaLevel,
+        hydroLog
+      };
+    }
+  );
+
+  // Stage 3: Slope, Distance Transform, Orographic Fertility & Landmasses
+  const stage3_spatialFields = createMemoStage(
+    (cfg, s1, s2b) => [cfg.archetype, s1, s2b],
+    (archetype, s1, s2b) => {
+      w.config = { archetype };
+      w.windAngleIndex = s1.windAngleIndex;
+      w.windVector = s1.windVector;
+      w.elevationField.set(s2b.elevationField);
+      w.waterMask.set(s2b.waterMask);
+      w.drainageField.set(s2b.drainageField);
+      w.seaLevel = s2b.seaLevel;
+      w.computeSpatialFields();
+      return {
+        slopeField: new Float32Array(w.slopeField),
+        fertilityField: new Float32Array(w.fertilityField),
+        distToWater: new Float32Array(w.distToWater),
+        urbanSuitability: new Float32Array(w.urbanSuitability),
+        landmassId: new Int16Array(w.landmassId),
+        landmasses: w.landmasses.map(l => ({ ...l }))
+      };
+    }
+  );
+
+  // Stage 4: Central Place Settlement Seeding
+  const stage4_settlements = createMemoStage(
+    (cfg, noise, s2b, s3) => [cfg.seed, cfg.archetype, cfg.townCount, noise, s2b, s3],
+    (seed, archetype, townCount, noise, s2b, s3) => {
+      w.config = { seed, archetype, townCount };
+      w.noise = noise;
+      w.logs = [];
+      w.towns = [];
+      w.clusters = [];
+      w.elevationField.set(s2b.elevationField);
+      w.waterMask.set(s2b.waterMask);
+      w.seaLevel = s2b.seaLevel;
+      w.confluencePoint = s2b.confluencePoint ? { ...s2b.confluencePoint } : null;
+      w.slopeField.set(s3.slopeField);
+      w.fertilityField.set(s3.fertilityField);
+      w.distToWater.set(s3.distToWater);
+      w.urbanSuitability.set(s3.urbanSuitability);
+      w.landmassId.set(s3.landmassId);
+      w.landmasses = s3.landmasses.map(l => ({ ...l }));
+      w.setStageRNG('stage4_settlements');
+      w.seedSettlements();
+      return {
+        towns: w.towns.map(cloneTown),
+        clusters: w.clusters.map(cloneTown),
+        settlementLog: w.logs[w.logs.length - 1]
+      };
+    }
+  );
+
+  // Stage 5: Multi-Tier Airport Solver & Terminal Loops
+  const stage5_airports = createMemoStage(
+    (cfg, noise, s1, s2b, s3, s4) => [cfg.seed, cfg.archetype, cfg.airportCount, cfg.airportMix, noise, s1, s2b, s3, s4],
+    (seed, archetype, airportCount, airportMix, noise, s1, s2b, s3, s4) => {
+      w.config = { seed, archetype, airportCount, airportMix };
+      w.noise = noise;
+      w.logs = [];
+      w.airports = [];
+      w.roads = [];
+      w.roadGrid.fill(0);
+      w.buildingMask.fill(0);
+      w.airportHeatmap.fill(0);
+      w.bridgeCount = 0;
+      w.windAngleIndex = s1.windAngleIndex;
+      w.windVector = s1.windVector;
+      w.elevationField.set(s2b.elevationField);
+      w.waterMask.set(s2b.waterMask);
+      w.seaLevel = s2b.seaLevel;
+      w.slopeField.set(s3.slopeField);
+      w.distToWater.set(s3.distToWater);
+      w.urbanSuitability.set(s3.urbanSuitability);
+      w.landmassId.set(s3.landmassId);
+      w.landmasses = s3.landmasses.map(l => ({ ...l }));
+      w.towns = s4.towns.map(cloneTown);
+      w.clusters = s4.clusters.map(cloneTown);
+      w.setStageRNG('stage5_airports');
+      w.solveAndPlaceAirports();
+      return {
+        airports: w.airports.map(cloneAirport),
+        towns: w.towns.map(cloneTown),
+        airportHeatmap: new Float32Array(w.airportHeatmap),
+        roadGrid: new Uint8Array(w.roadGrid),
+        buildingMask: new Uint8Array(w.buildingMask),
+        roads: w.roads.map(cloneRoad),
+        airportLog: w.logs[w.logs.length - 1]
+      };
+    }
+  );
+
+  // Stage 6 & 7: Borough Street Grids, Regional Roads, RCI Building Packing & Landscape Trees
+  const stage6_7_urban = createMemoStage(
+    (cfg, noise, s2b, s3, s4, s5) => [cfg.seed, cfg.archetype, cfg.buildingDensity, noise, s2b, s3, s4, s5],
+    (seed, archetype, buildingDensity, noise, s2b, s3, s4, s5, version) => {
+      w.config = { seed, archetype, buildingDensity };
+      w.noise = noise;
+      w.logs = [];
+      w.houses = [];
+      w.destinations = [];
+      w.trees = [];
+      w.bridgeCount = 0;
+      w.zoneColorIdx.fill(-1);
+      w.elevationField.set(s2b.elevationField);
+      w.waterMask.set(s2b.waterMask);
+      w.seaLevel = s2b.seaLevel;
+      w.rivers = s2b.rivers;
+      w.slopeField.set(s3.slopeField);
+      w.fertilityField.set(s3.fertilityField);
+      w.distToWater.set(s3.distToWater);
+      w.urbanSuitability.set(s3.urbanSuitability);
+      w.landmassId.set(s3.landmassId);
+      w.landmasses = s3.landmasses;
+      w.clusters = s4.clusters.map(cloneTown);
+      w.towns = s5.towns.map(cloneTown);
+      w.airports = s5.airports.map(cloneAirport);
+      w.roadGrid.set(s5.roadGrid);
+      w.buildingMask.set(s5.buildingMask);
+      w.roads = s5.roads.map(cloneRoad);
+
+      w.setStageRNG('stage6a_grids');
+      w.carveTownStreetGrids();
+      w.setStageRNG('stage6b_roads');
+      w.buildRegionalRoadNetwork();
+      const roadLog = w.logs[w.logs.length - 1];
+      w.setStageRNG('stage7_rci');
+      w.growUrbanFabric();
+      w.setStageRNG('stage9_trees');
+      w.populateLandscapeTrees();
+
+      return {
+        urbanVersion: version,
+        towns: w.towns.map(cloneTown),
+        roadGrid: new Uint8Array(w.roadGrid),
+        buildingMask: new Uint8Array(w.buildingMask),
+        zoneColorIdx: new Int8Array(w.zoneColorIdx),
+        roads: w.roads.map(cloneRoad),
+        houses: w.houses.map(h => ({ ...h })),
+        destinations: w.destinations.map(cloneDestination),
+        trees: w.trees.map(tr => ({ ...tr })),
+        bridgeCount: w.bridgeCount,
+        roadLog
+      };
+    }
+  );
+
+  // Stage 8: Expressways & Cloverleaf/Trumpet System Interchanges
+  const stage8_motorways = createMemoStage(
+    (cfg, noise, s2b, s3, s4, s5, s67) => [cfg.seed, cfg.archetype, cfg.expresswayAlgo, noise, s2b, s3, s4, s5, s67],
+    (seed, archetype, expresswayAlgo, noise, s2b, s3, s4, s5, s67) => {
+      w.config = { seed, archetype, expresswayAlgo };
+      w.noise = noise;
+      w.logs = [];
+      w.motorways = [];
+      w.interchanges = [];
+      w.displacedBuildingsCount = 0;
+      w._coarseBaseCost = null;
+      w.elevationField.set(s2b.elevationField);
+      w.waterMask.set(s2b.waterMask);
+      w.seaLevel = s2b.seaLevel;
+      w.slopeField.set(s3.slopeField);
+      w.distToWater.set(s3.distToWater);
+      w.landmassId.set(s3.landmassId);
+      w.clusters = s4.clusters.map(cloneTown);
+      w.towns = s67.towns.map(cloneTown);
+      w.airports = s5.airports.map(cloneAirport);
+      w.roadGrid.set(s67.roadGrid);
+      w.buildingMask.set(s67.buildingMask);
+      w.zoneColorIdx.set(s67.zoneColorIdx);
+      w.roads = s67.roads.map(cloneRoad);
+      w.houses = s67.houses.map(h => ({ ...h }));
+      w.destinations = s67.destinations.map(cloneDestination);
+      w.trees = s67.trees.map(tr => ({ ...tr }));
+      w.bridgeCount = s67.bridgeCount;
+
+      w.setStageRNG('stage8_motorways');
+      w.buildNumberedMotorways();
+
+      return {
+        towns: w.towns.map(cloneTown),
+        airports: w.airports.map(cloneAirport),
+        roadGrid: new Uint8Array(w.roadGrid),
+        buildingMask: new Uint8Array(w.buildingMask),
+        roads: w.roads.map(cloneRoad),
+        houses: w.houses.map(h => ({ ...h })),
+        destinations: w.destinations.map(cloneDestination),
+        trees: w.trees.map(tr => ({ ...tr })),
+        motorways: w.motorways.map(m => ({
+          ...m,
+          waypoints: m.waypoints.map(p => ({ ...p })),
+          samples: m.samples.map(p => ({ ...p })),
+          tunnels: []
+        })),
+        interchanges: w.interchanges.map(ic => ({ ...ic })),
+        displacedBuildingsCount: w.displacedBuildingsCount
+      };
+    }
+  );
+
+  // Stage 9: Intermediate Diamond Ramps, Mountain Tunnels, Outer Street Pruning & Cargo Chain
+  const stage9_rampsAndCargo = createMemoStage(
+    (cfg, noise, s2b, s3, s4, s67, s8) => [cfg.seed, cfg.archetype, cfg.includeIntermediateRamps, noise, s2b, s3, s4, s67, s8],
+    (seed, archetype, includeIntermediateRamps, noise, s2b, s3, s4, s67, s8) => {
+      w.config = { seed, archetype, includeIntermediateRamps };
+      w.noise = noise;
+      w.logs = [];
+      w.cargoLinks = [];
+      w.elevationField.set(s2b.elevationField);
+      w.waterMask.set(s2b.waterMask);
+      w.seaLevel = s2b.seaLevel;
+      w.slopeField.set(s3.slopeField);
+      w.distToWater.set(s3.distToWater);
+      w.landmassId.set(s3.landmassId);
+      w.clusters = s4.clusters.map(cloneTown);
+      w.towns = s8.towns.map(cloneTown);
+      w.airports = s8.airports.map(cloneAirport);
+      w.roadGrid.set(s8.roadGrid);
+      w.buildingMask.set(s8.buildingMask);
+      w.zoneColorIdx.set(s67.zoneColorIdx);
+      w.roads = s8.roads.map(cloneRoad);
+      w.houses = s8.houses.map(h => ({ ...h }));
+      w.destinations = s8.destinations.map(cloneDestination);
+      w.trees = s8.trees.map(tr => ({ ...tr }));
+      w.motorways = s8.motorways.map(m => ({
+        ...m,
+        waypoints: m.waypoints.map(p => ({ ...p })),
+        samples: m.samples.map(p => ({ ...p })),
+        tunnels: []
+      }));
+      w.interchanges = s8.interchanges.map(ic => ({ ...ic }));
+      w.displacedBuildingsCount = s8.displacedBuildingsCount;
+      w.bridgeCount = s67.bridgeCount;
+
+      w.setStageRNG('stage9_ramps');
+      w.finalizeExpresswayRampsAndTunnels();
+      const mwayLog = w.logs[w.logs.length - 1];
+
+      w.setStageRNG('stage8b_cargo');
+      w.buildIndustrialCargoChain();
+      const cargoLog = w.logs[w.logs.length - 1];
+
+      return {
+        towns: w.towns,
+        airports: w.airports,
+        roadGrid: new Uint8Array(w.roadGrid),
+        buildingMask: new Uint8Array(w.buildingMask),
+        roads: w.roads,
+        houses: w.houses,
+        destinations: w.destinations,
+        trees: w.trees,
+        motorways: w.motorways,
+        interchanges: w.interchanges,
+        cargoLinks: w.cargoLinks,
+        displacedBuildingsCount: w.displacedBuildingsCount,
+        mwayLog,
+        cargoLog
+      };
+    }
+  );
+
+  return (config, targetWorld = null) => {
+    const t0 = performance.now();
+    const noise = memoNoise(config.seed).value;
+    const s1 = stage1_wind(config);
+    const s2a = stage2a_terrain(config, noise);
+    const s2b = stage2b_hydrology(config, noise, s2a.value);
+
+    // Notify parallel TerrainBakeWorker immediately once Stage 2B hydrology is ready!
+    if (onHydrologyReady) {
+      onHydrologyReady(s2b.value, !s2b.cached);
+    }
+
+    const s3 = stage3_spatialFields(config, s1.value, s2b.value);
+    const s4 = stage4_settlements(config, noise, s2b.value, s3.value);
+    const s5 = stage5_airports(config, noise, s1.value, s2b.value, s3.value, s4.value);
+    const s67 = stage6_7_urban(config, noise, s2b.value, s3.value, s4.value, s5.value);
+
+    // Notify parallel TerrainBakeWorker immediately once Stage 6/7 urban blush & trees are ready
+    // so `composeTerrainBitmap` runs on Core 2 in parallel with Stage 8 Motorways & Stage 9 Cargo on Core 1!
+    if (onUrbanReady) {
+      onUrbanReady(s2b.value, s67.value, !s2b.cached || !s67.cached);
+    }
+
+    const s8 = stage8_motorways(config, noise, s2b.value, s3.value, s4.value, s5.value, s67.value);
+    const s9 = stage9_rampsAndCargo(config, noise, s2b.value, s3.value, s4.value, s67.value, s8.value);
+
+    // Derive highest consecutive cached stage number for UI telemetry badge
+    const stageHits = [
+      [1, s2a.cached],
+      [2, s2b.cached],
+      [3, s3.cached],
+      [4, s4.cached],
+      [5, s5.cached],
+      [7, s67.cached],
+      [8, s8.cached],
+      [9, s9.cached]
+    ];
+    let reusedThroughStage = 0;
+    for (const [stNum, hit] of stageHits) {
+      if (hit) reusedThroughStage = stNum;
+      else break;
+    }
+
+    const out = targetWorld || new ProceduralLogisticsWorld(config);
+    out.config = { ...config };
+    out.windAngleIndex = s1.value.windAngleIndex;
+    out.windVector = s1.value.windVector;
+    out.elevationField = s2b.value.elevationField;
+    out.waterMask = s2b.value.waterMask;
+    out.drainageField = s2b.value.drainageField;
+    out.rivers = s2b.value.rivers;
+    out.hydroFeatures = s2b.value.hydroFeatures;
+    out.confluencePoint = s2b.value.confluencePoint;
+    out.seaLevel = s2b.value.seaLevel;
+    out.slopeField = s3.value.slopeField;
+    out.fertilityField = s3.value.fertilityField;
+    out.distToWater = s3.value.distToWater;
+    out.urbanSuitability = s3.value.urbanSuitability;
+    out.landmassId = s3.value.landmassId;
+    out.landmasses = s3.value.landmasses;
+    out.clusters = s4.value.clusters;
+    out.airportHeatmap = s5.value.airportHeatmap;
+    out.zoneColorIdx = s67.value.zoneColorIdx;
+    out.bridgeCount = s67.value.bridgeCount;
+    out.towns = s9.value.towns;
+    out.airports = s9.value.airports;
+    out.roadGrid = s9.value.roadGrid;
+    out.buildingMask = s9.value.buildingMask;
+    out.roads = s9.value.roads;
+    out.houses = s9.value.houses;
+    out.destinations = s9.value.destinations;
+    out.trees = s9.value.trees;
+    out.motorways = s9.value.motorways;
+    out.interchanges = s9.value.interchanges;
+    out.cargoLinks = s9.value.cargoLinks;
+    out.displacedBuildingsCount = s9.value.displacedBuildingsCount;
+    out.hydroVersion = s2b.value.hydroVersion;
+    out.urbanVersion = s67.value.urbanVersion;
+    out.reusedThroughStage = reusedThroughStage;
+    out.terrainUnchanged = reusedThroughStage >= 7;
+    out.logs = [
+      s1.value.windLog,
+      s2b.value.hydroLog,
+      s4.value.settlementLog,
+      s5.value.airportLog,
+      s67.value.roadLog,
+      s9.value.mwayLog,
+      s9.value.cargoLog
+    ].filter(Boolean);
+    out.genTimeMs = Math.round(performance.now() - t0);
+    return out;
+  };
+}
+
 export function extractWorldTransferables(world) {
-  // Drop internal PRNG/Noise & pathfinding scratch buffers before structured clone transfer
   delete world.rng;
   delete world.noise;
   delete world._astarG;
@@ -4339,48 +4573,32 @@ export function extractWorldTransferables(world) {
   delete world._coarseParent;
   delete world._coarseSeenGen;
   delete world._coarseClosedGen;
-  const typedArrays = [
-    world.waterMask,
-    world.elevationField,
-    world.slopeField,
-    world.drainageField,
-    world.distToWater,
-    world.urbanSuitability,
-    world.airportHeatmap,
-    world.roadGrid,
-    world.buildingMask,
-    world.zoneColorIdx,
-    world.landmassId
+
+  // Clone TypedArrays before detaching their ArrayBuffers for zero-copy transfer
+  // so the Worker's memoized stage cache retains its immutable buffers intact!
+  const keys = [
+    ['waterMask', Uint8Array],
+    ['elevationField', Float32Array],
+    ['slopeField', Float32Array],
+    ['drainageField', Float32Array],
+    ['fertilityField', Float32Array],
+    ['distToWater', Float32Array],
+    ['urbanSuitability', Float32Array],
+    ['airportHeatmap', Float32Array],
+    ['roadGrid', Uint8Array],
+    ['buildingMask', Uint8Array],
+    ['zoneColorIdx', Int8Array],
+    ['landmassId', Int16Array]
   ];
   const buffers = [];
-  const seen = new Set();
-  for (const arr of typedArrays) {
-    if (arr && arr.buffer && !seen.has(arr.buffer)) {
-      seen.add(arr.buffer);
-      buffers.push(arr.buffer);
+  for (const [key, Ctor] of keys) {
+    if (world[key]) {
+      const cloned = new Ctor(world[key]);
+      world[key] = cloned;
+      buffers.push(cloned.buffer);
     }
   }
   return buffers;
-}
-
-export function computeEarliestChangedStage(prev, next) {
-  if (
-    !prev ||
-    prev.seed !== next.seed ||
-    prev.archetype !== next.archetype ||
-    prev.terrainAlgo !== next.terrainAlgo ||
-    prev.waterCoverage !== next.waterCoverage
-  ) {
-    return 1;
-  }
-  if (prev.hydrologyAlgo !== next.hydrologyAlgo) return 2;
-  if (prev.windAxis !== next.windAxis) return 3;
-  if (prev.townCount !== next.townCount) return 4;
-  if (prev.airportCount !== next.airportCount || prev.airportMix !== next.airportMix) return 5;
-  if (prev.buildingDensity !== next.buildingDensity) return 6;
-  if (prev.expresswayAlgo !== next.expresswayAlgo) return 8;
-  if (prev.includeIntermediateRamps !== next.includeIntermediateRamps) return 9;
-  return 1;
 }
 
 export function hydrateTransferredWorld(world) {

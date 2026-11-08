@@ -164,6 +164,17 @@ export class MiniMotorwaysRenderer {
     return deadline;
   }
 
+  setTerrainBitmap(bitmap) {
+    if (
+      this.offscreenTerrain &&
+      this.offscreenTerrain !== bitmap &&
+      typeof this.offscreenTerrain.close === 'function'
+    ) {
+      this.offscreenTerrain.close();
+    }
+    this.offscreenTerrain = bitmap;
+  }
+
   async bakeStaticTerrainAsync(world) {
     let deadline = performance.now() + 50;
     const ts = world.tileSize;

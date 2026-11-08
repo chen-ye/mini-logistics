@@ -1,8 +1,7 @@
 import { PALETTE } from './palette.js';
 import {
-  ProceduralLogisticsWorld,
-  hydrateTransferredWorld,
-  computeEarliestChangedStage
+  createWorldPipeline,
+  hydrateTransferredWorld
 } from './world-generator.js';
 import { LogisticsSimulator } from './simulator.js';
 import { MiniMotorwaysRenderer } from './renderer.js';
@@ -13,15 +12,15 @@ let currentWorld = null;
 let simulator = null;
 let simSpeed = 1;
 const daysOfWeek = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-const fallbackCkptStore = {};
-let fallbackPrevConfig = null;
+const fallbackPipeline = createWorldPipeline();
 
 window.renderer = renderer;
 window.currentWorld = null;
 window.simulator = null;
 
-// Dedicated ES Module Web Worker for Off-Main-Thread World Generation
+// Dual-Worker Pipeline: `world-worker.js` (Stages 1–9) ∥ `terrain-bake-worker.js` (OffscreenCanvas -> ImageBitmap)
 let worldWorker = null;
+let terrainBakeWorker = null;
 let workerBusy = false;
 let nextRequestId = 1;
 let pendingJob = null;
@@ -31,6 +30,15 @@ function initWorldWorker() {
   if (typeof Worker === 'undefined') return null;
   try {
     const worker = new Worker(new URL('./world-worker.js', import.meta.url), { type: 'module' });
+    try {
+      terrainBakeWorker = new Worker(new URL('./terrain-bake-worker.js', import.meta.url), { type: 'module' });
+      const channel = new MessageChannel();
+      worker.postMessage({ type: 'connectPort' }, [channel.port1]);
+      terrainBakeWorker.postMessage({ type: 'connectPort' }, [channel.port2]);
+    } catch (bakeErr) {
+      console.warn('Could not initialize parallel TerrainBakeWorker, using in-worker OffscreenCanvas fallback:', bakeErr);
+    }
+
     worker.addEventListener('message', async (event) => {
       const { requestId, preserveCamera, world: rawWorld } = event.data;
       const resolveList = inflightResolvers.get(requestId) || [];
@@ -74,7 +82,11 @@ function dispatchToWorker(job) {
 }
 
 async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
-  await renderer.bakeStaticTerrainAsync(world);
+  if (world.terrainBitmap) {
+    renderer.setTerrainBitmap(world.terrainBitmap);
+  } else if (!world.reuseTerrainBitmap || !renderer.offscreenTerrain) {
+    await renderer.bakeStaticTerrainAsync(world);
+  }
   currentWorld = world;
   simulator = new LogisticsSimulator(currentWorld);
   window.currentWorld = currentWorld;
@@ -156,20 +168,19 @@ export function rebuildWorld(preserveCamera = false) {
   }
 
   // Fallback if Worker is unavailable
-  const startStage = computeEarliestChangedStage(fallbackPrevConfig, cfg);
-  fallbackPrevConfig = { ...cfg };
-  const world = new ProceduralLogisticsWorld(cfg).generate(startStage, fallbackCkptStore);
+  const world = fallbackPipeline(cfg);
   return applyGeneratedWorld(world, preserveCamera, false);
 }
 
 window.rebuildWorld = rebuildWorld;
 
 function updateTelemetryUI(world, fromWorker = false) {
+  const displayMs = world.wallTimeMs ?? world.genTimeMs;
   const cacheSuffix =
     world.reusedThroughStage > 0
       ? ` · Cached S1–S${world.reusedThroughStage}`
-      : (fromWorker ? ' · Worker' : '');
-  document.getElementById('genTimeBadge').textContent = `${world.genTimeMs} ms${cacheSuffix}`;
+      : (fromWorker ? ' · 2W Parallel' : '');
+  document.getElementById('genTimeBadge').textContent = `${displayMs} ms${cacheSuffix}`;
   document.getElementById('statPop').textContent = world.houses.length + world.destinations.length;
   const hubs = world.airports.filter(a => a.airportClass === 'HUB').length;
   const others = world.airports.length - hubs;
