@@ -1156,10 +1156,71 @@ export class MiniMotorwaysRenderer {
         }
       } else {
         // =================================================================
-        // INDUSTRIAL FACILITY (`RAW` Silos, `MFG` Sawtooth Hall, `LOG` Cross-Dock)
+        // INDUSTRIAL FACILITY (`RAW` Silos, `MINE`, `TIMBER`, `FARM`, `MFG`, `LOG`)
         // =================================================================
-        ctx.fillStyle = isRCI ? '#fef3c7' : '#d5d2ca';
-        ctx.strokeStyle = isRCI ? '#f59e0b' : '#8c8980';
+        if (d.resourceType === 'FARM' && d.fields && d.fields.length > 0) {
+          // Render surrounding patchwork agricultural field parcels in warm OpenTTD × Mini Motorways tones
+          const cropStyles = {
+            wheat:   { fill: '#eadcb6', furrow: '#d4be8a', border: '#c5ae78' },
+            pasture: { fill: '#dbe4c6', furrow: '#becb9e', border: '#aebc8c' },
+            ochre:   { fill: '#e6cfa8', furrow: '#cfa978', border: '#c09b6a' },
+            loam:    { fill: '#dfd4c0', furrow: '#c4b49a', border: '#b5a58b' },
+            orchard: { fill: '#dfead2', furrow: '#8ea875', border: '#b2c29d' }
+          };
+          for (const fld of d.fields) {
+            const st = cropStyles[fld.crop] || cropStyles.wheat;
+            const fx = fld.gx * ts + 1.5;
+            const fy = fld.gy * ts + 1.5;
+            const fw = fld.wTiles * ts - 3.0;
+            const fh = fld.hTiles * ts - 3.0;
+
+            ctx.fillStyle = st.fill;
+            ctx.strokeStyle = st.border;
+            ctx.lineWidth = 1.1;
+            ctx.beginPath();
+            ctx.roundRect(fx, fy, fw, fh, 3.5);
+            ctx.fill();
+            ctx.stroke();
+
+            if (fld.crop === 'orchard') {
+              ctx.fillStyle = st.furrow;
+              const cols = Math.max(2, fld.wTiles * 2 - 1);
+              const rows = Math.max(2, fld.hTiles * 2 - 1);
+              for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                  const ox = fx + 4.5 + (c / Math.max(1, cols - 1)) * (fw - 9);
+                  const oy = fy + 4.5 + (r / Math.max(1, rows - 1)) * (fh - 9);
+                  ctx.beginPath();
+                  ctx.arc(ox, oy, 1.9, 0, Math.PI * 2);
+                  ctx.fill();
+                }
+              }
+            } else {
+              ctx.strokeStyle = st.furrow;
+              ctx.lineWidth = 1.25;
+              ctx.beginPath();
+              if (fld.furrowDir === 0) {
+                const count = Math.max(3, Math.round(fh / 4.2));
+                for (let k = 1; k < count; k++) {
+                  const ry = fy + (k / count) * fh;
+                  ctx.moveTo(fx + 3, ry);
+                  ctx.lineTo(fx + fw - 3, ry);
+                }
+              } else {
+                const count = Math.max(3, Math.round(fw / 4.2));
+                for (let k = 1; k < count; k++) {
+                  const rx = fx + (k / count) * fw;
+                  ctx.moveTo(rx, fy + 3);
+                  ctx.lineTo(rx, fy + fh - 3);
+                }
+              }
+              ctx.stroke();
+            }
+          }
+        }
+
+        ctx.fillStyle = isRCI ? '#fef3c7' : (d.resourceType === 'FARM' ? '#e5dec9' : '#d5d2ca');
+        ctx.strokeStyle = isRCI ? '#f59e0b' : (d.resourceType === 'FARM' ? '#a89f89' : '#8c8980');
         ctx.lineWidth = 1.45;
         ctx.beginPath();
         ctx.roundRect(cx - lotW * 0.5, cy - lotH * 0.5, lotW, lotH, 3);
@@ -1182,31 +1243,31 @@ export class MiniMotorwaysRenderer {
 
         if (d.subType === 'RAW') {
           if (d.resourceType === 'MINE') {
-            // Foothill Quarry & Mine (`MINE`): Stepped Stone Excavation Pit + Ore Crusher Hopper
-            ctx.fillStyle = '#a8a29e';
-            ctx.beginPath();
-            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.50, bldH * 0.84, 3);
-            ctx.fill();
-            ctx.fillStyle = '#78716c';
-            ctx.beginPath();
-            ctx.roundRect(cx - bldW * 0.40, cy - bldH * 0.32, bldW * 0.34, bldH * 0.60, 2);
-            ctx.fill();
-            ctx.fillStyle = '#57534e';
-            ctx.beginPath();
-            ctx.roundRect(cx - bldW * 0.32, cy - bldH * 0.20, bldW * 0.18, bldH * 0.36, 1.5);
-            ctx.fill();
-
-            // Ore crusher headhouse & hopper cylinder on right half
+            // Foothill Quarry & Mine (`MINE`): Ore Crusher Headhouse on Left (under pins) + Stepped Stone Quarry Pit on Right
             ctx.fillStyle = baseCol;
             ctx.beginPath();
-            ctx.roundRect(cx + bldW * 0.06, cy - bldH * 0.42, bldW * 0.40, bldH * 0.80, 2.5);
+            ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.48, bldH * 0.84, 2.5);
             ctx.fill();
             ctx.fillStyle = roofCol;
             ctx.beginPath();
-            ctx.roundRect(cx + bldW * 0.10, cy - bldH * 0.38, bldW * 0.32, bldH * 0.62, 2);
+            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.40, bldH * 0.66, 2);
+            ctx.fill();
+
+            // Stepped stone excavation benches on right half
+            ctx.fillStyle = '#a8a29e';
+            ctx.beginPath();
+            ctx.roundRect(cx + bldW * 0.04, cy - bldH * 0.42, bldW * 0.44, bldH * 0.80, 3);
+            ctx.fill();
+            ctx.fillStyle = '#78716c';
+            ctx.beginPath();
+            ctx.roundRect(cx + bldW * 0.11, cy - bldH * 0.30, bldW * 0.30, bldH * 0.56, 2);
+            ctx.fill();
+            ctx.fillStyle = '#57534e';
+            ctx.beginPath();
+            ctx.roundRect(cx + bldW * 0.18, cy - bldH * 0.18, bldW * 0.16, bldH * 0.32, 1.5);
             ctx.fill();
           } else if (d.resourceType === 'TIMBER') {
-            // Upland Forestry Camp (`TIMBER`): Cedar Sawmill Shed + Stacked Timber Log Bunks
+            // Upland Forestry Camp (`TIMBER`): Cedar Sawmill Shed on Left + Stacked Timber Log Bunks on Right
             ctx.fillStyle = baseCol;
             ctx.beginPath();
             ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.48, bldH * 0.84, 2.5);
@@ -1228,28 +1289,28 @@ export class MiniMotorwaysRenderer {
               ctx.fill();
             }
           } else if (d.resourceType === 'FARM') {
-            // Alluvial Agribusiness Farm (`FARM`): Cultivated Field Rows + Barn & Twin Grain Silos
-            ctx.fillStyle = '#d9f99d';
+            // Alluvial Agribusiness Farm (`FARM`): Pitched-Roof Terracotta Barn on Left (under pins) + Twin Grain Silos on Right
+            ctx.fillStyle = '#a34232';
             ctx.beginPath();
             ctx.roundRect(cx - bldW * 0.48, cy - bldH * 0.44, bldW * 0.50, bldH * 0.84, 2.5);
             ctx.fill();
-            ctx.fillStyle = '#84cc16';
-            for (let r = -2; r <= 2; r++) {
-              ctx.fillRect(cx - bldW * 0.43, cy + r * (bldH * 0.15) - 1.2, bldW * 0.40, 2.4);
-            }
-            ctx.fillStyle = baseCol;
+            ctx.fillStyle = '#c85a48';
             ctx.beginPath();
-            ctx.roundRect(cx + bldW * 0.06, cy - bldH * 0.42, bldW * 0.40, bldH * 0.46, 2);
+            ctx.roundRect(cx - bldW * 0.44, cy - bldH * 0.40, bldW * 0.42, bldH * 0.66, 2);
             ctx.fill();
-            const siloR = Math.min(bldW, bldH) * 0.16;
-            for (const sxOff of [cx + bldW * 0.16, cx + bldW * 0.36]) {
+            // White barn roof ridge line
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+            ctx.fillRect(cx - bldW * 0.24, cy - bldH * 0.38, 1.6, bldH * 0.62);
+
+            const siloR = Math.min(bldW, bldH) * 0.20;
+            for (const syOff of [-bldH * 0.22, bldH * 0.18]) {
               ctx.fillStyle = '#6b7078';
               ctx.beginPath();
-              ctx.arc(sxOff, cy + bldH * 0.24, siloR, 0, Math.PI * 2);
+              ctx.arc(cx + bldW * 0.25, cy + syOff, siloR, 0, Math.PI * 2);
               ctx.fill();
               ctx.fillStyle = '#f5f5f4';
               ctx.beginPath();
-              ctx.arc(sxOff, cy + bldH * 0.24 - 0.8, siloR * 0.76, 0, Math.PI * 2);
+              ctx.arc(cx + bldW * 0.25, cy + syOff - 1, siloR * 0.76, 0, Math.PI * 2);
               ctx.fill();
             }
           } else {

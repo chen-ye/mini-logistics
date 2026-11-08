@@ -2268,6 +2268,69 @@ export class ProceduralLogisticsWorld {
         }
       }
 
+      // For `FARM` sites, surround the 2×2 farmstead with 3–6 patchwork agricultural field parcels (`3×2`, `2×3`, `3×3`, `2×2`)
+      // on flat dry land (avoiding roads, water & urban zones) and mark `buildingMask = 5` so forests don't overgrow the fields!
+      const fields = [];
+      if (chosenCand.resourceType === 'FARM') {
+        const fgx = chosenCand.gx;
+        const fgy = chosenCand.gy;
+        const fieldCandidateBoxes = [
+          { fx: fgx - 3, fy: fgy - 1, fw: 3, fh: 2 },
+          { fx: fgx - 3, fy: fgy + 1, fw: 3, fh: 2 },
+          { fx: fgx + 2, fy: fgy - 1, fw: 3, fh: 2 },
+          { fx: fgx + 2, fy: fgy + 1, fw: 3, fh: 2 },
+          { fx: fgx - 1, fy: fgy - 3, fw: 2, fh: 3 },
+          { fx: fgx + 1, fy: fgy - 3, fw: 2, fh: 3 },
+          { fx: fgx - 1, fy: fgy + 2, fw: 2, fh: 3 },
+          { fx: fgx + 1, fy: fgy + 2, fw: 2, fh: 3 },
+          { fx: fgx - 3, fy: fgy - 3, fw: 2, fh: 2 },
+          { fx: fgx + 2, fy: fgy - 3, fw: 2, fh: 2 },
+          { fx: fgx - 3, fy: fgy + 2, fw: 2, fh: 2 },
+          { fx: fgx + 2, fy: fgy + 2, fw: 2, fh: 2 }
+        ];
+        const cropTypes = ['wheat', 'pasture', 'ochre', 'loam', 'orchard'];
+        let cropIdx = slotIdx;
+        for (const box of fieldCandidateBoxes) {
+          if (fields.length >= 6) break;
+          let boxFree = true;
+          for (let dy = 0; dy < box.fh && boxFree; dy++) {
+            for (let dx = 0; dx < box.fw; dx++) {
+              const px = box.fx + dx;
+              const py = box.fy + dy;
+              if (!this.inBounds(px, py, 3)) {
+                boxFree = false;
+                break;
+              }
+              const pid = this.idx(px, py);
+              if (
+                this.waterMask[pid] > 0 ||
+                this.buildingMask[pid] > 0 ||
+                this.roadGrid[pid] > 0 ||
+                this.distToWater[pid] < 2.0 ||
+                this.slopeField[pid] > 0.16
+              ) {
+                boxFree = false;
+                break;
+              }
+            }
+          }
+          if (!boxFree) continue;
+          for (let dy = 0; dy < box.fh; dy++) {
+            for (let dx = 0; dx < box.fw; dx++) {
+              this.buildingMask[this.idx(box.fx + dx, box.fy + dy)] = 5;
+            }
+          }
+          fields.push({
+            gx: box.fx,
+            gy: box.fy,
+            wTiles: box.fw,
+            hTiles: box.fh,
+            crop: cropTypes[cropIdx++ % cropTypes.length],
+            furrowDir: (box.fw >= box.fh ? 0 : 1)
+          });
+        }
+      }
+
       const hostTown = chosenCand.nearestTown;
       const colorIdx = (hostTown.colorIdx + 1) % PALETTE.districtColors.length;
       this.destinations.push({
@@ -2286,6 +2349,7 @@ export class ProceduralLogisticsWorld {
         zoneType: 'industrial',
         subType: 'RAW',
         resourceType: chosenCand.resourceType, // 'MINE' | 'TIMBER' | 'FARM'
+        fields,
         isRuralNiche: true,
         isCircular: false,
         hasUrgentPin: false,
@@ -5423,6 +5487,15 @@ export class ProceduralLogisticsWorld {
 
     const beforeDest = this.destinations.length;
     this.destinations = this.destinations.filter(d => {
+      if (d.fields && d.fields.length > 0) {
+        d.fields = d.fields.filter(fld => {
+          const fxMin = fld.gx - 0.9;
+          const fxMax = fld.gx + fld.wTiles - 1 + 0.9;
+          const fyMin = fld.gy - 0.9;
+          const fyMax = fld.gy + fld.hTiles - 1 + 0.9;
+          return !surfacePts.some(p => p.x >= fxMin && p.x <= fxMax && p.y >= fyMin && p.y <= fyMax);
+        });
+      }
       if (d.isRuralNiche) return true;
       const wT = d.wTiles || 2;
       const hT = d.hTiles || 2;
@@ -5656,7 +5729,8 @@ const cloneAirport = (a) => ({
 
 const cloneDestination = (d) => ({
   ...d,
-  demandPins: d.demandPins ? [...d.demandPins] : []
+  demandPins: d.demandPins ? [...d.demandPins] : [],
+  fields: d.fields ? d.fields.map(f => ({ ...f })) : undefined
 });
 
 /**
