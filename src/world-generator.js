@@ -1061,7 +1061,7 @@ export class ProceduralLogisticsWorld {
     }
   }
 
-  findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null) {
+  findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false) {
     const { W, H } = this;
     const startId = this.idx(sx, sy);
     const endId = this.idx(ex, ey);
@@ -1116,9 +1116,12 @@ export class ProceduralLogisticsWorld {
 
     while (heapId.length > 0) {
       const cid = heapPopId();
-      if (cid === endId) {
+      if (
+        cid === endId ||
+        (stopOnExistingRoad && cid !== startId && (this.roadGrid[cid] === 1 || this.roadGrid[cid] === 2))
+      ) {
         const path = [];
-        let trace = endId;
+        let trace = cid;
         while (trace !== -1) {
           const py = Math.floor(trace / W);
           const px = trace % W;
@@ -1145,16 +1148,29 @@ export class ProceduralLogisticsWorld {
         const nid = this.idx(nx, ny);
         if (closed[nid]) continue;
 
-        // Never tunnel through an airport runway box (unless it's the start/end gate!)
-        if (this.buildingMask[nid] === 3 && nid !== startId && nid !== endId) continue;
+        // Never tunnel through any placed building (house, commercial/industrial lot, airport, or ramp reserve!)
+        if (this.buildingMask[nid] > 0 && nid !== startId && nid !== endId) continue;
         if (blockedFn && nid !== startId && nid !== endId && blockedFn(nx, ny)) continue;
 
         const isWater = this.waterMask[nid] > 0;
         if (isWater && !allowWaterBridge) continue;
 
+        // Inside urban zones or when joining/leaving existing streets, strictly enforce orthogonal (0°/90°) movement
+        // so A* roads never slice 45° diagonal wedges across orthogonal intersections or building corners!
+        if (
+          dx !== 0 &&
+          dy !== 0 &&
+          (this.zoneColorIdx[cid] >= 0 ||
+            this.zoneColorIdx[nid] >= 0 ||
+            this.roadGrid[cid] > 0 ||
+            this.roadGrid[nid] > 0)
+        ) {
+          continue;
+        }
+
         let stepCost = baseStep;
         if (this.roadGrid[nid] > 0) {
-          stepCost *= 0.20;
+          stepCost *= 0.12;
         } else if (isWater) {
           // River bridges (`waterMask === 1`) must cross from bank to bank (dry land within 1..5 steps ahead along `dx, dy`),
           // NEVER walk lengthwise down the middle of a river channel!
@@ -1191,10 +1207,26 @@ export class ProceduralLogisticsWorld {
           // Topographic valley-following cost: avoid steep slopes and high mountain ridges
           const dElev = Math.max(0, this.elevationField[nid] - this.elevationField[cid]);
           stepCost += this.slopeField[nid] * 3.8 + dElev * 16.0 + Math.max(0, this.elevationField[nid] - this.seaLevel - 0.14) * 2.2;
-          // Gently prefer existing streets inside urban zones while still allowing organic 45° arterial transitions
+          // Strongly prefer existing orthogonal streets inside urban zones; never carve a parallel street 1-2 tiles away!
           if (this.zoneColorIdx[nid] >= 0) {
-            stepCost *= dx !== 0 && dy !== 0 ? 2.6 : 1.9;
+            stepCost *= 4.5;
+            const pnx = -dy;
+            const pny = dx;
+            for (const s of [-2, -1, 1, 2]) {
+              const sx2 = nx + pnx * s;
+              const sy2 = ny + pny * s;
+              if (this.inBounds(sx2, sy2, 1) && this.roadGrid[this.idx(sx2, sy2)] > 0) {
+                stepCost += 28.0;
+                break;
+              }
+            }
           }
+        }
+
+        // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) so A* never generates 1-tile Bresenham staircases!
+        if (pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
+          const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
+          stepCost += inUrban ? 4.2 : 0.75;
         }
 
         const tentativeG = gScore[cid] + stepCost;
@@ -1475,17 +1507,22 @@ export class ProceduralLogisticsWorld {
       return;
     }
 
-    // Enforce a 2-tile minimum gap between parallel streets so offset boroughs terminate in T-junctions
+    // Enforce a strict >= 2-tile clear block gap (`|s| >= 3`) between parallel streets across all boroughs
     const hasParallelNeighbor = (x, y) => {
       for (const s of [-2, -1, 1, 2]) {
         const px = x + nx * s;
         const py = y + ny * s;
         if (!this.inBounds(px, py, 2)) continue;
-        if (this.roadGrid[this.idx(px, py)] > 0) {
-          const fwd = this.inBounds(px + ux, py + uy, 1) && this.roadGrid[this.idx(px + ux, py + uy)] > 0;
-          const bwd = this.inBounds(px - ux, py - uy, 1) && this.roadGrid[this.idx(px - ux, py - uy)] > 0;
-          if (fwd && bwd) return true;
-          if (Math.abs(s) === 1 && (fwd || bwd)) return true;
+        // Check a 5-tile window `t in [-2..2]` along `(ux, uy)`: if any two consecutive tiles have roadGrid > 0,
+        // there is a parallel street at sideways distance `s`!
+        let prevHasRoad = false;
+        for (let t = -2; t <= 2; t++) {
+          const tx = px + ux * t;
+          const ty = py + uy * t;
+          const hasR = this.inBounds(tx, ty, 1) && this.roadGrid[this.idx(tx, ty)] > 0;
+          if (hasR && prevHasRoad) return true;
+          if (Math.abs(s) === 1 && hasR && t === 0 && this.roadGrid[this.idx(x, y)] === 0) return true;
+          prevHasRoad = hasR;
         }
       }
       return false;
@@ -1579,13 +1616,14 @@ export class ProceduralLogisticsWorld {
           const rx = gx + dx;
           const ry = gy + py;
           const rg = this.roadGrid[this.idx(rx, ry)];
+          const lotTileY = py === -1 ? gy : gy + hTiles - 1;
           if (rg === 2) {
             touchesArterial = true;
             arterialCount++;
-            if (!roadTouch) roadTouch = { x: rx, y: ry };
+            if (!roadTouch) roadTouch = { x: rx, y: ry, lotX: rx, lotY: lotTileY };
           } else if (rg === 1) {
             streetCount++;
-            if (!roadTouch) roadTouch = { x: rx, y: ry };
+            if (!roadTouch) roadTouch = { x: rx, y: ry, lotX: rx, lotY: lotTileY };
           }
         }
       }
@@ -1594,13 +1632,14 @@ export class ProceduralLogisticsWorld {
           const rx = gx + px;
           const ry = gy + dy;
           const rg = this.roadGrid[this.idx(rx, ry)];
+          const lotTileX = px === -1 ? gx : gx + wTiles - 1;
           if (rg === 2) {
             touchesArterial = true;
             arterialCount++;
-            if (!roadTouch) roadTouch = { x: rx, y: ry };
+            if (!roadTouch) roadTouch = { x: rx, y: ry, lotX: lotTileX, lotY: ry };
           } else if (rg === 1) {
             streetCount++;
-            if (!roadTouch) roadTouch = { x: rx, y: ry };
+            if (!roadTouch) roadTouch = { x: rx, y: ry, lotX: lotTileX, lotY: ry };
           }
         }
       }
@@ -1706,6 +1745,8 @@ export class ProceduralLogisticsWorld {
         gy: cand.gy,
         wTiles: cand.wTiles,
         hTiles: cand.hTiles,
+        lotX: cand.roadTouch.lotX ?? cand.cx,
+        lotY: cand.roadTouch.lotY ?? cand.cy,
         roadX: cand.roadTouch.x,
         roadY: cand.roadTouch.y,
         townId: town.id,
@@ -2114,7 +2155,7 @@ export class ProceduralLogisticsWorld {
         );
         if (tooCloseStub) continue;
 
-        const tiePath = this.findRoadPathAStar(candX, candY, town.x, town.y, false);
+        const tiePath = this.findRoadPathAStar(candX, candY, town.x, town.y, false, null, true);
         if (tiePath && tiePath.length >= 2) {
           chosenAx = candX;
           chosenAy = candY;
@@ -2127,7 +2168,7 @@ export class ProceduralLogisticsWorld {
     }
 
     if (!chosenTiePath) {
-      chosenTiePath = this.findRoadPathAStar(chosenAx, chosenAy, town.x, town.y, true);
+      chosenTiePath = this.findRoadPathAStar(chosenAx, chosenAy, town.x, town.y, true, null, true);
     }
     if (chosenTiePath) {
       this.commitRoadPath(chosenTiePath, 'arterial');
@@ -3209,6 +3250,13 @@ export class ProceduralLogisticsWorld {
             }
           }
           if (!nearestTown || minTownDist > 42) continue;
+          // Never place an intermediate diamond slip-ramp for a town that ALREADY has a motorway endpoint or slip-ramp!
+          const townAlreadyServed = this.interchanges.some(
+            ic => ic.townId === nearestTown.id ||
+                  ic.townName === nearestTown.name ||
+                  (ic.isAirportStub && this.airports[ic.airportId]?.hostTownId === nearestTown.id)
+          );
+          if (townAlreadyServed) continue;
 
           const pPrev = samples[Math.max(0, i - 1)];
           const pNext = samples[Math.min(samples.length - 1, i + 1)];
@@ -3270,7 +3318,7 @@ export class ProceduralLogisticsWorld {
             return false;
           };
 
-          const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false, blockUnderpassFn);
+          const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false, blockUnderpassFn, true);
           if (!connectorPath || connectorPath.length < 2) continue;
 
           this.displaceBuildingsInRadius(x, y, 3.4);
@@ -3745,6 +3793,7 @@ export class ProceduralLogisticsWorld {
     this.detectAndBuildCloverleafs();
     this.buildIntermediateExpresswayRamps();
     this.detectMountainExpresswayTunnels();
+    this.pruneEmptyOuterStreets();
 
     const cloverCount = this.interchanges.filter(i => i.type === 'cloverleaf' || i.type === 'trumpet').length;
     const rampCount = this.interchanges.filter(i => i.type === 'diamond-ramp').length;

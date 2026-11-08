@@ -536,7 +536,9 @@ export class MiniMotorwaysRenderer {
       ctx.lineTo(h.roadX * ts + ts * 0.5, h.roadY * ts + ts * 0.5);
     }
     for (const d of world.destinations) {
-      ctx.moveTo(d.x * ts + ts * 0.5, d.y * ts + ts * 0.5);
+      const lx = d.lotX ?? d.x;
+      const ly = d.lotY ?? d.y;
+      ctx.moveTo(lx * ts + ts * 0.5, ly * ts + ts * 0.5);
       ctx.lineTo(d.roadX * ts + ts * 0.5, d.roadY * ts + ts * 0.5);
     }
     ctx.stroke();
@@ -550,7 +552,8 @@ export class MiniMotorwaysRenderer {
       ctx.stroke();
     }
 
-    // Pass C: Bridge Dark Guardrails Over Water
+    // Pass C: Bridge Dark Guardrails Over Water (butt-capped so rails terminate flush at the shoreline)
+    ctx.lineCap = 'butt';
     for (const r of world.roads) {
       ctx.strokeStyle = PALETTE.bridgeRail;
       ctx.lineWidth = ts * 0.88;
@@ -563,14 +566,21 @@ export class MiniMotorwaysRenderer {
       }
       ctx.stroke();
     }
+    ctx.lineCap = 'round';
 
-    // Pass D: Crisp White Road Asphalt Fill
+    // Pass D: Crisp White Road Asphalt Fill (both Houses AND Destinations!)
     ctx.strokeStyle = PALETTE.roadAsphalt;
     ctx.lineWidth = ts * 0.26;
     ctx.beginPath();
     for (const h of world.houses) {
       ctx.moveTo(h.x * ts + ts * 0.5, h.y * ts + ts * 0.5);
       ctx.lineTo(h.roadX * ts + ts * 0.5, h.roadY * ts + ts * 0.5);
+    }
+    for (const d of world.destinations) {
+      const lx = d.lotX ?? d.x;
+      const ly = d.lotY ?? d.y;
+      ctx.moveTo(lx * ts + ts * 0.5, ly * ts + ts * 0.5);
+      ctx.lineTo(d.roadX * ts + ts * 0.5, d.roadY * ts + ts * 0.5);
     }
     ctx.stroke();
 
@@ -589,9 +599,30 @@ export class MiniMotorwaysRenderer {
     const oy = ts * 0.5;
     ctx.moveTo(pts[0].x * ts + ox, pts[0].y * ts + oy);
     for (let i = 1; i < pts.length - 1; i++) {
-      const xc = (pts[i].x + pts[i + 1].x) * 0.5 * ts + ox;
-      const yc = (pts[i].y + pts[i + 1].y) * 0.5 * ts + oy;
-      ctx.quadraticCurveTo(pts[i].x * ts + ox, pts[i].y * ts + oy, xc, yc);
+      const pPrev = pts[i - 1];
+      const pCurr = pts[i];
+      const pNext = pts[i + 1];
+      const dx1 = pCurr.x - pPrev.x;
+      const dy1 = pCurr.y - pPrev.y;
+      const dx2 = pNext.x - pCurr.x;
+      const dy2 = pNext.y - pCurr.y;
+
+      // Collinear points need no curve
+      if (dx1 === dx2 && dy1 === dy2) {
+        ctx.lineTo(pCurr.x * ts + ox, pCurr.y * ts + oy);
+        continue;
+      }
+
+      const len1 = Math.hypot(dx1, dy1) || 1;
+      const len2 = Math.hypot(dx2, dy2) || 1;
+      const rCorner = Math.min(0.24, len1 * 0.45, len2 * 0.45);
+      const xIn = (pCurr.x - (dx1 / len1) * rCorner) * ts + ox;
+      const yIn = (pCurr.y - (dy1 / len1) * rCorner) * ts + oy;
+      const xOut = (pCurr.x + (dx2 / len2) * rCorner) * ts + ox;
+      const yOut = (pCurr.y + (dy2 / len2) * rCorner) * ts + oy;
+
+      ctx.lineTo(xIn, yIn);
+      ctx.quadraticCurveTo(pCurr.x * ts + ox, pCurr.y * ts + oy, xOut, yOut);
     }
     const last = pts[pts.length - 1];
     ctx.lineTo(last.x * ts + ox, last.y * ts + oy);
