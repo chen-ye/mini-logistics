@@ -2284,56 +2284,6 @@ export class ProceduralLogisticsWorld {
     return this.createTerminalStreetStub(town, false, towardX, towardY);
   }
 
-  buildVignelliOctilinearWaypoints(sx, sy, ex, ey, bendSign = 1) {
-    const dx = ex - sx;
-    const dy = ey - sy;
-    const adx = Math.abs(dx);
-    const ady = Math.abs(dy);
-    const diag = Math.min(adx, ady);
-
-    let k1x, k1y, k2x, k2y;
-    if (bendSign === 1) {
-      k1x = sx + Math.sign(dx) * diag * 0.5;
-      k1y = sy + Math.sign(dy) * diag * 0.5;
-      k2x = sx + Math.sign(dx) * diag;
-      k2y = sy + Math.sign(dy) * diag;
-    } else if (bendSign === -1) {
-      if (adx > ady) {
-        const straight = adx - diag;
-        k1x = sx + Math.sign(dx) * straight;
-        k1y = sy;
-        k2x = sx + Math.sign(dx) * (straight + diag * 0.5);
-        k2y = sy + Math.sign(dy) * (diag * 0.5);
-      } else {
-        const straight = ady - diag;
-        k1x = sx;
-        k1y = sy + Math.sign(dy) * straight;
-        k2x = sx + Math.sign(dx) * (diag * 0.5);
-        k2y = sy + Math.sign(dy) * (straight + diag * 0.5);
-      }
-    } else {
-      if (adx > ady) {
-        const halfStraight = (adx - diag) * 0.5;
-        k1x = sx + Math.sign(dx) * halfStraight;
-        k1y = sy;
-        k2x = ex - Math.sign(dx) * halfStraight;
-        k2y = ey;
-      } else {
-        const halfStraight = (ady - diag) * 0.5;
-        k1x = sx;
-        k1y = sy + Math.sign(dy) * halfStraight;
-        k2x = ex;
-        k2y = ey - Math.sign(dy) * halfStraight;
-      }
-    }
-    return [
-      { x: sx, y: sy },
-      { x: k1x, y: k1y },
-      { x: k2x, y: k2y },
-      { x: ex, y: ey }
-    ];
-  }
-
   isCloverleafFootprintDry(x, y, angleA, angleB, signsA = [-1, 1], signsB = [-1, 1]) {
     const gx = Math.round(x);
     const gy = Math.round(y);
@@ -2828,7 +2778,7 @@ export class ProceduralLogisticsWorld {
     return null;
   }
 
-  createMotorwayEntity(number, sx, sy, ex, ey, algo, airportId = null, townId = null, forcedViaPt = null) {
+  createMotorwayEntity(number, sx, sy, ex, ey, airportId = null, townId = null, forcedViaPt = null) {
     const dx = ex - sx;
     const dy = ey - sy;
     const len = Math.hypot(dx, dy) || 1;
@@ -2845,28 +2795,14 @@ export class ProceduralLogisticsWorld {
       const c1y = 2 * forcedViaPt.y - 0.5 * (sy + ey);
       candidateCurves.push({
         waypoints: [{ x: sx, y: sy }, { x: c1x, y: c1y }, { x: ex, y: ey }],
-        isOctilinear: false,
         isCloverleafTarget: true,
         off: 0,
         preferOff: 0
       });
     }
 
-    if (algo === 'vignelli-octilinear') {
-      const octStart = ap
-        ? { x: sx + ap.landNx * Math.min(7, len * 0.20), y: sy + ap.landNy * Math.min(7, len * 0.20) }
-        : { x: sx, y: sy };
-      for (const bSign of [0, number % 2 === 0 ? 1 : -1, number % 2 === 0 ? -1 : 1]) {
-        const octWps = this.buildVignelliOctilinearWaypoints(octStart.x, octStart.y, ex, ey, bSign);
-        const fullWps = ap ? [{ x: sx, y: sy }, ...octWps] : octWps;
-        candidateCurves.push({ waypoints: fullWps, isOctilinear: true, off: 0, preferOff: 0 });
-      }
-    }
-
     const defaultSign = number % 2 === 0 ? 1 : -1;
-    const preferMag = algo === 'classic-bezier'
-      ? Math.min(12, len * 0.12)
-      : (algo === 'terrain-parkway' ? Math.min(10, len * 0.10) : Math.min(7.5, len * 0.09));
+    const preferMag = Math.min(7.5, len * 0.09);
     const preferOff = defaultSign * preferMag;
 
     // 1. Terrain-Guided A* Valley Corridor B-Spline Candidates (enabled for both airport & city trunks!)
@@ -2879,7 +2815,6 @@ export class ProceduralLogisticsWorld {
           const fullWps = ap ? [{ x: sx, y: sy }, ...valleyWps] : valleyWps;
           candidateCurves.push({
             waypoints: fullWps,
-            isOctilinear: false,
             isValleyCorridor: true,
             off: preferOff,
             preferOff
@@ -2914,7 +2849,6 @@ export class ProceduralLogisticsWorld {
             };
             candidateCurves.push({
               waypoints: [{ x: sx, y: sy }, p1, p2, { x: ex, y: ey }],
-              isOctilinear: false,
               off,
               preferOff
             });
@@ -2932,7 +2866,6 @@ export class ProceduralLogisticsWorld {
           };
           candidateCurves.push({
             waypoints: [{ x: sx, y: sy }, p1, p2, { x: ex, y: ey }],
-            isOctilinear: false,
             off,
             preferOff
           });
@@ -2944,7 +2877,7 @@ export class ProceduralLogisticsWorld {
     let bestScore = Infinity;
 
     for (const cand of candidateCurves) {
-      const samples = this.sampleMotorwayCurve(cand.waypoints, cand.isOctilinear);
+      const samples = this.sampleMotorwayCurve(cand.waypoints);
       const rawScore = this.scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId, cand.preferOff, cand.off);
       const bonus = (cand.isCloverleafTarget ? 35.0 : 0) + (cand.isValleyCorridor ? 15.0 : 0);
       const score = rawScore - bonus;
@@ -2964,7 +2897,6 @@ export class ProceduralLogisticsWorld {
       ex, ey,
       waypoints: bestCand.waypoints,
       samples: bestCand.samples,
-      algo,
       airportId,
       townId,
       prunedStart: false,
@@ -2972,8 +2904,8 @@ export class ProceduralLogisticsWorld {
     };
   }
 
-  sampleMotorwayCurve(waypoints, isOctilinear = false) {
-    if (waypoints.length === 3 && !isOctilinear) {
+  sampleMotorwayCurve(waypoints) {
+    if (waypoints.length === 3) {
       const [p0, p1, p2] = waypoints;
       const out = [];
       const steps = 42;
@@ -2988,7 +2920,7 @@ export class ProceduralLogisticsWorld {
       return out;
     }
 
-    if (waypoints.length === 4 && !isOctilinear) {
+    if (waypoints.length === 4) {
       const [p0, p1, p2, p3] = waypoints;
       const out = [];
       const steps = 44;
@@ -3004,25 +2936,6 @@ export class ProceduralLogisticsWorld {
           y: c0 * p0.y + c1 * p1.y + c2 * p2.y + c3 * p3.y
         });
       }
-      return out;
-    }
-
-    if (isOctilinear) {
-      // Round octilinear corners slightly with 1-pass beveling so transit lines look crisp
-      const out = [];
-      const stepsPerSeg = 14;
-      for (let i = 0; i < waypoints.length - 1; i++) {
-        const a = waypoints[i];
-        const b = waypoints[i + 1];
-        for (let s = 0; s < stepsPerSeg; s++) {
-          const t = s / stepsPerSeg;
-          out.push({
-            x: a.x + (b.x - a.x) * t,
-            y: a.y + (b.y - a.y) * t
-          });
-        }
-      }
-      out.push(waypoints[waypoints.length - 1]);
       return out;
     }
 
@@ -3068,7 +2981,7 @@ export class ProceduralLogisticsWorld {
    * or unserved town beltway stub) directly into a dry interior point on an existing trunk motorway,
    * terminating at the trumpet throat with a perpendicular arrival tangent.
    */
-  tryBuildTrumpetSpurToTrunk(number, originX, originY, algo, airportId = null, townId = null) {
+  tryBuildTrumpetSpurToTrunk(number, originX, originY, airportId = null, townId = null) {
     const ap = airportId !== null ? this.airports[airportId] : null;
     let bestResult = null;
     let bestScore = Infinity;
@@ -3143,7 +3056,7 @@ export class ProceduralLogisticsWorld {
           const p3 = { x: hitPt.x, y: hitPt.y };
 
           const waypoints = [p0, p1, p2, p3];
-          const samples = this.sampleMotorwayCurve(waypoints, false);
+          const samples = this.sampleMotorwayCurve(waypoints);
           const score = this.scoreMotorwaySamples(samples, originX, originY, hitPt.x, hitPt.y, airportId, 0, 0, true, trunk.number);
           if (!Number.isFinite(score)) continue;
 
@@ -3159,7 +3072,6 @@ export class ProceduralLogisticsWorld {
                 ey: hitPt.y,
                 waypoints,
                 samples,
-                algo,
                 airportId,
                 townId,
                 prunedStart: false,
@@ -3470,7 +3382,6 @@ export class ProceduralLogisticsWorld {
   }
 
   buildNumberedMotorways() {
-    const algo = this.config.expresswayAlgo || 'gravity-ring';
     let mwayNumber = 1;
     const maxStateMotorways = 6;
 
@@ -3555,7 +3466,7 @@ export class ProceduralLogisticsWorld {
       const endY = endB.usedHubGate ? endA.stub.y : endB.stub.y;
       const startApId = endA.usedHubGate ? endA.ap.id : (endB.usedHubGate ? endB.ap.id : null);
 
-      const mw1 = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, tB.id);
+      const mw1 = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, startApId, tB.id);
       if (mw1) {
         if (endA.usedHubGate) endA.ap.motorwayId = mwayNumber;
         if (endB.usedHubGate) endB.ap.motorwayId = mwayNumber;
@@ -3635,7 +3546,7 @@ export class ProceduralLogisticsWorld {
           }
         }
 
-        const mw2 = this.createMotorwayEntity(mwayNumber, sx, sy, ex, ey, algo, startApId, tD.id, bestViaPt);
+        const mw2 = this.createMotorwayEntity(mwayNumber, sx, sy, ex, ey, startApId, tD.id, bestViaPt);
         const crossesM1 = mw2 && this.findPolylineIntersection(mw1.samples, mw2.samples) !== null;
         if (mw2 && crossesM1) {
           if (endC.usedHubGate) endC.ap.motorwayId = mwayNumber;
@@ -3692,7 +3603,6 @@ export class ProceduralLogisticsWorld {
             mwayNumber,
             mEnd.stub.x,
             mEnd.stub.y,
-            algo,
             mEnd.usedHubGate ? mEnd.ap.id : null,
             cTown.id
           );
@@ -3746,7 +3656,7 @@ export class ProceduralLogisticsWorld {
             const endY = endB.usedHubGate ? endA.stub.y : endB.stub.y;
             const startApId = endA.usedHubGate ? endA.ap.id : (endB.usedHubGate ? endB.ap.id : null);
 
-            const mwCluster = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, algo, startApId, hubTown.id);
+            const mwCluster = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, startApId, hubTown.id);
             const crossesExisting =
               mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
             if (mwCluster && (canShare || crossesExisting || (pass === 1 && (metro.tier === 1 || isIslandHopper)))) {
@@ -3782,7 +3692,7 @@ export class ProceduralLogisticsWorld {
 
       // 3A. Try connecting the airport gate directly into an existing trunk motorway via a 3-way Trumpet Interchange
       const apStubForSpur = this.createTerminalStreetStub(ap, true, ap.x + ap.landNx * 35, ap.y + ap.landNy * 35);
-      const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, apStubForSpur.x, apStubForSpur.y, algo, ap.id, ap.hostTownId);
+      const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, apStubForSpur.x, apStubForSpur.y, ap.id, ap.hostTownId);
       if (spurRes) {
         ap.motorwayId = mwayNumber++;
         this.motorways.push(spurRes.mw);
@@ -3848,7 +3758,7 @@ export class ProceduralLogisticsWorld {
             mwayNumber,
             apStub.x, apStub.y,
             townStub.x, townStub.y,
-            algo, ap.id, targetTown.id
+            ap.id, targetTown.id
           );
           const connectsToTrunk =
             mwAp &&
@@ -3892,7 +3802,7 @@ export class ProceduralLogisticsWorld {
         }
       }
       const stub = this.createTerminalStreetStub(uTown, false, targetPt.x, targetPt.y);
-      const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, stub.x, stub.y, algo, null, uTown.id);
+      const spurRes = this.tryBuildTrumpetSpurToTrunk(mwayNumber, stub.x, stub.y, null, uTown.id);
       if (spurRes) {
         mwayNumber++;
         this.motorways.push(spurRes.mw);
@@ -4355,9 +4265,9 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
 
   // Stage 8: Expressways & Cloverleaf/Trumpet System Interchanges
   const stage8_motorways = createMemoStage(
-    (cfg, noise, s2b, s3, s4, s5, s67) => [cfg.seed, cfg.archetype, cfg.expresswayAlgo, noise, s2b, s3, s4, s5, s67],
-    (seed, archetype, expresswayAlgo, noise, s2b, s3, s4, s5, s67) => {
-      w.config = { seed, archetype, expresswayAlgo };
+    (cfg, noise, s2b, s3, s4, s5, s67) => [cfg.seed, cfg.archetype, noise, s2b, s3, s4, s5, s67],
+    (seed, archetype, noise, s2b, s3, s4, s5, s67) => {
+      w.config = { seed, archetype };
       w.noise = noise;
       w.logs = [];
       w.motorways = [];

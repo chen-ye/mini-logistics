@@ -107,7 +107,6 @@ export function getGeneratorConfig() {
     archetype: document.getElementById('archetypeSelect').value,
     terrainAlgo: document.getElementById('terrainAlgoSelect')?.value || 'tectonic-fbm',
     hydrologyAlgo: document.getElementById('hydrologyAlgoSelect')?.value || 'thalweg-astar',
-
     airportMix: document.getElementById('airportMixSelect').value,
     includeIntermediateRamps: document.getElementById('toggleInterRamps').checked,
     waterCoverage: parseInt(document.getElementById('sliderWater').value, 10),
@@ -468,7 +467,6 @@ document.getElementById('archetypeSelect').addEventListener('change', (e) => {
 });
 document.getElementById('terrainAlgoSelect').addEventListener('change', () => rebuildWorld(true));
 document.getElementById('hydrologyAlgoSelect').addEventListener('change', () => rebuildWorld(true));
-
 document.getElementById('airportMixSelect').addEventListener('change', () => rebuildWorld(true));
 document.getElementById('toggleInterRamps').addEventListener('change', () => rebuildWorld(true));
 
