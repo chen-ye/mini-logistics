@@ -1222,8 +1222,11 @@ export class ProceduralLogisticsWorld {
     }
   }
 
-  findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false) {
+  findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false, options = null) {
     const { W } = this;
+    const isInterchangeBypass = Boolean(options && options.isInterchangeBypass);
+    const customTurnPenalty = options && options.turnPenalty !== undefined ? options.turnPenalty : null;
+    const extraCostFn = options && options.extraCostFn ? options.extraCostFn : null;
     const startId = this.idx(sx, sy);
     const endId = this.idx(ex, ey);
     const gen = ++this._astarGen;
@@ -1324,18 +1327,21 @@ export class ProceduralLogisticsWorld {
 
         // Inside urban town zones (`zoneColorIdx >= 0`) or adjacent to buildings, strictly enforce
         // orthogonal (0°/90°) movement so city streets never slice 45° diagonal wedges across orthogonal
-        // blocks or clip building corners, while rural roads (`zoneColorIdx === -1`) can freely take 45°
-        // diagonal steps and share existing diagonal highways!
+        // blocks or clip building corners, while rural roads (`zoneColorIdx === -1`) and interchange
+        // bypass rings (`buildingMask === 4`) can freely take 45° diagonal steps!
         const c1Id = this.idx(cx + dx, cy);
         const c2Id = this.idx(cx, cy + dy);
+        const inInterchangeRing =
+          isInterchangeBypass || (this.buildingMask[cid] === 4 && this.buildingMask[nid] === 4);
         if (
           dx !== 0 &&
           dy !== 0 &&
           !this.hasRoadEdge(cx, cy, nx, ny) &&
-          (this.zoneColorIdx[cid] >= 0 ||
-            this.zoneColorIdx[nid] >= 0 ||
-            this.zoneColorIdx[c1Id] >= 0 ||
-            this.zoneColorIdx[c2Id] >= 0 ||
+          ((!inInterchangeRing &&
+            (this.zoneColorIdx[cid] >= 0 ||
+              this.zoneColorIdx[nid] >= 0 ||
+              this.zoneColorIdx[c1Id] >= 0 ||
+              this.zoneColorIdx[c2Id] >= 0)) ||
             (this.buildingMask[c1Id] >= 1 && this.buildingMask[c1Id] <= 3) ||
             (this.buildingMask[c2Id] >= 1 && this.buildingMask[c2Id] <= 3))
         ) {
@@ -1384,7 +1390,7 @@ export class ProceduralLogisticsWorld {
           const dElev = Math.max(0, this.elevationField[nid] - this.elevationField[cid]);
           stepCost += this.slopeField[nid] * 3.8 + dElev * 16.0 + Math.max(0, this.elevationField[nid] - this.seaLevel - 0.14) * 2.2;
           // Strongly prefer existing orthogonal streets inside urban zones; never carve a parallel street 1-2 tiles away!
-          if (this.zoneColorIdx[nid] >= 0) {
+          if (this.zoneColorIdx[nid] >= 0 && !isInterchangeBypass && this.buildingMask[nid] !== 4) {
             stepCost *= 4.5;
             const pnx = -dy;
             const pny = dx;
@@ -1397,13 +1403,20 @@ export class ProceduralLogisticsWorld {
               }
             }
           }
+          if (extraCostFn) {
+            stepCost += extraCostFn(nx, ny);
+          }
         }
 
         // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) so A* marches in clean octilinear runs
         // instead of 1-tile staircases or caterpillar zig-zags!
         if (pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
-          const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
-          stepCost += inUrban ? 4.2 : 2.4;
+          if (customTurnPenalty !== null) {
+            stepCost += customTurnPenalty;
+          } else {
+            const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
+            stepCost += inUrban ? 4.2 : 2.4;
+          }
         }
 
         const tentativeG = gScore[cid] + stepCost;
@@ -1473,24 +1486,32 @@ export class ProceduralLogisticsWorld {
           const nid = this.idx(next.x, next.y);
           const c1Id = this.idx(prev.x, next.y);
           const c2Id = this.idx(next.x, prev.y);
+          const isBypassRing =
+            (this.buildingMask[pid] === 4 || this.buildingMask[cid] === 4 || this.buildingMask[nid] === 4) &&
+            (this.buildingMask[pid] === 0 || this.buildingMask[pid] === 4) &&
+            (this.buildingMask[cid] === 0 || this.buildingMask[cid] === 4) &&
+            (this.buildingMask[nid] === 0 || this.buildingMask[nid] === 4) &&
+            (this.buildingMask[c1Id] === 0 || this.buildingMask[c1Id] === 4) &&
+            (this.buildingMask[c2Id] === 0 || this.buildingMask[c2Id] === 4);
 
           if (
             this.roadGrid[cid] === 0 &&
-            this.zoneColorIdx[pid] < 0 &&
-            this.zoneColorIdx[cid] < 0 &&
-            this.zoneColorIdx[nid] < 0 &&
-            this.zoneColorIdx[c1Id] < 0 &&
-            this.zoneColorIdx[c2Id] < 0 &&
-            this.buildingMask[pid] === 0 &&
-            this.buildingMask[cid] === 0 &&
-            this.buildingMask[nid] === 0 &&
-            this.buildingMask[c1Id] === 0 &&
-            this.buildingMask[c2Id] === 0 &&
             this.waterMask[c1Id] === 0 &&
             this.waterMask[c2Id] === 0 &&
-            !isNearAnyTownEnvelope(prev.x, prev.y) &&
-            !isNearAnyTownEnvelope(curr.x, curr.y) &&
-            !isNearAnyTownEnvelope(next.x, next.y)
+            (isBypassRing ||
+              (this.zoneColorIdx[pid] < 0 &&
+                this.zoneColorIdx[cid] < 0 &&
+                this.zoneColorIdx[nid] < 0 &&
+                this.zoneColorIdx[c1Id] < 0 &&
+                this.zoneColorIdx[c2Id] < 0 &&
+                this.buildingMask[pid] === 0 &&
+                this.buildingMask[cid] === 0 &&
+                this.buildingMask[nid] === 0 &&
+                this.buildingMask[c1Id] === 0 &&
+                this.buildingMask[c2Id] === 0 &&
+                !isNearAnyTownEnvelope(prev.x, prev.y) &&
+                !isNearAnyTownEnvelope(curr.x, curr.y) &&
+                !isNearAnyTownEnvelope(next.x, next.y)))
           ) {
             continue;
           }
@@ -2702,6 +2723,33 @@ export class ProceduralLogisticsWorld {
     return true;
   }
 
+  /**
+   * Computes a soft siting penalty when a candidate Cloverleaf or Trumpet interchange footprint
+   * overlaps existing surface roads, bridges, or buildings, steering interchanges into open pockets
+   * beside arterials when available.
+   */
+  interchangeRoadOverlapCost(cx, cy, radius = 4.2) {
+    const rCeil = Math.ceil(radius);
+    const r2 = radius * radius;
+    let cost = 0;
+    for (let dy = -rCeil; dy <= rCeil; dy++) {
+      for (let dx = -rCeil; dx <= rCeil; dx++) {
+        if (dx * dx + dy * dy > r2) continue;
+        const gx = Math.round(cx + dx);
+        const gy = Math.round(cy + dy);
+        if (!this.inBounds(gx, gy, 1)) continue;
+        const id = this.idx(gx, gy);
+        const rg = this.roadGrid[id];
+        if (rg === 3) cost += 35.0;
+        else if (rg === 2) cost += 4.5;
+        else if (rg === 1) cost += 2.2;
+        const bm = this.buildingMask[id];
+        if (bm === 1 || bm === 2) cost += 3.0;
+      }
+    }
+    return cost;
+  }
+
   scoreMotorwaySamples(samples, sx, sy, ex, ey, airportId = null, preferOff = 0, candidateOff = 0, forbidAnyCrossing = false, allowTouchTrunkNum = null) {
     if (!samples || samples.length < 2) return Infinity;
     const chord = Math.hypot(ex - sx, ey - sy) || 1;
@@ -3422,7 +3470,11 @@ export class ProceduralLogisticsWorld {
           const score = this.scoreMotorwaySamples(samples, originX, originY, hitPt.x, hitPt.y, airportId, 0, 0, true, trunk.number);
           if (!Number.isFinite(score)) continue;
 
-          const totalScore = score + chord * 0.45 + (1.0 - cosPerp) * 18;
+          const totalScore =
+            score +
+            chord * 0.45 +
+            (1.0 - cosPerp) * 18 +
+            this.interchangeRoadOverlapCost(hitPt.x, hitPt.y, 4.0) * 0.55;
           if (totalScore < bestScore) {
             bestScore = totalScore;
             bestResult = {
@@ -3478,8 +3530,8 @@ export class ProceduralLogisticsWorld {
         );
         if (tooClose) continue;
 
-        this.displaceBuildingsInRadius(hit.x, hit.y, 5.2);
-        this.interchanges.push({
+        this.displaceBuildingsInRadius(hit.x, hit.y, 5.6);
+        const cloverIc = {
           type: 'cloverleaf',
           x: hit.x,
           y: hit.y,
@@ -3491,7 +3543,9 @@ export class ProceduralLogisticsWorld {
           mwayA: mA.number,
           mwayB: mB.number,
           label: `M-${mA.number} × M-${mB.number} Cloverleaf`
-        });
+        };
+        this.displaceAndRerouteRoadsAtInterchange(cloverIc, false);
+        this.interchanges.push(cloverIc);
       }
     }
   }
@@ -3547,98 +3601,402 @@ export class ProceduralLogisticsWorld {
   }
 
   /**
-   * Reroutes any surface street / arterial segment that passes through the one-sided slip-ramp
-   * wing of a diamond-ramp interchange around the wing (or through the roundabout terminal
-   * `(startX, startY)`). Returns `false` without severing any road if a clean detour cannot be built.
+   * Re-aims any house or commercial/industrial building whose driveway road tile (`roadX, roadY`)
+   * was displaced (`roadGrid === 0`) onto an adjacent surviving road tile (`roadGrid === 1 || 2`),
+   * or displaces the building if it no longer touches any active road.
    */
-  rerouteRoadsAroundDiamondRamp(cx, cy, angleRad, connSide, startX, startY) {
-    const cosA = Math.cos(angleRad);
-    const sinA = Math.sin(angleRad);
-    const nx = -sinA;
-    const ny = cosA;
+  rebindOrDisplaceOrphanedFrontage() {
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    this.houses = this.houses.filter(h => {
+      const rx = Math.round(h.roadX), ry = Math.round(h.roadY);
+      if (this.inBounds(rx, ry, 1) && (this.roadGrid[this.idx(rx, ry)] === 1 || this.roadGrid[this.idx(rx, ry)] === 2)) {
+        return true;
+      }
+      for (const [dx, dy] of dirs) {
+        const nx = h.x + dx, ny = h.y + dy;
+        if (this.inBounds(nx, ny, 1)) {
+          const rg = this.roadGrid[this.idx(nx, ny)];
+          if (rg === 1 || rg === 2) {
+            h.roadX = nx;
+            h.roadY = ny;
+            return true;
+          }
+        }
+      }
+      const hid = this.idx(h.x, h.y);
+      if (this.buildingMask[hid] === 1) this.buildingMask[hid] = 0;
+      const t = this.towns[h.townId];
+      if (t && t.housesCount > 0) t.housesCount--;
+      this.displacedBuildingsCount++;
+      return false;
+    });
 
-    const isInsideRampWing = (px, py) => {
-      const gx = Math.round(px);
-      const gy = Math.round(py);
-      if (gx === startX && gy === startY) return false;
-      const dx = px - cx;
-      const dy = py - cy;
-      const u = dx * cosA + dy * sinA;
-      const v = (dx * nx + dy * ny) * connSide;
-      return Math.abs(u) <= 3.6 && v >= 0.2 && v < 2.55;
-    };
+    this.destinations = this.destinations.filter(d => {
+      const rx = Math.round(d.roadX), ry = Math.round(d.roadY);
+      if (this.inBounds(rx, ry, 1) && (this.roadGrid[this.idx(rx, ry)] === 1 || this.roadGrid[this.idx(rx, ry)] === 2)) {
+        return true;
+      }
+      const wT = d.wTiles || 2;
+      const hT = d.hTiles || 2;
+      for (let dx = 0; dx < wT; dx++) {
+        for (const py of [-1, hT]) {
+          const nx = d.gx + dx, ny = d.gy + py;
+          if (this.inBounds(nx, ny, 1)) {
+            const rg = this.roadGrid[this.idx(nx, ny)];
+            if (rg === 1 || rg === 2) {
+              d.roadX = nx;
+              d.roadY = ny;
+              d.lotX = nx;
+              d.lotY = py === -1 ? d.gy : d.gy + hT - 1;
+              return true;
+            }
+          }
+        }
+      }
+      for (let dy = 0; dy < hT; dy++) {
+        for (const px of [-1, wT]) {
+          const nx = d.gx + px, ny = d.gy + dy;
+          if (this.inBounds(nx, ny, 1)) {
+            const rg = this.roadGrid[this.idx(nx, ny)];
+            if (rg === 1 || rg === 2) {
+              d.roadX = nx;
+              d.roadY = ny;
+              d.lotX = px === -1 ? d.gx : d.gx + wT - 1;
+              d.lotY = ny;
+              return true;
+            }
+          }
+        }
+      }
+      for (let dy = 0; dy < hT; dy++) {
+        for (let dx = 0; dx < wT; dx++) {
+          const did = this.idx(d.gx + dx, d.gy + dy);
+          if (this.buildingMask[did] === 2) this.buildingMask[did] = 0;
+        }
+      }
+      const t = this.towns[d.townId];
+      if (t) {
+        if (t.destinationsCount > 0) t.destinationsCount--;
+        if (d.zoneType === 'commercial' && t.commercialCount > 0) t.commercialCount--;
+        if (d.zoneType === 'industrial' && t.industrialCount > 0) t.industrialCount--;
+      }
+      this.displacedBuildingsCount++;
+      return false;
+    });
+  }
+
+  /**
+   * Displaces surface roads (`street` and `arterial`) from the footprint of a newly placed
+   * `cloverleaf`, `trumpet`, or `diamond-ramp` interchange and actively reroutes both
+   * through-roads (`pEntry -> pExit`) and severed branch junctions (`pOut -> bypass`)
+   * around the interchange perimeter via octilinear A*.
+   * Returns `false` without mutating `this.roads` if `requireCleanReroute` is true and any
+   * affected road cannot be cleanly rerouted.
+   */
+  displaceAndRerouteRoadsAtInterchange(ic, requireCleanReroute = false) {
+    let isInsideCore;
+    if (ic.type === 'cloverleaf') {
+      isInsideCore = (px, py) => Math.hypot(px - ic.x, py - ic.y) <= 3.6;
+    } else if (ic.type === 'trumpet') {
+      const cosA = Math.cos(ic.angleMain);
+      const sinA = Math.sin(ic.angleMain);
+      const nx = -sinA * (ic.sideSign || 1);
+      const ny = cosA * (ic.sideSign || 1);
+      isInsideCore = (px, py) => {
+        const dx = px - ic.x;
+        const dy = py - ic.y;
+        const u = dx * cosA + dy * sinA;
+        const v = dx * nx + dy * ny;
+        return Math.abs(u) <= 3.3 && v >= -2.4 && v <= 3.3;
+      };
+    } else if (ic.type === 'diamond-ramp') {
+      const cosA = Math.cos(ic.angleRad);
+      const sinA = Math.sin(ic.angleRad);
+      const nx = -sinA * ic.connSide;
+      const ny = cosA * ic.connSide;
+      isInsideCore = (px, py) => {
+        const gx = Math.round(px);
+        const gy = Math.round(py);
+        if (gx === ic.connectX && gy === ic.connectY) return false;
+        const dx = px - ic.x;
+        const dy = py - ic.y;
+        const u = dx * cosA + dy * sinA;
+        const v = dx * nx + dy * ny;
+        return Math.abs(u) <= 3.5 && v >= -0.4 && v < 2.55;
+      };
+    } else {
+      return true;
+    }
 
     const hasAnyRoadOverlap = this.roads.some(
-      r => r.type !== 'airport-loop' && r.points.some(pt => isInsideRampWing(pt.x, pt.y))
+      r => r.type !== 'airport-loop' && r.points.some(pt => isInsideCore(pt.x, pt.y))
     );
     if (!hasAnyRoadOverlap) return true;
 
-    const updatedRoads = [];
-    for (const r of this.roads) {
-      if (r.type === 'airport-loop' || r.type === 'airport-spine') {
-        if (r.points.some(pt => isInsideRampWing(pt.x, pt.y))) return false;
-        updatedRoads.push(r);
-        continue;
+    // 0. Expand the stripped zone outward along degree-2 unanchored road segments (up to `maxPullback` tiles)
+    //    until reaching real corridor anchors (`deg >= 3` junctions, building driveways, or bridges)
+    //    so realigned roads sweep smoothly from anchor to anchor instead of forming a tight 4-bend U-blister!
+    const total = this.W * this.H;
+    const preDeg = new Uint8Array(total);
+    const frontageMask = new Uint8Array(total);
+    const fullAdj = new Map();
+    const addFullEdge = (u, v) => {
+      if (!fullAdj.has(u)) fullAdj.set(u, []);
+      if (!fullAdj.has(v)) fullAdj.set(v, []);
+      const lu = fullAdj.get(u);
+      if (!lu.includes(v)) {
+        lu.push(v);
+        fullAdj.get(v).push(u);
+        preDeg[u] = Math.min(255, preDeg[u] + 1);
+        preDeg[v] = Math.min(255, preDeg[v] + 1);
       }
+    };
 
-      let firstIn = -1;
-      let lastIn = -1;
-      for (let i = 0; i < r.points.length; i++) {
-        if (isInsideRampWing(r.points[i].x, r.points[i].y)) {
-          if (firstIn === -1) firstIn = i;
-          lastIn = i;
-        }
-      }
-      if (firstIn === -1) {
-        updatedRoads.push(r);
-        continue;
-      }
-
-      if (firstIn === 0 && lastIn === r.points.length - 1) {
-        return false;
-      }
-
-      const pEntry = firstIn > 0 ? r.points[firstIn - 1] : { x: startX, y: startY, isBridge: false };
-      const pExit = lastIn < r.points.length - 1 ? r.points[lastIn + 1] : { x: startX, y: startY, isBridge: false };
-      const detour = this.findRoadPathAStar(
-        Math.round(pEntry.x),
-        Math.round(pEntry.y),
-        Math.round(pExit.x),
-        Math.round(pExit.y),
-        false,
-        isInsideRampWing,
-        false
-      );
-      if (!detour || detour.length < 2) {
-        return false;
-      }
-
-      const prefix = firstIn > 0 ? r.points.slice(0, firstIn - 1) : [];
-      const suffix = lastIn < r.points.length - 1 ? r.points.slice(lastIn + 2) : [];
-      const mergedPts = [...prefix, ...detour, ...suffix];
-      const dedupPts = [];
-      for (const pt of mergedPts) {
-        const prev = dedupPts[dedupPts.length - 1];
-        if (!prev || prev.x !== pt.x || prev.y !== pt.y) {
-          dedupPts.push(pt);
-        }
-      }
-      if (dedupPts.length < 2) return false;
-      updatedRoads.push({ ...r, points: dedupPts });
+    for (const h of this.houses) {
+      const rx = Math.round(h.roadX), ry = Math.round(h.roadY);
+      if (this.inBounds(rx, ry, 1)) frontageMask[this.idx(rx, ry)] = 1;
+    }
+    for (const d of this.destinations) {
+      const rx = Math.round(d.roadX), ry = Math.round(d.roadY);
+      if (this.inBounds(rx, ry, 1)) frontageMask[this.idx(rx, ry)] = 1;
     }
 
-    this.roads = updatedRoads;
-    this.houses = this.houses.filter(h => {
-      const keep = !isInsideRampWing(h.roadX, h.roadY);
-      if (!keep) {
-        const hid = this.idx(h.x, h.y);
-        if (this.buildingMask[hid] === 1) this.buildingMask[hid] = 0;
-        const t = this.towns[h.townId];
-        if (t && t.housesCount > 0) t.housesCount--;
+    const strippedTile = new Uint8Array(total);
+    const pullDist = new Uint8Array(total);
+    const pullQ = [];
+
+    for (const r of this.roads) {
+      if (r.type === 'airport-loop' || r.type === 'airport-spine') continue;
+      for (let i = 0; i < r.points.length; i++) {
+        const pt = r.points[i];
+        const gx = Math.round(pt.x), gy = Math.round(pt.y);
+        const id = this.idx(gx, gy);
+        if (isInsideCore(pt.x, pt.y) && strippedTile[id] === 0) {
+          strippedTile[id] = 1;
+          pullQ.push(id);
+        }
+        if (i < r.points.length - 1) {
+          const next = r.points[i + 1];
+          addFullEdge(id, this.idx(Math.round(next.x), Math.round(next.y)));
+        }
       }
-      return keep;
-    });
+    }
+
+    const maxPullback = ic.type === 'diamond-ramp' ? 10 : 18;
+    let pHead = 0;
+    while (pHead < pullQ.length) {
+      const cid = pullQ[pHead++];
+      if (pullDist[cid] >= maxPullback) continue;
+      for (const nid of (fullAdj.get(cid) || [])) {
+        if (strippedTile[nid] === 1) continue;
+        const nx = nid % this.W;
+        const ny = Math.floor(nid / this.W);
+        const isKey =
+          this.airports.some(a => a.gateX === nx && a.gateY === ny) ||
+          this.interchanges.some(otherIc => Math.round(otherIc.x) === nx && Math.round(otherIc.y) === ny);
+        if (isKey || this.roadGrid[nid] === 3) continue;
+        if (frontageMask[nid] === 1 && Math.hypot(nx - ic.x, ny - ic.y) > 6.8) continue;
+        // Stop at degree >= 3 junctions so the junction tile itself acts as the wide-horizon portal!
+        if (preDeg[nid] >= 3) continue;
+        strippedTile[nid] = 1;
+        pullDist[nid] = pullDist[cid] + 1;
+        pullQ.push(nid);
+      }
+    }
+
+    const isInsideFootprint = (px, py) =>
+      isInsideCore(px, py) || strippedTile[this.idx(Math.round(px), Math.round(py))] === 1;
+
+    // 1. Build the subgraph of road edges touching `isInsideFootprint` and identify all
+    //    boundary portal vertices (vertices just outside `isInsideFootprint` connected to an inside vertex).
+    const subAdj = new Map();
+    const addSubEdge = (u, v) => {
+      if (!subAdj.has(u)) subAdj.set(u, []);
+      if (!subAdj.has(v)) subAdj.set(v, []);
+      subAdj.get(u).push(v);
+      subAdj.get(v).push(u);
+    };
+    const portals = new Map();
+    const insideFlags = new Map();
+
+    for (const r of this.roads) {
+      if (r.type === 'airport-loop' || r.type === 'airport-spine') {
+        if (r.points.some(pt => isInsideFootprint(pt.x, pt.y)) && requireCleanReroute) {
+          return false;
+        }
+        continue;
+      }
+      const pts = r.points;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[i];
+        const p1 = pts[i + 1];
+        const in0 = isInsideFootprint(p0.x, p0.y);
+        const in1 = isInsideFootprint(p1.x, p1.y);
+        if (!in0 && !in1) continue;
+
+        const x0 = Math.round(p0.x), y0 = Math.round(p0.y);
+        const x1 = Math.round(p1.x), y1 = Math.round(p1.y);
+        const id0 = this.idx(x0, y0);
+        const id1 = this.idx(x1, y1);
+        addSubEdge(id0, id1);
+
+        if (in0) {
+          const prev = insideFlags.get(id0) || { isArterial: false, isMainBoulevard: false };
+          insideFlags.set(id0, {
+            isArterial: prev.isArterial || r.type !== 'street',
+            isMainBoulevard: prev.isMainBoulevard || Boolean(r.isMainBoulevard)
+          });
+        } else {
+          const prev = portals.get(id0) || { x: x0, y: y0, id: id0, isArterial: false, isMainBoulevard: false };
+          portals.set(id0, {
+            x: x0,
+            y: y0,
+            id: id0,
+            isArterial: prev.isArterial || r.type !== 'street',
+            isMainBoulevard: prev.isMainBoulevard || Boolean(r.isMainBoulevard)
+          });
+        }
+
+        if (in1) {
+          const prev = insideFlags.get(id1) || { isArterial: false, isMainBoulevard: false };
+          insideFlags.set(id1, {
+            isArterial: prev.isArterial || r.type !== 'street',
+            isMainBoulevard: prev.isMainBoulevard || Boolean(r.isMainBoulevard)
+          });
+        } else {
+          const prev = portals.get(id1) || { x: x1, y: y1, id: id1, isArterial: false, isMainBoulevard: false };
+          portals.set(id1, {
+            x: x1,
+            y: y1,
+            id: id1,
+            isArterial: prev.isArterial || r.type !== 'street',
+            isMainBoulevard: prev.isMainBoulevard || Boolean(r.isMainBoulevard)
+          });
+        }
+      }
+    }
+
+    // 2. Group boundary portals by their connected component through `isInsideFootprint`
+    const visitedSub = new Set();
+    const portalGroups = [];
+    for (const [startId, flag] of insideFlags.entries()) {
+      if (visitedSub.has(startId)) continue;
+      visitedSub.add(startId);
+      const q = [startId];
+      const groupMap = new Map();
+      let groupArterial = flag.isArterial;
+      let groupMainBoulevard = flag.isMainBoulevard;
+
+      while (q.length > 0) {
+        const cur = q.pop();
+        const f = insideFlags.get(cur);
+        if (f) {
+          if (f.isArterial) groupArterial = true;
+          if (f.isMainBoulevard) groupMainBoulevard = true;
+        }
+        for (const nb of (subAdj.get(cur) || [])) {
+          if (portals.has(nb)) {
+            const pObj = portals.get(nb);
+            groupMap.set(nb, pObj);
+            if (pObj.isArterial) groupArterial = true;
+            if (pObj.isMainBoulevard) groupMainBoulevard = true;
+          } else if (!visitedSub.has(nb)) {
+            visitedSub.add(nb);
+            q.push(nb);
+          }
+        }
+      }
+      if (groupMap.size > 0) {
+        portalGroups.push({
+          portals: [...groupMap.values()],
+          isArterial: groupArterial,
+          isMainBoulevard: groupMainBoulevard
+        });
+      }
+    }
+
+    // 3. Strip all vertices inside `isInsideFootprint` from `this.roads`
+    const survivingRoads = [];
+    for (const r of this.roads) {
+      if (r.type === 'airport-loop' || r.type === 'airport-spine') {
+        survivingRoads.push(r);
+        continue;
+      }
+      let seg = [];
+      for (const pt of r.points) {
+        if (!isInsideFootprint(pt.x, pt.y)) {
+          seg.push(pt);
+        } else {
+          if (seg.length >= 2) {
+            survivingRoads.push({ ...r, points: seg });
+          }
+          seg = [];
+        }
+      }
+      if (seg.length >= 2) {
+        survivingRoads.push({ ...r, points: seg });
+      }
+    }
+
+    this.roads = survivingRoads;
     this.rebuildRoadGridAndEdges();
+
+    // 4. Reroute each portal group around the interchange perimeter via octilinear A*
+    for (const group of portalGroups) {
+      const pts = group.portals;
+      const rType = group.isArterial ? 'arterial' : 'street';
+      const extraProps = group.isMainBoulevard ? { isMainBoulevard: true } : null;
+
+      if (pts.length >= 2) {
+        // Order portals by angle around `(ic.x, ic.y)` starting after the widest angular gap
+        const withAng = pts
+          .map(p => ({ ...p, ang: Math.atan2(p.y - ic.y, p.x - ic.x) }))
+          .sort((a, b) => a.ang - b.ang);
+        let maxGap = -1;
+        let startIdx = 0;
+        for (let i = 0; i < withAng.length; i++) {
+          const next = withAng[(i + 1) % withAng.length];
+          let gap = next.ang - withAng[i].ang;
+          if (gap < 0) gap += Math.PI * 2;
+          if (gap > maxGap) {
+            maxGap = gap;
+            startIdx = (i + 1) % withAng.length;
+          }
+        }
+        const ordered = [];
+        for (let i = 0; i < withAng.length; i++) {
+          ordered.push(withAng[(startIdx + i) % withAng.length]);
+        }
+
+        const bypassOptions = {
+          isInterchangeBypass: true,
+          turnPenalty: 7.5
+        };
+
+        for (let i = 0; i < ordered.length - 1; i++) {
+          const pA = ordered[i];
+          const pB = ordered[i + 1];
+          const detour = this.findRoadPathAStar(pA.x, pA.y, pB.x, pB.y, true, isInsideCore, false, bypassOptions);
+          if (detour && detour.length >= 2) {
+            this.commitRoadPath(detour, rType, extraProps);
+          } else if (requireCleanReroute) {
+            return false;
+          }
+        }
+      } else if (pts.length === 1 && ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
+        const pA = pts[0];
+        const detour = this.findRoadPathAStar(pA.x, pA.y, ic.connectX, ic.connectY, true, isInsideCore, false, {
+          isInterchangeBypass: true,
+          turnPenalty: 6.5
+        });
+        if (detour && detour.length >= 2) {
+          this.commitRoadPath(detour, rType, extraProps);
+        }
+      }
+    }
+
+    this.rebuildRoadGridAndEdges();
+    this.rebindOrDisplaceOrphanedFrontage();
     return true;
   }
 
@@ -3774,17 +4132,10 @@ export class ProceduralLogisticsWorld {
           const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false, blockUnderpassFn, true);
           if (!connectorPath || connectorPath.length < 2) continue;
 
-          if (!this.rerouteRoadsAroundDiamondRamp(x, y, angleRad, connSide, startX, startY)) {
-            continue;
-          }
+          this.displaceBuildingsInRadius(x, y, 4.4);
+          this.displaceBuildingsInRadius(termX, termY, 2.8);
 
-          this.displaceBuildingsInRadius(x, y, 3.4);
-          this.displaceBuildingsInRadius(termX, termY, 2.5);
-
-          this.commitRoadPath(connectorPath, 'arterial');
-          this.roadGrid[this.idx(startX, startY)] = 2;
-
-          this.interchanges.push({
+          const diamondIc = {
             type: 'diamond-ramp',
             x,
             y,
@@ -3797,7 +4148,13 @@ export class ProceduralLogisticsWorld {
             mwayNumber: mw.number,
             townName: nearestTown.name,
             label: `M-${mw.number} / ${nearestTown.name} Slip-Ramp`
-          });
+          };
+          this.displaceAndRerouteRoadsAtInterchange(diamondIc, false);
+
+          this.commitRoadPath(connectorPath, 'arterial');
+          this.roadGrid[this.idx(startX, startY)] = 2;
+
+          this.interchanges.push(diamondIc);
         }
       }
     }
@@ -3962,7 +4319,7 @@ export class ProceduralLogisticsWorld {
           const mAng = Math.atan2(pNext.y - pPrev.y, pNext.x - pPrev.x);
           if (Math.abs(Math.sin(mAng - crossAng)) < 0.64) continue;
           if (!this.isCloverleafFootprintDry(pt.x, pt.y, mAng, crossAng, [-1, 1], [-1, 1])) continue;
-          const dMid = Math.hypot(pt.x - midX, pt.y - midY);
+          const dMid = Math.hypot(pt.x - midX, pt.y - midY) + this.interchangeRoadOverlapCost(pt.x, pt.y, 4.4) * 0.45;
           if (dMid < minViaDist) {
             minViaDist = dMid;
             bestViaPt = pt;
@@ -4033,7 +4390,8 @@ export class ProceduralLogisticsWorld {
             if (mEnd.usedHubGate) mEnd.ap.motorwayId = mwayNumber;
             mwayNumber++;
             this.motorways.push(spurRes.mw);
-            this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+            this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 5.2);
+            this.displaceAndRerouteRoadsAtInterchange(spurRes.trumpetIc, false);
             this.interchanges.push(spurRes.trumpetIc);
             townMotorwayDegree[cTown.id]++;
             connectedClusters.add(metro.clusterId);
@@ -4119,7 +4477,8 @@ export class ProceduralLogisticsWorld {
         ap.motorwayId = mwayNumber++;
         this.motorways.push(spurRes.mw);
         if (host) townMotorwayDegree[host.id]++;
-        this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+        this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 5.2);
+        this.displaceAndRerouteRoadsAtInterchange(spurRes.trumpetIc, false);
         this.interchanges.push(spurRes.trumpetIc);
         builtApMotorway = true;
       }
@@ -4227,7 +4586,8 @@ export class ProceduralLogisticsWorld {
       if (spurRes) {
         mwayNumber++;
         this.motorways.push(spurRes.mw);
-        this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 4.6);
+        this.displaceBuildingsInRadius(spurRes.trumpetIc.x, spurRes.trumpetIc.y, 5.2);
+        this.displaceAndRerouteRoadsAtInterchange(spurRes.trumpetIc, false);
         this.interchanges.push(spurRes.trumpetIc);
         townMotorwayDegree[uTown.id]++;
       } else {
