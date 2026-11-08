@@ -849,7 +849,7 @@ document.getElementById('randomSeedBtn').addEventListener('click', () => {
   rebuildWorld(false);
 });
 
-document.getElementById('seedInput').addEventListener('change', () => rebuildWorld(true));
+document.getElementById('seedInput').addEventListener('change', () => rebuildWorld(false));
 document.getElementById('archetypeSelect').addEventListener('change', (e) => {
   if (e.target.value === 'island-hopper') {
     const apSlider = document.getElementById('sliderAirports');

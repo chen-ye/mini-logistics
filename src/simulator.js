@@ -35,17 +35,19 @@ export class LogisticsSimulator {
 
   spawnCar(isFreightTruck = false) {
     const { world } = this;
-    if (isFreightTruck && world.cargoLinks && world.cargoLinks.length > 0) {
+    const preferMotorwayFreight = isFreightTruck && world.motorways.length > 0 && Math.random() < 0.25;
+    if (isFreightTruck && !preferMotorwayFreight && world.cargoLinks && world.cargoLinks.length > 0) {
       const link = world.cargoLinks[Math.floor(Math.random() * world.cargoLinks.length)];
       if (link.points && link.points.length >= 2) {
         this.cars.push({
           mode: 'road',
           isFreightTruck: true,
+          isCargoLink: true,
           cargoStage: link.stage,
           road: { points: link.points },
           segIdx: Math.floor(Math.random() * (link.points.length - 1)),
           segT: Math.random(),
-          dir: Math.random() < 0.7 ? 1 : -1,
+          dir: Math.random() < 0.72 ? 1 : -1,
           speed: 2.8 + Math.random() * 1.4,
           color: link.color
         });

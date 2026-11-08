@@ -111,6 +111,29 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     const closed = new Uint8Array(W * H);
     const runLen = new Uint8Array(W * H);
     const leftSource = new Uint8Array(W * H);
+    const drySteps = new Float32Array(W * H);
+
+    // If starting inside a lake/water basin (`waterMask === 2`), flood-fill `sourceBasinMask`
+    // so the A* path never re-enters or terminates inside its own starting lake!
+    const sourceBasinMask = new Uint8Array(W * H);
+    if (world.waterMask[startId] === 2) {
+      const bq = [startId];
+      sourceBasinMask[startId] = 1;
+      let head = 0;
+      while (head < bq.length) {
+        const cur = bq[head++];
+        const bx = cur % W, by = Math.floor(cur / W);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = bx + dx, ny = by + dy;
+          if (!world.inBounds(nx, ny, 1)) continue;
+          const nid = world.idx(nx, ny);
+          if (!sourceBasinMask[nid] && world.waterMask[nid] === 2) {
+            sourceBasinMask[nid] = 1;
+            bq.push(nid);
+          }
+        }
+      }
+    }
 
     const heapNodes = [];
     const heapPriorities = [];
@@ -166,13 +189,13 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       const cx = cid % W;
       const cy = Math.floor(cid / W);
       const hasLeft = leftSource[cid] === 1;
-      const distFromStart = Math.hypot(cx - sx, cy - sy);
-      const minTravel = arch === 'island-hopper' ? 12 : minTravelDist;
+      const distFromShore = drySteps[cid];
+      const minTravel = arch === 'island-hopper' ? 7 : minTravelDist;
 
       if (
         cid === endId ||
-        (hasLeft && distFromStart >= minTravel && world.waterMask[cid] === 2) ||
-        (stopOnExistingRiver && hasLeft && distFromStart >= minTravel * 0.75 && world.waterMask[cid] === 1)
+        (hasLeft && sourceBasinMask[cid] === 0 && distFromShore >= Math.min(8, minTravel) && world.waterMask[cid] === 2) ||
+        (stopOnExistingRiver && hasLeft && distFromShore >= minTravel * 0.65 && world.waterMask[cid] === 1)
       ) {
         const path = [];
         let curr = cid;
@@ -199,6 +222,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         if (closed[nid]) continue;
 
         if (pid !== -1 && (dx * prevDx + dy * prevDy) < 0) continue;
+        // Once the path has exited the starting lake (`hasLeft`), never re-enter `sourceBasinMask`!
+        if (hasLeft && sourceBasinMask[nid] === 1) continue;
 
         const nextElev = world.elevationField[nid];
         const uphill = Math.max(0, nextElev - currElev);
@@ -207,7 +232,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         const sameDir = pid !== -1 && dx === prevDx && dy === prevDy;
         const nextRun = sameDir ? Math.min(255, runLen[cid] + 1) : 1;
         const straightPenalty = nextRun > 3 ? (nextRun - 3) * 1.15 : 0;
-        const earlyWaterPenalty = (hasLeft && distFromStart < minTravel && world.waterMask[nid] > 0) ? 110.0 : 0;
+        const earlyWaterPenalty = (hasLeft && distFromShore < Math.min(8, minTravel) && world.waterMask[nid] > 0) ? 110.0 : 0;
 
         const meanderWave =
           world.noise.fbm(nx * 0.045 + seedPhase, ny * 0.045 + seedPhase * 1.3, 2) * 3.8 +
@@ -227,7 +252,9 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           gScore[nid] = tentativeG;
           parent[nid] = cid;
           runLen[nid] = nextRun;
-          leftSource[nid] = (leftSource[cid] === 1 || world.waterMask[nid] === 0) ? 1 : 0;
+          const nextLeft = (hasLeft || (sourceBasinMask[nid] === 0 && world.waterMask[nid] === 0)) ? 1 : 0;
+          leftSource[nid] = nextLeft;
+          drySteps[nid] = nextLeft ? drySteps[cid] + baseStep : 0;
           const h = Math.hypot(ex - nx, ey - ny) * 0.78;
           heapPush(nid, tentativeG + h);
         }
@@ -323,7 +350,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       }
     }
     let path = rawPath.slice(i0);
-    const minLen = arch === 'island-hopper' ? 14 : (isMainOutflow ? 22 : 54);
+    const minLen = arch === 'island-hopper' ? 8 : (isMainOutflow ? 10 : 54);
     if (path.length < minLen) return;
 
     if (applyMeanders) {
@@ -332,22 +359,33 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       path = applyMeanderingDisplacement(path, seedPhase, 0.42);
     }
 
-    // If an interior river approaches within 22 tiles of a map border anywhere before its final 12 points,
-    // snap it to exit directly off the map border at that point so it never grazes the border and hooks back inland!
+    // If an interior river approaches within 8 tiles of a map border before its final 12 points,
+    // interpolate 1-tile steps cleanly to the map border so it exits off-canvas without an uncarved jump!
     if (path[0].x > 3 && path[0].x < W - 4 && path[0].y > 3 && path[0].y < H - 4) {
+      const buildBorderBridge = (bx, by, tx, ty) => {
+        const steps = Math.max(1, Math.ceil(Math.hypot(tx - bx, ty - by)));
+        const bridge = [];
+        for (let s = 0; s < steps; s++) {
+          bridge.push({
+            x: Math.round(bx + ((tx - bx) * s) / steps),
+            y: Math.round(by + ((ty - by) * s) / steps)
+          });
+        }
+        return bridge;
+      };
       for (let i = 0; i < path.length - 12; i++) {
         const pt = path[i];
-        if (pt.x >= W - 22) {
-          path = [{ x: W - 1, y: pt.y }, { x: W - 2, y: pt.y }, ...path.slice(i)];
+        if (pt.x >= W - 9) {
+          path = [...buildBorderBridge(W - 1, pt.y, pt.x, pt.y), ...path.slice(i)];
           break;
-        } else if (pt.x <= 21) {
-          path = [{ x: 0, y: pt.y }, { x: 1, y: pt.y }, ...path.slice(i)];
+        } else if (pt.x <= 8) {
+          path = [...buildBorderBridge(0, pt.y, pt.x, pt.y), ...path.slice(i)];
           break;
-        } else if (pt.y >= H - 20) {
-          path = [{ x: pt.x, y: H - 1 }, { x: pt.x, y: H - 2 }, ...path.slice(i)];
+        } else if (pt.y >= H - 9) {
+          path = [...buildBorderBridge(pt.x, H - 1, pt.x, pt.y), ...path.slice(i)];
           break;
-        } else if (pt.y <= 19) {
-          path = [{ x: pt.x, y: 0 }, { x: pt.x, y: 1 }, ...path.slice(i)];
+        } else if (pt.y <= 8) {
+          path = [...buildBorderBridge(pt.x, 0, pt.x, pt.y), ...path.slice(i)];
           break;
         }
       }
@@ -653,8 +691,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         const id = world.idx(sx, sy);
         if (world.waterMask[id] > 0) continue;
         const el = world.elevationField[id];
-        if (el < seaLevel + 0.22) continue;
-        if (placedSprings.some(p => Math.hypot(p.x - sx, p.y - sy) < 42)) continue;
+        if (el < seaLevel + 0.16) continue;
+        if (placedSprings.some(p => Math.hypot(p.x - sx, p.y - sy) < 34)) continue;
         if (el > bestElev) {
           bestElev = el;
           bestSp = { x: sx, y: sy };

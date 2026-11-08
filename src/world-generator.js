@@ -2346,8 +2346,9 @@ export class ProceduralLogisticsWorld {
       return true;
     };
 
-    // Whole-box urban clearance check: any BSP leaf box touching an urban building/house or pastel town zone
-    // (beyond 3 tiles of the 2×2 farmstead) is trimmed orthogonally (0°/90°) so town-facing edges stay 100% straight!
+    // Whole-box urban & road clearance check: any BSP leaf box touching an urban building/house, pastel town zone,
+    // or paved road (`roadGrid > 0`, outside the 2×2 farmstead and its immediate driveway tile) is trimmed
+    // orthogonally (0°/90°) so farm parcels never cross over paved haul roads or overlap town halos!
     const boxHitsUrbanBuilding = (x0, y0, x1, y1) => {
       for (let ty = y0 - 1; ty <= y1; ty++) {
         for (let tx = x0 - 1; tx <= x1; tx++) {
@@ -2356,12 +2357,9 @@ export class ProceduralLogisticsWorld {
           const tid = this.idx(tx, ty);
           const bm = this.buildingMask[tid];
           if (bm >= 1 && bm <= 4) return true;
-          if (
-            tx >= x0 && tx < x1 && ty >= y0 && ty < y1 &&
-            this.zoneColorIdx[tid] >= 0 &&
-            Math.hypot(tx - fcx, ty - fcy) > 3.8
-          ) {
-            return true;
+          if (tx >= x0 && tx < x1 && ty >= y0 && ty < y1) {
+            if (this.zoneColorIdx[tid] >= 0) return true;
+            if (this.roadGrid[tid] > 0 && Math.hypot(tx - fcx, ty - fcy) > 1.8) return true;
           }
         }
       }
@@ -2406,12 +2404,15 @@ export class ProceduralLogisticsWorld {
     };
 
     // 1. Recursive X/Y Binary Space Partitioning (BSP) across the alluvial basin around `(fgx, fgy)`
+    const isInsideAnyTownHalo = (px, py, mult = 0.65) =>
+      this.towns.some(t => Math.hypot(px - t.x, py - t.y) < (t.effectiveR || t.urbanRadius || 12) * mult);
+
     let wValid = 0, eValid = 0, nValid = 0, sValid = 0;
     for (let dy = -16; dy <= 17; dy++) {
       for (let dx = -18; dx <= 19; dx++) {
         const tx = fgx + dx, ty = fgy + dy;
         if (!isPhysicallyArable(tx, ty)) continue;
-        if (this.towns.some(t => Math.hypot(tx - t.x, ty - t.y) < t.radius * 0.60)) continue;
+        if (isInsideAnyTownHalo(tx, ty, 0.72)) continue;
         if (dx < 0) wValid++; else eValid++;
         if (dy < 0) nValid++; else sValid++;
       }
@@ -2489,7 +2490,7 @@ export class ProceduralLogisticsWorld {
 
       const touchesFarmstead =
         b.x0 <= fgx + 2 && b.x1 >= fgx && b.y0 <= fgy + 2 && b.y1 >= fgy;
-      if (!touchesFarmstead && this.towns.some(t => Math.hypot(bcx - t.x, bcy - t.y) < t.radius * 0.56)) {
+      if (!touchesFarmstead && isInsideAnyTownHalo(bcx, bcy, 0.68)) {
         continue;
       }
       const cleanBox = fitBoxClearOfUrban(b.x0, b.y0, b.x1, b.y1);
@@ -3414,11 +3415,6 @@ export class ProceduralLogisticsWorld {
     for (const t of this.towns) {
       seedRoot(t.x, t.y);
     }
-    for (let id = 0; id < size; id++) {
-      if (this.roadGrid[id] >= 2) {
-        arterialTouch[id] = 1;
-      }
-    }
     for (const ic of this.interchanges) {
       if (ic.type === 'terminal-stub') {
         const gx = Math.round(ic.x), gy = Math.round(ic.y);
@@ -3429,16 +3425,17 @@ export class ProceduralLogisticsWorld {
       }
     }
     for (const r of this.roads) {
-      if (r.type !== 'street') {
+      if (r.type !== 'street' && !r.isMainBoulevard) {
         for (const pt of r.points) {
           const gx = Math.round(pt.x), gy = Math.round(pt.y);
           if (this.inBounds(gx, gy, 1)) {
             arterialTouch[this.idx(gx, gy)] = 1;
           }
-          if (r.isMainBoulevard) {
-            seedRoot(gx, gy);
-          }
         }
+      } else if (r.isMainBoulevard && r.points.length > 0) {
+        // Seed only the central midpoint of a borough boulevard as a root so empty outer boulevard tails can be trimmed!
+        const midPt = r.points[Math.floor(r.points.length * 0.5)];
+        seedRoot(Math.round(midPt.x), Math.round(midPt.y));
       }
     }
 
@@ -3462,7 +3459,7 @@ export class ProceduralLogisticsWorld {
     }
 
     for (const r of this.roads) {
-      if (r.type !== 'street') continue;
+      if (r.type !== 'street' && !r.isMainBoulevard) continue;
       for (const pt of r.points) {
         const gx = Math.round(pt.x);
         const gy = Math.round(pt.y);
@@ -3478,10 +3475,10 @@ export class ProceduralLogisticsWorld {
       }
     }
 
-    // End-only trimming (`firstKeep .. lastKeep`): never punch holes in the middle of a street!
+    // End-only trimming (`firstKeep .. lastKeep`): trims both local streets AND empty outer tails of `isMainBoulevard`!
     const cleanedRoads = [];
     for (const r of this.roads) {
-      if (r.type !== 'street') {
+      if (r.type !== 'street' && !r.isMainBoulevard) {
         cleanedRoads.push(r);
         continue;
       }
@@ -3876,9 +3873,9 @@ export class ProceduralLogisticsWorld {
     // 2. Place Industrial (`I`) Sinks & Producers (`3×2`/`2×3` MFG Factories & LOG Hubs + `2×2` RAW Silo Yards)
     const indRectSorted = [...slotsRect].sort((a, b) => b.indScore - a.indScore);
     const ind2x2Sorted = [...slots2x2].sort((a, b) => b.indScore - a.indScore);
-    const tier1Roles = ['MFG', 'LOG', 'RAW', 'MFG', 'LOG', 'RAW'];
-    const tier2Roles = ['MFG', 'RAW', 'LOG', 'MFG', 'RAW'];
-    const tier3Roles = ['RAW', 'MFG', 'RAW'];
+    const tier1Roles = ['MFG', 'LOG', 'RAW', 'MFG', 'LOG', 'MFG'];
+    const tier2Roles = ['MFG', 'LOG', 'MFG', 'RAW', 'LOG'];
+    const tier3Roles = ['MFG', 'LOG', 'RAW'];
 
     let placedInd = 0;
     let rectIdx = 0;
@@ -4056,18 +4053,47 @@ export class ProceduralLogisticsWorld {
     };
 
     // 1. Stage 1: Raw Materials (`RAW`) -> Nearest Road-Connected Manufacturing Plant (`MFG`)
-    for (const raw of rawNodes) {
-      const candidates = [...mfgNodes]
-        .filter(mfg => mfg.id !== raw.id)
+    const rankByLandmassAndDist = (src, list) =>
+      [...list]
+        .filter(item => item.id !== src.id)
         .sort((a, b) => {
-          const sameA = this.towns[a.townId].landmassId === this.towns[raw.townId].landmassId ? 0 : 90;
-          const sameB = this.towns[b.townId].landmassId === this.towns[raw.townId].landmassId ? 0 : 90;
-          return (Math.hypot(a.x - raw.x, a.y - raw.y) + sameA) - (Math.hypot(b.x - raw.x, b.y - raw.y) + sameB);
-        })
-        .slice(0, 3);
+          const sameA = this.towns[a.townId]?.landmassId === this.towns[src.townId]?.landmassId ? 0 : 90;
+          const sameB = this.towns[b.townId]?.landmassId === this.towns[src.townId]?.landmassId ? 0 : 90;
+          return (Math.hypot(a.x - src.x, a.y - src.y) + sameA) - (Math.hypot(b.x - src.x, b.y - src.y) + sameB);
+        });
 
+    const rankComTargets = (src) =>
+      [...comNodes]
+        .sort((a, b) => {
+          const bonusA = (a.isCircular ? -16 : 0) - ((a.wTiles || 2) * (a.hTiles || 2));
+          const bonusB = (b.isCircular ? -16 : 0) - ((b.wTiles || 2) * (b.hTiles || 2));
+          return (Math.hypot(a.x - src.x, a.y - src.y) + bonusA) - (Math.hypot(b.x - src.x, b.y - src.y) + bonusB);
+        });
+
+    for (const raw of rawNodes) {
+      const candidates = rankByLandmassAndDist(raw, mfgNodes).slice(0, 4);
+      let linked = false;
       for (const mfg of candidates) {
-        if (tryAddFreightLink(raw, mfg, 'RAW->MFG', 'Raw Materials → Factory', '#d97706', 110)) {
+        if (tryAddFreightLink(raw, mfg, 'RAW->MFG', 'Raw Materials → Factory', '#d97706', 120)) {
+          linked = true;
+          break;
+        }
+      }
+      // Fallback for isolated rural/island RAW extractors: ship bulk materials to nearest LOG hub
+      if (!linked) {
+        for (const lg of rankByLandmassAndDist(raw, logNodes).slice(0, 3)) {
+          if (tryAddFreightLink(raw, lg, 'RAW->LOG', 'Bulk Feedstock → Logistics Hub', '#d97706', 110)) {
+            break;
+          }
+        }
+      }
+    }
+
+    // Backfill Stage 1: Ensure every MFG factory has at least 1 inbound RAW supplier!
+    for (const mfg of mfgNodes) {
+      if (this.cargoLinks.some(l => l.to.id === mfg.id)) continue;
+      for (const raw of rankByLandmassAndDist(mfg, rawNodes).slice(0, 5)) {
+        if (tryAddFreightLink(raw, mfg, 'RAW->MFG', 'Raw Materials → Factory', '#d97706', 140)) {
           break;
         }
       }
@@ -4076,22 +4102,28 @@ export class ProceduralLogisticsWorld {
     // 2. Stage 2: Manufacturing (`MFG`) -> Nearest Logistics Hub (`LOG`) or Local Commercial CBD (`COM`)
     for (const mfg of mfgNodes) {
       let linkedToLog = false;
-      const logCands = [...logNodes]
-        .sort((a, b) => Math.hypot(a.x - mfg.x, a.y - mfg.y) - Math.hypot(b.x - mfg.x, b.y - mfg.y))
-        .slice(0, 2);
+      const logCands = rankByLandmassAndDist(mfg, logNodes).slice(0, 3);
       for (const lg of logCands) {
-        if (tryAddFreightLink(mfg, lg, 'MFG->LOG', 'Factory Output → Distribution Hub', '#ea580c', 75)) {
+        if (tryAddFreightLink(mfg, lg, 'MFG->LOG', 'Factory Output → Distribution Hub', '#ea580c', 85)) {
           linkedToLog = true;
           break;
         }
       }
 
       // Also supply the flagship Commercial CBD sink in the factory's town (or nearest town)
-      const comCands = [...comNodes]
-        .sort((a, b) => Math.hypot(a.x - mfg.x, a.y - mfg.y) - Math.hypot(b.x - mfg.x, b.y - mfg.y))
-        .slice(0, linkedToLog ? 1 : 2);
+      const comCands = rankComTargets(mfg).slice(0, linkedToLog ? 2 : 3);
       for (const com of comCands) {
-        if (tryAddFreightLink(mfg, com, 'MFG->COM', 'Wholesale Goods → Commercial CBD', '#2563eb', 55)) {
+        if (tryAddFreightLink(mfg, com, 'MFG->COM', 'Wholesale Goods → Commercial CBD', '#2563eb', 65)) {
+          break;
+        }
+      }
+    }
+
+    // Backfill Stage 2: Ensure every LOG warehouse has at least 1 inbound MFG (or RAW) supplier!
+    for (const lg of logNodes) {
+      if (this.cargoLinks.some(l => l.to.id === lg.id)) continue;
+      for (const mfg of rankByLandmassAndDist(lg, mfgNodes).slice(0, 5)) {
+        if (tryAddFreightLink(mfg, lg, 'MFG->LOG', 'Factory Output → Distribution Hub', '#ea580c', 120)) {
           break;
         }
       }
@@ -4099,12 +4131,10 @@ export class ProceduralLogisticsWorld {
 
     // 3. Stage 3: Logistics Warehouses (`LOG`) -> High-Demand Commercial CBD Sinks (`COM`)
     for (const lg of logNodes) {
-      const nearComs = [...comNodes]
-        .sort((a, b) => Math.hypot(a.x - lg.x, a.y - lg.y) - Math.hypot(b.x - lg.x, b.y - lg.y))
-        .slice(0, 3);
+      const nearComs = rankComTargets(lg).slice(0, 4);
       let count = 0;
       for (const com of nearComs) {
-        if (tryAddFreightLink(lg, com, 'LOG->COM', 'Last-Mile Freight → Commercial Sink', '#7c3aed', 50)) {
+        if (tryAddFreightLink(lg, com, 'LOG->COM', 'Last-Mile Freight → Commercial Sink', '#7c3aed', 65)) {
           count++;
           if (count >= 2) break;
         }
@@ -4596,6 +4626,11 @@ export class ProceduralLogisticsWorld {
         const hAbove = Math.max(0, this.elevationField[id] - this.seaLevel);
         const ridgeElev = Math.max(0, hAbove - 0.115);
         penalty += segLen * (hAbove * 18.0 + ridgeElev * 42.0 + this.slopeField[id] * 12.5);
+        // Penalize running expressways collinearly through urban street grids outside terminal stubs
+        if (i >= 5 && i <= samples.length - 6) {
+          if (this.zoneColorIdx[id] >= 0) penalty += segLen * 8.5;
+          if (this.roadGrid[id] > 0) penalty += segLen * 14.0;
+        }
         if (i > 0) {
           const prevPt = samples[i - 1];
           const prevId = this.idx(Math.round(prevPt.x), Math.round(prevPt.y));
@@ -4706,6 +4741,8 @@ export class ProceduralLogisticsWorld {
           const dW = this.distToWater[id];
           if (dW < 3.8) c += (4.0 - dW) * 14.0;
           c += hAbove * 115.0 + hAbove * hAbove * 240.0 + slope * 56.0;
+          if (this.zoneColorIdx[id] >= 0) c += 12.0;
+          if (this.roadGrid[id] > 0) c += 16.0;
           for (const t of this.towns) {
             const dt = Math.hypot(gx - t.x, gy - t.y);
             if (dt >= 7 && dt <= 16) {
@@ -5234,9 +5271,9 @@ export class ProceduralLogisticsWorld {
         const perpDist = Math.abs((originX - trunk.sx) * (-tDy) + (originY - trunk.sy) * tDx) / tLen;
         if (projT < -0.60 || projT > 1.60 || perpDist < 7.5) continue;
 
-        // Ensure the origin lies on the sideSign half-space of the trunk
+        // Ensure the origin lies comfortably on the sideSign half-space of the trunk so Trumpet merges aren't acute
         const cosPerp = ((originX - hitPt.x) * outNx + (originY - hitPt.y) * outNy) / (chord || 1);
-        if (cosPerp < 0.22) continue;
+        if (cosPerp < 0.45) continue;
 
         // If departing an airport gate, ensure the trumpet target is reachable from the landside gate
         if (ap) {
@@ -5281,13 +5318,17 @@ export class ProceduralLogisticsWorld {
               ? { x: originX + ap.landNx * Math.min(8.5, chord * 0.14), y: originY + ap.landNy * Math.min(8.5, chord * 0.14) }
               : p0;
             const p2Valley = {
-              x: hitPt.x + outNx * Math.min(9.5, Math.max(6.5, chord * 0.12)),
-              y: hitPt.y + outNy * Math.min(9.5, Math.max(6.5, chord * 0.12))
+              x: hitPt.x + outNx * Math.min(11.0, Math.max(7.5, chord * 0.14)),
+              y: hitPt.y + outNy * Math.min(11.0, Math.max(7.5, chord * 0.14))
+            };
+            const p2Throat = {
+              x: hitPt.x + outNx * 4.2,
+              y: hitPt.y + outNy * 4.2
             };
             for (const bias of [0, 10, -10]) {
               const valleyWps = this.findValleyMotorwayWaypoints(vStart.x, vStart.y, p2Valley.x, p2Valley.y, airportId, bias);
               if (valleyWps && valleyWps.length >= 3) {
-                const fullWps = ap ? [p0, ...valleyWps, p3] : [...valleyWps, p3];
+                const fullWps = ap ? [p0, ...valleyWps, p2Throat, p3] : [...valleyWps, p2Throat, p3];
                 spurCandidates.push({ waypoints: fullWps, isValley: true });
               }
             }
@@ -5296,6 +5337,15 @@ export class ProceduralLogisticsWorld {
           for (const sc of spurCandidates) {
             const waypoints = sc.waypoints;
             const samples = this.sampleMotorwayCurve(waypoints);
+            // Verify that the final sampled arrival tangent at `p3` is within <= 22° of `(-outNx, -outNy)`
+            const sLast = samples[samples.length - 1];
+            const sPrev = samples[Math.max(0, samples.length - 3)];
+            const arrDx = sLast.x - sPrev.x;
+            const arrDy = sLast.y - sPrev.y;
+            const arrLen = Math.hypot(arrDx, arrDy) || 1;
+            const arrDot = (arrDx * (-outNx) + arrDy * (-outNy)) / arrLen;
+            if (arrDot < 0.92) continue;
+
             const score = this.scoreMotorwaySamples(samples, originX, originY, hitPt.x, hitPt.y, airportId, 0, 0, true, trunk.number);
             if (!Number.isFinite(score)) continue;
 
@@ -6460,6 +6510,7 @@ export class ProceduralLogisticsWorld {
    */
   displaceBuildingsAlongMotorwayCorridors() {
     const surfacePts = [];
+    const surfaceSegs = [];
     for (const mw of this.motorways) {
       const samples = mw.samples || [];
       const tunnels = mw.tunnels || [];
@@ -6467,14 +6518,35 @@ export class ProceduralLogisticsWorld {
         const inTunnel = tunnels.some(t => i >= t.i0 && i <= t.i1);
         if (!inTunnel) {
           surfacePts.push(samples[i]);
+          if (i < samples.length - 1) {
+            const nextInTunnel = tunnels.some(t => (i + 1) >= t.i0 && (i + 1) <= t.i1);
+            if (!nextInTunnel) {
+              surfaceSegs.push([samples[i], samples[i + 1]]);
+            }
+          }
         }
       }
     }
     if (surfacePts.length === 0) return;
 
+    const distSqToSurface = (px, py) => {
+      let minD2 = Infinity;
+      for (let i = 0; i < surfaceSegs.length; i++) {
+        const [a, b] = surfaceSegs[i];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const lenSq = dx * dx + dy * dy;
+        let t = lenSq > 1e-6 ? ((px - a.x) * dx + (py - a.y) * dy) / lenSq : 0;
+        t = Math.max(0, Math.min(1, t));
+        const qx = a.x + t * dx, qy = a.y + t * dy;
+        const d2 = (px - qx) * (px - qx) + (py - qy) * (py - qy);
+        if (d2 < minD2) minD2 = d2;
+      }
+      return minD2;
+    };
+
     const beforeHouses = this.houses.length;
     this.houses = this.houses.filter(h => {
-      const hit = surfacePts.some(p => (h.x - p.x) * (h.x - p.x) + (h.y - p.y) * (h.y - p.y) <= 1.65 * 1.65);
+      const hit = distSqToSurface(h.x, h.y) <= 1.85 * 1.85;
       if (hit) {
         const hid = this.idx(h.x, h.y);
         if (this.buildingMask[hid] === 1) this.buildingMask[hid] = 0;
@@ -6531,11 +6603,10 @@ export class ProceduralLogisticsWorld {
       if (d.isRuralNiche) return true;
       const wT = d.wTiles || 2;
       const hT = d.hTiles || 2;
-      const xMin = d.gx - 1.15;
-      const xMax = d.gx + wT - 1 + 1.15;
-      const yMin = d.gy - 1.15;
-      const yMax = d.gy + hT - 1 + 1.15;
-      const hit = surfacePts.some(p => p.x >= xMin && p.x <= xMax && p.y >= yMin && p.y <= yMax);
+      const cx = d.gx + (wT - 1) * 0.5;
+      const cy = d.gy + (hT - 1) * 0.5;
+      const rad = Math.max(wT, hT) * 0.5 + 1.25;
+      const hit = distSqToSurface(cx, cy) <= rad * rad;
       if (hit) {
         for (let dy = 0; dy < hT; dy++) {
           for (let dx = 0; dx < wT; dx++) {
@@ -6674,11 +6745,16 @@ export class ProceduralLogisticsWorld {
         if (dWater < (isSmallIslet ? 1.5 : 4.2)) continue;
 
         const hillHeight = Math.max(0, this.elevationField[id] - this.seaLevel);
-        // Orographic windward bonus (`fertilityField` encodes windward upslope moisture!)
-        const moistureBias = (this.fertilityField[id] - 0.35) * 0.45;
+        // True windward orographic moisture (`∇H · windVector`) + capped elevation boost
+        // so high alpine crests (`+0.24` / `+0.36` contours) and leeward slopes preserve open negative space!
+        const dzdx = (this.elevationField[this.idx(ix + 1, iy)] - this.elevationField[this.idx(ix - 1, iy)]) * 0.5;
+        const dzdy = (this.elevationField[this.idx(ix, iy + 1)] - this.elevationField[this.idx(ix, iy - 1)]) * 0.5;
+        const windUpslope = -(dzdx * this.windVector.x + dzdy * this.windVector.y);
+        const moistureBias = Math.max(-0.18, Math.min(0.24, windUpslope * 5.5));
+        const elevBoost = Math.min(0.23, hillHeight * 0.72) - Math.max(0, hillHeight - 0.30) * 0.55;
         const forestPatch = this.noise.fbm(x * 0.055 + 3.1, y * 0.055 + 8.4, 2) + moistureBias;
-        if ((hillHeight > 0.12 && forestPatch + hillHeight * 1.15 > 0.60) || (isSmallIslet && forestPatch > 0.40)) {
-          const groveCount = isSmallIslet ? this.rng.int(1, 3) : (moistureBias > 0.06 ? this.rng.int(3, 5) : this.rng.int(1, 3));
+        if ((hillHeight > 0.12 && forestPatch + elevBoost > 0.58) || (isSmallIslet && forestPatch > 0.40)) {
+          const groveCount = isSmallIslet ? this.rng.int(1, 3) : (moistureBias > 0.05 ? this.rng.int(2, 4) : this.rng.int(1, 3));
           for (let g = 0; g < groveCount; g++) {
             const tx = x + this.rng.range(-1.04, 1.04);
             const ty = y + this.rng.range(-1.04, 1.04);
@@ -6698,14 +6774,15 @@ export class ProceduralLogisticsWorld {
       }
     }
 
-    // Nestle interior mountain spring headwaters (`r.headwaterPt`) inside a lush highland forest grove!
+    // Nestle interior mountain spring headwaters (`r.headwaterPt`) inside a lush highland forest grove
+    // spanning `rad = 1.2..4.9` so it bridges seamlessly across the `dWater < 4.2` riparian setback!
     for (const rObj of this.rivers) {
       if (!rObj.headwaterPt) continue;
       const hx = rObj.headwaterPt.x;
       const hy = rObj.headwaterPt.y;
-      for (let g = 0; g < 11; g++) {
-        const ang = (g / 11) * Math.PI * 2 + this.rng.range(-0.3, 0.3);
-        const rad = this.rng.range(1.4, 3.6);
+      for (let g = 0; g < 22; g++) {
+        const ang = (g / 22) * Math.PI * 2 + this.rng.range(-0.25, 0.25);
+        const rad = this.rng.range(1.2, 4.9);
         const tx = hx + Math.cos(ang) * rad;
         const ty = hy + Math.sin(ang) * rad;
         const gx = Math.round(tx), gy = Math.round(ty);

@@ -591,9 +591,20 @@ export class MiniMotorwaysRenderer {
 
     ctx.save();
     const drawerEl = typeof document !== 'undefined' ? document.getElementById('generatorDrawer') : null;
+    const inspEl = typeof document !== 'undefined' ? document.getElementById('inspectorCard') : null;
     const drawerOpen = canvas.width >= 640 && drawerEl && !drawerEl.classList.contains('hidden');
+    const inspOpen = inspEl && !inspEl.classList.contains('hidden');
+    if (canvas.width < 640 && inspOpen) {
+      ctx.restore();
+      return;
+    }
     const leftSafe = drawerOpen ? 412 : 14;
-    const boxW = Math.min(canvas.width - leftSafe - 14, 745);
+    const rightSafe = inspOpen ? 428 : 14;
+    const boxW = Math.min(canvas.width - leftSafe - rightSafe, 745);
+    if (boxW < 220) {
+      ctx.restore();
+      return;
+    }
     const boxH = 38;
     const bx = leftSafe;
     const by = canvas.height - boxH - 14;
@@ -2439,31 +2450,32 @@ export class MiniMotorwaysRenderer {
         const uy = Math.sin(spurAng);
         const nx = -uy;
         const ny = ux;
-        const spanIn = ts * 0.75;
-        const spanOut = ts * 0.52;
-        const halfDeck = ts * 0.32;
+        const spanIn = ts * 0.82;
+        const spanOut = ts * 0.58;
+        const halfDeck = ts * 0.38;
 
         ctx.save();
-        ctx.lineCap = 'butt';
+        ctx.lineCap = 'round';
 
         ctx.strokeStyle = 'rgba(54, 56, 62, 0.20)';
-        ctx.lineWidth = ts * 0.64;
+        ctx.lineWidth = ts * 0.78;
         ctx.beginPath();
         ctx.moveTo(cx + ux * spanIn + 3, cy + uy * spanIn + 4);
         ctx.lineTo(cx - ux * spanOut + 3, cy - uy * spanOut + 4);
         ctx.stroke();
 
         ctx.strokeStyle = PALETTE.motorwayBorder;
-        ctx.lineWidth = ts * 0.56;
+        ctx.lineWidth = ts * 0.72;
         ctx.beginPath();
         ctx.moveTo(cx + ux * spanIn, cy + uy * spanIn);
         ctx.lineTo(cx - ux * spanOut, cy - uy * spanOut);
         ctx.stroke();
 
         ctx.strokeStyle = '#ee6998';
-        ctx.lineWidth = ts * 0.42;
+        ctx.lineWidth = ts * 0.56;
         ctx.stroke();
 
+        ctx.lineCap = 'butt';
         ctx.strokeStyle = '#36383e';
         ctx.lineWidth = 2.0;
         for (const side of [-1, 1]) {
@@ -2608,12 +2620,12 @@ export class MiniMotorwaysRenderer {
       ctx.translate(x, y);
       ctx.rotate(ang);
       if (car.isFreightTruck) {
-        // Articulated Freight Truck (Charcoal tractor cab + Cargo-colored trailer box)
+        // Articulated Freight Truck (Charcoal tractor cab + Cargo-colored loaded trailer or neutral unloaded return flatbed)
         ctx.fillStyle = '#36383e';
         ctx.beginPath();
         ctx.roundRect(1.8, -2.8, 4.2, 5.6, 1.5);
         ctx.fill();
-        ctx.fillStyle = car.color;
+        ctx.fillStyle = (car.isCargoLink && car.dir === -1) ? '#94a3b8' : car.color;
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1.0;
         ctx.beginPath();
@@ -2876,35 +2888,47 @@ export class MiniMotorwaysRenderer {
     }
 
     // 2. Draw Compact Stage Badges on Industrial Nodes (`RAW`, `MFG`, `LOG`) & CBD Commercial Landmarks (`CBD`)
-    ctx.font = '800 8.5px Inter, sans-serif';
+    //    with screen-space collision culling so adjacent pills never overlap at low zoom!
+    ctx.font = '800 8.5px DM Sans, Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    const badgeCandidates = [];
     for (const d of world.destinations) {
       if (d.zoneType === 'industrial') {
-        const cx = d.x * ts + ox;
-        const cy = d.y * ts + oy - ts * 1.25;
         const rawLabel = d.resourceType === 'MINE'
           ? 'MINE'
           : (d.resourceType === 'TIMBER' ? 'WOOD' : (d.resourceType === 'FARM' ? 'FARM' : 'RAW'));
         const tag = d.subType === 'RAW' ? rawLabel : (d.subType || 'MFG');
         const bg = d.subType === 'RAW' ? '#d97706' : (tag === 'LOG' ? '#7c3aed' : '#ea580c');
-        const bw = tag.length >= 4 ? 30 : 26;
-        ctx.fillStyle = bg;
-        ctx.beginPath();
-        ctx.roundRect(cx - bw * 0.5, cy - 6.5, bw, 13, 3.5);
-        ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(tag, cx, cy + 0.5);
+        const prio = d.isRuralNiche ? 1 : (tag === 'LOG' ? 2 : (tag === 'MFG' ? 3 : 5));
+        badgeCandidates.push({ d, tag, bg, bw: tag.length >= 4 ? 30 : 26, prio });
       } else if (d.isCircular) {
-        const cx = d.x * ts + ox;
-        const cy = d.y * ts + oy - ts * 1.25;
-        ctx.fillStyle = '#1d4ed8';
-        ctx.beginPath();
-        ctx.roundRect(cx - 13, cy - 6.5, 26, 13, 3.5);
-        ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText('CBD', cx, cy + 0.5);
+        badgeCandidates.push({ d, tag: 'CBD', bg: '#1d4ed8', bw: 26, prio: 4 });
       }
+    }
+    badgeCandidates.sort((a, b) => a.prio - b.prio);
+
+    const placedBadgeRects = [];
+    const zoom = this.camera.zoom || 1;
+    for (const bc of badgeCandidates) {
+      const cx = bc.d.x * ts + ox;
+      const cy = bc.d.y * ts + oy - ts * 1.25;
+      const sx = cx * zoom;
+      const sy = cy * zoom;
+      const halfW = (bc.bw * 0.5 + 2) * zoom;
+      const halfH = 7.5 * zoom;
+      const collides = placedBadgeRects.some(
+        r => Math.abs(sx - r.sx) < (halfW + r.halfW) && Math.abs(sy - r.sy) < (halfH + r.halfH)
+      );
+      if (collides) continue;
+      placedBadgeRects.push({ sx, sy, halfW, halfH });
+
+      ctx.fillStyle = bc.bg;
+      ctx.beginPath();
+      ctx.roundRect(cx - bc.bw * 0.5, cy - 6.5, bc.bw, 13, 3.5);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(bc.tag, cx, cy + 0.5);
     }
     ctx.restore();
   }
@@ -2925,7 +2949,7 @@ export class MiniMotorwaysRenderer {
       ctx.setLineDash([]);
 
       // Town Label Card
-      ctx.font = '800 11px Inter, sans-serif';
+      ctx.font = '800 11px DM Sans, Inter, sans-serif';
       const label = `${t.name} (T${t.tier})`;
       const w = ctx.measureText(label).width + 14;
       ctx.fillStyle = '#36383e';
@@ -2943,10 +2967,17 @@ export class MiniMotorwaysRenderer {
 
   drawHydrologyOverlay(ctx, world, ts) {
     ctx.save();
-    for (let y = 0; y < world.H; y += 2) {
-      for (let x = 0; x < world.W; x += 2) {
+    for (let y = 0; y < world.H - 1; y += 2) {
+      for (let x = 0; x < world.W - 1; x += 2) {
         const id = world.idx(x, y);
-        if (world.waterMask[id] === 0) {
+        // Ensure all 4 sub-tiles of the 2×2 cell are dry land clear of riverbanks so squares don't bleed onto water!
+        if (
+          world.waterMask[id] === 0 &&
+          world.waterMask[world.idx(x + 1, y)] === 0 &&
+          world.waterMask[world.idx(x, y + 1)] === 0 &&
+          world.waterMask[world.idx(x + 1, y + 1)] === 0 &&
+          world.distToWater[id] >= 1.5
+        ) {
           const elev = world.elevationField[id];
           const hAbove = Math.max(0, elev - world.seaLevel);
           if (hAbove > 0.16) {
