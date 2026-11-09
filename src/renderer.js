@@ -2,12 +2,20 @@
  * @import {
  *   ViewLayer,
  *   InspectedEntity,
- *   RoadGraphAnomaly,
  *   RoadGraphDiagnostics
  * } from './types.js'
  */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
 import { PALETTE } from "./palette.js";
+import { WATER_MASK, WORLD_GEOMETRY } from "./constants.js";
+import {
+  buildVignelliWaterPath,
+  drawArchitectureGrid,
+  drawTaperingRivers,
+  drawTrees,
+  drawUrbanBlushAndTrees,
+} from "./terrain-bake-worker.js";
+import { deriveRoadTopology } from "./vehicle-routing.js";
 
 /***************************************************************************
  * 5. MINI MOTORWAYS / MINI METRO CANVAS VECTOR RENDERER
@@ -32,14 +40,16 @@ export class MiniMotorwaysRenderer {
       typeof document !== "undefined" ? document.createElement("canvas") : null;
     /** @type {HTMLCanvasElement | null} */
     this._cachedPreTreeCanvas = null;
+    /** @type {number} */
+    this._cachedPreTreeHydroVersion = -1;
+    /** @type {number} */
+    this._cachedPreTreeUrbanVersion = -1;
     /** @type {{ contourLayers: Array<{ fill: string, stroke: string, cPath: Path2D, cEdgePath: Path2D }>, waterPath: Path2D, waterEdgePath: Path2D } | null} */
     this._cachedVectorPaths = null;
+    /** @type {number} */
+    this._cachedVectorHydroVersion = -1;
     /** @type {{ elevRef: Float32Array, waterRef: Uint8Array, ts: number, arableFillPath: Path2D, arableStrokePath: Path2D } | null} */
     this._cachedArablePaths = null;
-    /** @type {ProceduralLogisticsWorld | null} */
-    this._roadDiagWorld = null;
-    /** @type {RoadGraphDiagnostics | null} */
-    this._roadDiagCache = null;
   }
 
   /**
@@ -96,219 +106,26 @@ export class MiniMotorwaysRenderer {
   }
 
   /**
-   * Pre-renders static terrain layers (Cream background, Pastel Urban Zones,
-   * Cyan Water & Cream Riverbanks) onto an offscreen canvas using a true
+   * Pre-renders static terrain layers onto an offscreen canvas using a true
    * Vignelli-style 45°/90° Octilinear Marching-Squares Polygonizer (zero stippling!).
+   * Delegates to the shared `buildVignelliWaterPath` implementation.
+   *
+   * @param {ProceduralLogisticsWorld} world
+   * @param {number} ts
+   * @param {number | ((cx: number, cy: number) => boolean) | null} [customTestFn]
+   * @param {Path2D | null} [outStrokePath]
+   * @returns {Path2D}
    */
   buildVignelliWaterPath(world, ts, customTestFn = null, outStrokePath = null) {
-    const path = new Path2D();
-    const { W, H } = world;
-    const gw = W + 2;
-    const gh = H + 2;
-    const flags = new Uint8Array(gw * gh);
-    const wm = world.waterMask;
-
-    // 1. Pre-evaluate corner flags once (`O(W * H)` typed array write instead of 4x closure calls per cell)
-    for (let gy = 0; gy < gh; gy++) {
-      const cy = Math.max(0, Math.min(H - 1, gy - 1));
-      const rowOff = gy * gw;
-      const wRowOff = cy * W;
-      if (customTestFn) {
-        for (let gx = 0; gx < gw; gx++) {
-          const cx = Math.max(0, Math.min(W - 1, gx - 1));
-          flags[rowOff + gx] = customTestFn(cx, cy) ? 1 : 0;
-        }
-      } else {
-        for (let gx = 0; gx < gw; gx++) {
-          const cx = Math.max(0, Math.min(W - 1, gx - 1));
-          flags[rowOff + gx] = wm[wRowOff + cx] === 2 ? 1 : 0;
-        }
-      }
-    }
-
-    const poly = (pts) => {
-      path.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0], pts[i][1]);
-      path.closePath();
-    };
-    const seg = (ax, ay, bx, by) => {
-      if (!outStrokePath) return;
-      outStrokePath.moveTo(ax, ay);
-      outStrokePath.lineTo(bx, by);
-    };
-
-    // 2. Scanline RLE-merged Marching Squares (`mask === 15` interior runs merge into 1 `path.rect()`,
-    //    eliminating 35,000 Path2D subpaths and 1x1 interior grid hatching!)
-    for (let y = -1; y < H; y++) {
-      const r0 = (y + 1) * gw;
-      const r1 = (y + 2) * gw;
-      const y0 = (y + 0.5) * ts;
-      const y1 = (y + 1.5) * ts;
-      const ym = (y + 1.0) * ts;
-      let runStart = null;
-
-      for (let x = -1; x < W; x++) {
-        const c = x + 1;
-        const tl = flags[r0 + c];
-        const tr = flags[r0 + c + 1];
-        const br = flags[r1 + c + 1];
-        const bl = flags[r1 + c];
-        const mask = (tl << 3) | (tr << 2) | (br << 1) | bl;
-
-        if (mask === 15) {
-          if (runStart === null) runStart = x;
-          continue;
-        }
-        if (runStart !== null) {
-          path.rect((runStart + 0.5) * ts, y0, (x - runStart) * ts, ts);
-          runStart = null;
-        }
-        if (mask === 0) continue;
-
-        const x0 = (x + 0.5) * ts;
-        const x1 = (x + 1.5) * ts;
-        const xm = (x + 1.0) * ts;
-
-        switch (mask) {
-          case 1:
-            poly([
-              [x0, ym],
-              [xm, y1],
-              [x0, y1],
-            ]);
-            seg(x0, ym, xm, y1);
-            break;
-          case 2:
-            poly([
-              [xm, y1],
-              [x1, ym],
-              [x1, y1],
-            ]);
-            seg(xm, y1, x1, ym);
-            break;
-          case 4:
-            poly([
-              [xm, y0],
-              [x1, y0],
-              [x1, ym],
-            ]);
-            seg(xm, y0, x1, ym);
-            break;
-          case 8:
-            poly([
-              [x0, y0],
-              [xm, y0],
-              [x0, ym],
-            ]);
-            seg(x0, ym, xm, y0);
-            break;
-          case 3:
-            poly([
-              [x0, ym],
-              [x1, ym],
-              [x1, y1],
-              [x0, y1],
-            ]);
-            seg(x0, ym, x1, ym);
-            break;
-          case 6:
-            poly([
-              [xm, y0],
-              [x1, y0],
-              [x1, y1],
-              [xm, y1],
-            ]);
-            seg(xm, y0, xm, y1);
-            break;
-          case 9:
-            poly([
-              [x0, y0],
-              [xm, y0],
-              [xm, y1],
-              [x0, y1],
-            ]);
-            seg(xm, y0, xm, y1);
-            break;
-          case 12:
-            poly([
-              [x0, y0],
-              [x1, y0],
-              [x1, ym],
-              [x0, ym],
-            ]);
-            seg(x0, ym, x1, ym);
-            break;
-          case 5:
-            poly([
-              [x0, ym],
-              [xm, y0],
-              [x1, y0],
-              [x1, ym],
-              [xm, y1],
-              [x0, y1],
-            ]);
-            seg(x0, ym, xm, y0);
-            seg(xm, y1, x1, ym);
-            break;
-          case 10:
-            poly([
-              [x0, y0],
-              [xm, y0],
-              [x1, ym],
-              [x1, y1],
-              [xm, y1],
-              [x0, ym],
-            ]);
-            seg(xm, y0, x1, ym);
-            seg(x0, ym, xm, y1);
-            break;
-          case 7:
-            poly([
-              [x0, ym],
-              [xm, y0],
-              [x1, y0],
-              [x1, y1],
-              [x0, y1],
-            ]);
-            seg(x0, ym, xm, y0);
-            break;
-          case 11:
-            poly([
-              [x0, y0],
-              [xm, y0],
-              [x1, ym],
-              [x1, y1],
-              [x0, y1],
-            ]);
-            seg(xm, y0, x1, ym);
-            break;
-          case 13:
-            poly([
-              [x0, y0],
-              [x1, y0],
-              [x1, ym],
-              [xm, y1],
-              [x0, y1],
-            ]);
-            seg(xm, y1, x1, ym);
-            break;
-          case 14:
-            poly([
-              [x0, y0],
-              [x1, y0],
-              [x1, y1],
-              [xm, y1],
-              [x0, ym],
-            ]);
-            seg(x0, ym, xm, y1);
-            break;
-        }
-      }
-      if (runStart !== null) {
-        path.rect((runStart + 0.5) * ts, y0, (W - runStart) * ts, ts);
-      }
-    }
-    return path;
+    return buildVignelliWaterPath(
+      world.W,
+      world.H,
+      world.waterMask,
+      world.elevationField,
+      ts,
+      customTestFn,
+      outStrokePath,
+    );
   }
 
   async yieldToMainIfNeeded(deadline) {
@@ -351,7 +168,11 @@ export class MiniMotorwaysRenderer {
     staging.height = ph;
     const ctx = staging.getContext("2d");
 
-    if (world.reusedThroughStage >= 7 && this._cachedPreTreeCanvas) {
+    if (
+      this._cachedPreTreeCanvas &&
+      this._cachedPreTreeHydroVersion === world.hydroVersion &&
+      this._cachedPreTreeUrbanVersion === world.urbanVersion
+    ) {
       ctx.drawImage(this._cachedPreTreeCanvas, 0, 0);
     } else {
       ctx.fillStyle = PALETTE.bgPaper;
@@ -359,27 +180,11 @@ export class MiniMotorwaysRenderer {
 
       // Draw subtle architectural paper grid on the base paper sheet BEFORE elevation contours
       // so the hypsometric mountain terraces remain crisp vector steps without plaid cross-hatching!
-      ctx.strokeStyle = PALETTE.gridLine;
-      ctx.lineWidth = 1;
-      const gridStep = ts * 4;
-      ctx.beginPath();
-      for (let x = 0; x <= pw; x += gridStep) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, ph);
-      }
-      for (let y = 0; y <= ph; y += gridStep) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(pw, y);
-      }
-      ctx.stroke();
+      drawArchitectureGrid(ctx, pw, ph, ts);
 
-      const contourTerraces = [
-        { dh: 0.13, fill: "#ebe7de", stroke: "#dfdace" },
-        { dh: 0.24, fill: "#e3ded2", stroke: "#d5cfc0" },
-        { dh: 0.36, fill: "#dad4c5", stroke: "#cac3b2" },
-      ];
       const canReuseVectorPaths = Boolean(
-        world.reusedThroughStage >= 2 && this._cachedVectorPaths,
+        this._cachedVectorPaths &&
+        this._cachedVectorHydroVersion === world.hydroVersion,
       );
       let contourLayers;
       let waterPath;
@@ -389,15 +194,13 @@ export class MiniMotorwaysRenderer {
         ({ contourLayers, waterPath, waterEdgePath } = this._cachedVectorPaths);
       } else {
         contourLayers = [];
-        for (const { dh, fill, stroke } of contourTerraces) {
+        for (const { dh, fill, stroke } of WORLD_GEOMETRY.CONTOUR_TERRACES) {
           const thresh = world.seaLevel + dh;
           const cEdgePath = new Path2D();
           const cPath = this.buildVignelliWaterPath(
             world,
             ts,
-            (cx, cy) =>
-              world.waterMask[world.idx(cx, cy)] === 0 &&
-              world.elevationField[world.idx(cx, cy)] >= thresh,
+            thresh,
             cEdgePath,
           );
           contourLayers.push({ fill, stroke, cPath, cEdgePath });
@@ -406,6 +209,7 @@ export class MiniMotorwaysRenderer {
         waterEdgePath = new Path2D();
         waterPath = this.buildVignelliWaterPath(world, ts, null, waterEdgePath);
         this._cachedVectorPaths = { contourLayers, waterPath, waterEdgePath };
+        this._cachedVectorHydroVersion = world.hydroVersion;
         deadline = await this.yieldToMainIfNeeded(deadline);
       }
 
@@ -421,17 +225,14 @@ export class MiniMotorwaysRenderer {
       ctx.restore();
 
       ctx.save();
-      ctx.fillStyle = PALETTE.urbanBlushPink;
-      ctx.beginPath();
-      for (let y = 0; y < world.H; y += 2) {
-        for (let x = 0; x < world.W; x += 2) {
-          if (world.zoneColorIdx[world.idx(x, y)] >= 0) {
-            ctx.moveTo((x + 4.5) * ts, (y + 1) * ts);
-            ctx.arc((x + 1) * ts, (y + 1) * ts, 3.5 * ts, 0, Math.PI * 2);
-          }
-        }
-      }
-      ctx.fill();
+      drawUrbanBlushAndTrees(
+        ctx,
+        world.W,
+        world.H,
+        ts,
+        world.zoneColorIdx,
+        null,
+      );
 
       ctx.lineCap = "butt";
       ctx.lineJoin = "bevel";
@@ -441,47 +242,8 @@ export class MiniMotorwaysRenderer {
       ctx.fillStyle = PALETTE.bgPaper;
       ctx.fill(waterPath);
 
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      for (const pass of ["bank", "water"]) {
-        ctx.strokeStyle = pass === "bank" ? PALETTE.bgPaper : PALETTE.waterCyan;
-        const bankExtra = pass === "bank" ? ts * 1.15 : 0;
-        for (const rObj of world.rivers) {
-          const pts = Array.isArray(rObj) ? rObj : rObj.points;
-          const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
-          if (!pts || pts.length < 4) continue;
-          const startW = isMain ? 0.84 : 0.56;
-          const endW = isMain ? 1.44 : 1.08;
-          for (let i = 0; i < pts.length - 1; i++) {
-            const p0 = pts[i];
-            const p1 = pts[i + 1];
-            const p2 = pts[Math.min(pts.length - 1, i + 2)];
-            const frac = i / (pts.length - 1);
-            const w =
-              p1.width ?? startW + (endW - startW) * Math.pow(frac, 0.9);
-            ctx.lineWidth = ts * w + bankExtra;
-            ctx.beginPath();
-            const x0 =
-              i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
-            const y0 =
-              i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
-            const x1 = (p1.x + 0.5) * ts;
-            const y1 = (p1.y + 0.5) * ts;
-            const x2 =
-              i === pts.length - 2
-                ? (p1.x + 0.5) * ts
-                : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
-            const y2 =
-              i === pts.length - 2
-                ? (p1.y + 0.5) * ts
-                : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
-            ctx.moveTo(x0, y0);
-            ctx.quadraticCurveTo(x1, y1, x2, y2);
-            ctx.stroke();
-          }
-        }
-        deadline = await this.yieldToMainIfNeeded(deadline);
-      }
+      drawTaperingRivers(ctx, world.rivers, ts);
+      deadline = await this.yieldToMainIfNeeded(deadline);
 
       ctx.fillStyle = PALETTE.waterCyan;
       ctx.fill(waterPath);
@@ -493,208 +255,13 @@ export class MiniMotorwaysRenderer {
       preTree.height = ph;
       preTree.getContext("2d").drawImage(staging, 0, 0);
       this._cachedPreTreeCanvas = preTree;
+      this._cachedPreTreeHydroVersion = world.hydroVersion;
+      this._cachedPreTreeUrbanVersion = world.urbanVersion;
     }
 
-    // Soft pastel woodland canopy underlay beneath tree clusters so forests read as cohesive groves
-    ctx.fillStyle = "rgba(186, 208, 181, 0.28)";
-    ctx.beginPath();
-    for (let i = 0; i < world.trees.length; i += 2) {
-      const tree = world.trees[i];
-      const tx = tree.x * ts;
-      const ty = tree.y * ts;
-      const tr = tree.r * ts * 2.15;
-      ctx.moveTo(tx + tr, ty);
-      ctx.arc(tx, ty, tr, 0, Math.PI * 2);
-    }
-    ctx.fill();
-
-    // Batch all tree shadows into a single path fill
-    ctx.fillStyle = "rgba(54, 56, 62, 0.1)";
-    ctx.beginPath();
-    for (const tree of world.trees) {
-      const tx = tree.x * ts + 2.5;
-      const ty = tree.y * ts + 2.5;
-      const tr = tree.r * ts;
-      ctx.moveTo(tx + tr, ty);
-      ctx.arc(tx, ty, tr, 0, Math.PI * 2);
-    }
-    ctx.fill();
-
-    // Batch tree dots by palette color (3 draw calls instead of N)
-    for (const color of PALETTE.treeDots) {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      for (const tree of world.trees) {
-        if (tree.color !== color) continue;
-        const tx = tree.x * ts;
-        const ty = tree.y * ts;
-        const tr = tree.r * ts;
-        ctx.moveTo(tx + tr, ty);
-        ctx.arc(tx, ty, tr, 0, Math.PI * 2);
-      }
-      ctx.fill();
-    }
+    drawTrees(ctx, world.trees, ts);
 
     this.offscreenTerrain = staging;
-  }
-
-  /**
-   * @param {ProceduralLogisticsWorld} world
-   */
-  bakeStaticTerrain(world) {
-    const ts = world.tileSize;
-    const pw = world.W * ts;
-    const ph = world.H * ts;
-    if (!this.offscreenTerrain || !("getContext" in this.offscreenTerrain)) {
-      this.offscreenTerrain = document.createElement("canvas");
-    }
-    this.offscreenTerrain.width = pw;
-    this.offscreenTerrain.height = ph;
-    const ctx = /** @type {CanvasRenderingContext2D} */ (
-      this.offscreenTerrain.getContext("2d")
-    );
-
-    // 1. Warm Paper Background
-    ctx.fillStyle = PALETTE.bgPaper;
-    ctx.fillRect(0, 0, pw, ph);
-
-    // 1B. Smooth Octilinear Marching-Squares Hypsometric Elevation Contour Terraces (zero 2x2 pixel blocks!)
-    const contourTerraces = [
-      { dh: 0.13, fill: "#ebe7de", stroke: "#dfdace" },
-      { dh: 0.24, fill: "#e3ded2", stroke: "#d5cfc0" },
-      { dh: 0.36, fill: "#dad4c5", stroke: "#cac3b2" },
-    ];
-    ctx.save();
-    ctx.lineJoin = "bevel";
-    ctx.lineWidth = 1.2;
-    for (const { dh, fill, stroke } of contourTerraces) {
-      const thresh = world.seaLevel + dh;
-      const cEdgePath = new Path2D();
-      const cPath = this.buildVignelliWaterPath(
-        world,
-        ts,
-        (cx, cy) =>
-          world.waterMask[world.idx(cx, cy)] === 0 &&
-          world.elevationField[world.idx(cx, cy)] >= thresh,
-        cEdgePath,
-      );
-      ctx.fillStyle = fill;
-      ctx.fill(cPath);
-      ctx.strokeStyle = stroke;
-      ctx.stroke(cEdgePath);
-    }
-    ctx.restore();
-
-    // 2. Soft Pastel Contour-Hugging Urban & Waterfront Blush Zones
-    ctx.save();
-    ctx.fillStyle = PALETTE.urbanBlushPink;
-    ctx.beginPath();
-    for (let y = 0; y < world.H; y += 2) {
-      for (let x = 0; x < world.W; x += 2) {
-        if (world.zoneColorIdx[world.idx(x, y)] >= 0) {
-          ctx.moveTo((x + 4.5) * ts, (y + 1) * ts);
-          ctx.arc((x + 1) * ts, (y + 1) * ts, 3.5 * ts, 0, Math.PI * 2);
-        }
-      }
-    }
-    ctx.fill();
-
-    // Build Vignelli 45°/90° Octilinear Marching-Squares Open-Water Basin Path (`waterMask === 2`)
-    const waterEdgePath = new Path2D();
-    const waterPath = this.buildVignelliWaterPath(
-      world,
-      ts,
-      null,
-      waterEdgePath,
-    );
-
-    // Use beveled/mitered joins so 45-degree Vignelli shoreline angles stay crisp & architectural
-    ctx.lineCap = "butt";
-    ctx.lineJoin = "bevel";
-
-    // 3. Cream Sand/Bank Casing around Open Water Basins
-    ctx.strokeStyle = PALETTE.bgPaper;
-    ctx.lineWidth = ts * 1.45;
-    ctx.stroke(waterEdgePath);
-    ctx.fillStyle = PALETTE.bgPaper;
-    ctx.fill(waterPath);
-
-    // 4. Smooth Continuously-Tapering River Network (`world.rivers`) — Two Passes (Cream Bank + Cyan Channel)
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    for (const pass of ["bank", "water"]) {
-      ctx.strokeStyle = pass === "bank" ? PALETTE.bgPaper : PALETTE.waterCyan;
-      const bankExtra = pass === "bank" ? ts * 1.15 : 0;
-      for (const rObj of world.rivers) {
-        const pts = Array.isArray(rObj) ? rObj : rObj.points;
-        const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
-        if (!pts || pts.length < 4) continue;
-        const startW = isMain ? 0.84 : 0.56;
-        const endW = isMain ? 1.44 : 1.08;
-        for (let i = 0; i < pts.length - 1; i++) {
-          const p0 = pts[i];
-          const p1 = pts[i + 1];
-          const p2 = pts[Math.min(pts.length - 1, i + 2)];
-          const frac = i / (pts.length - 1);
-          const w = p1.width ?? startW + (endW - startW) * Math.pow(frac, 0.9);
-          ctx.lineWidth = ts * w + bankExtra;
-          ctx.beginPath();
-          const x0 =
-            i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
-          const y0 =
-            i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
-          const x1 = (p1.x + 0.5) * ts;
-          const y1 = (p1.y + 0.5) * ts;
-          const x2 =
-            i === pts.length - 2
-              ? (p1.x + 0.5) * ts
-              : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
-          const y2 =
-            i === pts.length - 2
-              ? (p1.y + 0.5) * ts
-              : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
-          ctx.moveTo(x0, y0);
-          ctx.quadraticCurveTo(x1, y1, x2, y2);
-          ctx.stroke();
-        }
-      }
-    }
-
-    // 4B. Crisp Cyan Open-Water Basin Fill on top of river bank casings so river mouths merge seamlessly!
-    ctx.fillStyle = PALETTE.waterCyan;
-    ctx.fill(waterPath);
-    ctx.restore();
-
-    // 5. Subtle Architectural Grid Lines (visible across land & water like Mini Motorways)
-    ctx.strokeStyle = PALETTE.gridLine;
-    ctx.lineWidth = 1;
-    const gridStep = ts * 4;
-    ctx.beginPath();
-    for (let x = 0; x <= pw; x += gridStep) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, ph);
-    }
-    for (let y = 0; y <= ph; y += gridStep) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(pw, y);
-    }
-    ctx.stroke();
-
-    // 6. Landscape Trees (Pastel Minimalist Dots with soft shadows)
-    for (const tree of world.trees) {
-      const tx = tree.x * ts;
-      const ty = tree.y * ts;
-      const tr = tree.r * ts;
-      ctx.fillStyle = "rgba(54, 56, 62, 0.1)";
-      ctx.beginPath();
-      ctx.arc(tx + 2.5, ty + 2.5, tr, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = tree.color;
-      ctx.beginPath();
-      ctx.arc(tx, ty, tr, 0, Math.PI * 2);
-      ctx.fill();
-    }
   }
 
   render(world, sim) {
@@ -893,7 +460,7 @@ export class MiniMotorwaysRenderer {
         (cx, cy) => {
           const id = cy * world.W + cx;
           return (
-            world.waterMask[id] === 0 &&
+            world.waterMask[id] === WATER_MASK.DRY &&
             world.distToWater[id] >= 1.8 &&
             world.elevationField[id] < world.seaLevel + 0.13
           );
@@ -1202,11 +769,12 @@ export class MiniMotorwaysRenderer {
     ctx.lineJoin = "round";
 
     // Gather all surface roundabouts (Airport Gateways + Expressway Street-Stubs + Diamond Slip-Ramp Stubs)
-    // so all surface road casings and all surface road fills are stroked in unified passes!
-    const roundabouts = [];
+    // and driveways directly from world.routingGraph so all casings and fills are stroked in unified passes!
+    const roundabouts = world.routingGraph?.roundabouts || [];
+    const driveways = world.routingGraph?.driveways || [];
     const airportLandsideGeoms = [];
 
-    for (const ap of world.airports) {
+    for (const ap of world.airports || []) {
       const cx = ap.x * ts + ts * 0.5;
       const cy = ap.y * ts + ts * 0.5;
       const rwyLen = ap.halfLen * 2 * ts;
@@ -1246,40 +814,6 @@ export class MiniMotorwaysRenderer {
         localGateX,
         localGateY,
       });
-
-      roundabouts.push({
-        x: gatePx,
-        y: gatePy,
-        rRing: ts * 0.68,
-        rIsland: ts * 0.36,
-        accentColor: ap.palette.roof,
-      });
-    }
-
-    for (const ic of world.interchanges) {
-      if (ic.type === "terminal-stub" && !ic.isAirportStub) {
-        const town = ic.townId !== undefined ? world.towns[ic.townId] : null;
-        roundabouts.push({
-          x: ic.x * ts + ts * 0.5,
-          y: ic.y * ts + ts * 0.5,
-          rRing: ts * 0.64,
-          rIsland: ts * 0.33,
-          accentColor: town ? town.palette.roof : "#8fa989",
-        });
-      } else if (
-        ic.type === "diamond-ramp" &&
-        !ic.isThroughDiamond &&
-        ic.oppTermX !== undefined &&
-        ic.oppTermY !== undefined
-      ) {
-        roundabouts.push({
-          x: ic.oppTermX * ts + ts * 0.5,
-          y: ic.oppTermY * ts + ts * 0.5,
-          rRing: ts * 0.56,
-          rIsland: ts * 0.3,
-          accentColor: "#8fa989",
-        });
-      }
     }
 
     // =========================================================================
@@ -1289,15 +823,9 @@ export class MiniMotorwaysRenderer {
     ctx.strokeStyle = PALETTE.roadCasing;
     ctx.lineWidth = ts * 0.42;
     ctx.beginPath();
-    for (const h of world.houses) {
-      ctx.moveTo(h.x * ts + ts * 0.5, h.y * ts + ts * 0.5);
-      ctx.lineTo(h.roadX * ts + ts * 0.5, h.roadY * ts + ts * 0.5);
-    }
-    for (const d of world.destinations) {
-      const lx = d.lotX ?? d.x;
-      const ly = d.lotY ?? d.y;
-      ctx.moveTo(lx * ts + ts * 0.5, ly * ts + ts * 0.5);
-      ctx.lineTo(d.roadX * ts + ts * 0.5, d.roadY * ts + ts * 0.5);
+    for (const dw of driveways) {
+      ctx.moveTo(dw.x0 * ts + ts * 0.5, dw.y0 * ts + ts * 0.5);
+      ctx.lineTo(dw.x1 * ts + ts * 0.5, dw.y1 * ts + ts * 0.5);
     }
     ctx.stroke();
 
@@ -1339,8 +867,11 @@ export class MiniMotorwaysRenderer {
       ctx.lineWidth = ts * 0.68;
       ctx.beginPath();
       for (const rb of roundabouts) {
-        ctx.moveTo(rb.x + rb.rRing, rb.y);
-        ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
+        const px = rb.x * ts + ts * 0.5;
+        const py = rb.y * ts + ts * 0.5;
+        const rRing = rb.rTiles * ts;
+        ctx.moveTo(px + rRing, py);
+        ctx.arc(px, py, rRing, 0, Math.PI * 2);
       }
       ctx.stroke();
     }
@@ -1481,15 +1012,9 @@ export class MiniMotorwaysRenderer {
     ctx.strokeStyle = PALETTE.roadAsphalt;
     ctx.lineWidth = ts * 0.26;
     ctx.beginPath();
-    for (const h of world.houses) {
-      ctx.moveTo(h.x * ts + ts * 0.5, h.y * ts + ts * 0.5);
-      ctx.lineTo(h.roadX * ts + ts * 0.5, h.roadY * ts + ts * 0.5);
-    }
-    for (const d of world.destinations) {
-      const lx = d.lotX ?? d.x;
-      const ly = d.lotY ?? d.y;
-      ctx.moveTo(lx * ts + ts * 0.5, ly * ts + ts * 0.5);
-      ctx.lineTo(d.roadX * ts + ts * 0.5, d.roadY * ts + ts * 0.5);
+    for (const dw of driveways) {
+      ctx.moveTo(dw.x0 * ts + ts * 0.5, dw.y0 * ts + ts * 0.5);
+      ctx.lineTo(dw.x1 * ts + ts * 0.5, dw.y1 * ts + ts * 0.5);
     }
     ctx.stroke();
 
@@ -1531,8 +1056,11 @@ export class MiniMotorwaysRenderer {
       ctx.lineWidth = ts * 0.5;
       ctx.beginPath();
       for (const rb of roundabouts) {
-        ctx.moveTo(rb.x + rb.rRing, rb.y);
-        ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
+        const px = rb.x * ts + ts * 0.5;
+        const py = rb.y * ts + ts * 0.5;
+        const rRing = rb.rTiles * ts;
+        ctx.moveTo(px + rRing, py);
+        ctx.arc(px, py, rRing, 0, Math.PI * 2);
       }
       ctx.stroke();
     }
@@ -1541,12 +1069,15 @@ export class MiniMotorwaysRenderer {
     // PASS 4: LANDSCAPED CENTRAL ROUNDABOUT ISLANDS
     // =========================================================================
     for (const rb of roundabouts) {
+      const px = rb.x * ts + ts * 0.5;
+      const py = rb.y * ts + ts * 0.5;
+      const rIsland = (rb.rIsland ?? rb.rTiles * 0.52) * ts;
       this.drawRoundaboutCentralIsland(
         ctx,
-        rb.x,
-        rb.y,
-        rb.rIsland,
-        rb.accentColor,
+        px,
+        py,
+        rIsland,
+        rb.accentColor || "#8fa989",
       );
     }
   }
@@ -2726,6 +2257,8 @@ export class MiniMotorwaysRenderer {
     // 1. Draw Cloverleaf Loops & One-Sided Slip-Ramps underneath the main decks
     this.drawInterchangesUnderlay(ctx, world, ts);
 
+    const roundabouts = world.routingGraph?.roundabouts || [];
+
     // 2. Draw Mainline Elevated Pink Expressways
     for (const mw of world.motorways) {
       const samples = mw.samples;
@@ -2740,7 +2273,7 @@ export class MiniMotorwaysRenderer {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
-      // Clip out the non-pruned terminal roundabout asphalt rings (`rbR + ts * 0.24`) so the pink
+      // Clip out the non-pruned terminal roundabout asphalt rings (`rbR + ts * clipMargin`) so the pink
       // expressway stops cleanly at the outer edge of each roundabout without needing a second-pass
       // roundabout layer that would clip vehicles driving through the roundabout!
       const termEndpoints = [];
@@ -2755,15 +2288,16 @@ export class MiniMotorwaysRenderer {
           (world.H + 100) * ts,
         );
         for (const [rx, ry] of termEndpoints) {
-          const apGateway = world.airports.find(
-            (a) =>
-              Math.hypot(
-                a.gateX * ts + ts * 0.5 - rx,
-                a.gateY * ts + ts * 0.5 - ry,
-              ) < 1.0,
+          const matchedRb = roundabouts.find(
+            (rb) =>
+              Math.hypot(rb.x * ts + ts * 0.5 - rx, rb.y * ts + ts * 0.5 - ry) <
+              1.0,
           );
-          const rbR = apGateway ? ts * 0.68 : ts * 0.64;
-          const clipR = rbR + ts * 0.24;
+          const rbRadius = matchedRb
+            ? matchedRb.rTiles
+            : WORLD_GEOMETRY.ROUNDABOUT_RADII.townStub;
+          const clipR =
+            (rbRadius + WORLD_GEOMETRY.ROUNDABOUT_RADII.clipMargin) * ts;
           ctx.moveTo(rx + clipR, ry);
           ctx.arc(rx, ry, clipR, 0, Math.PI * 2);
         }
@@ -3545,94 +3079,25 @@ export class MiniMotorwaysRenderer {
   }
 
   /**
+   * Derives or retrieves road graph topology diagnostics directly from the precomputed
+   * world road topology or via the memoized vehicle routing topology solver.
+   *
    * @param {ProceduralLogisticsWorld} world
    * @returns {RoadGraphDiagnostics}
    */
   computeRoadGraphDiagnostics(world) {
-    if (this._roadDiagWorld === world && this._roadDiagCache) {
-      return this._roadDiagCache;
-    }
-
-    const { W, H } = world;
-    const total = W * H;
-    const deg = new Uint8Array(total);
-    const hasVertex = new Uint8Array(total);
-    const edgeSet = new Set();
-    /** @type {RoadGraphAnomaly[]} */
-    const anomalies = [];
-
-    for (const r of world.roads) {
-      if (!r.points || r.points.length < 2) continue;
-      for (let i = 0; i < r.points.length; i++) {
-        const pt = r.points[i];
-        const gx = Math.round(pt.x);
-        const gy = Math.round(pt.y);
-        if (!world.inBounds(gx, gy, 0)) continue;
-        const id = world.idx(gx, gy);
-        hasVertex[id] = 1;
-
-        if (world.buildingMask[id] === 1 || world.buildingMask[id] === 2) {
-          anomalies.push({ x: gx, y: gy, kind: "road-building-overlap" });
-        }
-
-        if (i < r.points.length - 1) {
-          const next = r.points[i + 1];
-          const nx = Math.round(next.x);
-          const ny = Math.round(next.y);
-          if (!world.inBounds(nx, ny, 0)) continue;
-          const nid = world.idx(nx, ny);
-          const eKey = id < nid ? id * total + nid : nid * total + id;
-          if (!edgeSet.has(eKey)) {
-            edgeSet.add(eKey);
-            deg[id] = Math.min(255, deg[id] + 1);
-            deg[nid] = Math.min(255, deg[nid] + 1);
-          }
-
-          const dx = nx - gx;
-          const dy = ny - gy;
-          if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) {
-            anomalies.push({
-              x: (gx + nx) * 0.5,
-              y: (gy + ny) * 0.5,
-              kind: "non-octilinear-edge",
-            });
-          }
-        }
-      }
-    }
-
-    let streetTiles = 0;
-    let arterialTiles = 0;
-    let bridgeTiles = 0;
-    let junctionCount = 0;
-
-    for (let id = 0; id < total; id++) {
-      const rg = world.roadGrid[id];
-      if (rg === 1) streetTiles++;
-      else if (rg === 2) arterialTiles++;
-      else if (rg === 3) bridgeTiles++;
-
-      if (deg[id] >= 3) junctionCount++;
-      if (rg > 0 && hasVertex[id] === 0) {
-        anomalies.push({
-          x: id % W,
-          y: Math.floor(id / W),
-          kind: "orphan-roadgrid-tile",
-        });
-      }
-    }
-
-    this._roadDiagWorld = world;
-    this._roadDiagCache = {
-      deg,
-      edgeCount: edgeSet.size,
-      streetTiles,
-      arterialTiles,
-      bridgeTiles,
-      junctionCount,
-      anomalies,
+    const topo =
+      world.roadTopology ||
+      deriveRoadTopology(world.W, world.H, world.roads, world.buildingMask);
+    return {
+      deg: topo.vertexDeg,
+      edgeCount: topo.edgeCount,
+      streetTiles: topo.streetTiles,
+      arterialTiles: topo.arterialTiles,
+      bridgeTiles: topo.bridgeTiles,
+      junctionCount: topo.junctionCount,
+      anomalies: topo.anomalies,
     };
-    return this._roadDiagCache;
   }
 
   drawRoadGridUnderlay(ctx, world, ts) {
@@ -3683,21 +3148,16 @@ export class MiniMotorwaysRenderer {
     const ox = ts * 0.5;
     const oy = ts * 0.5;
     const diag = this.computeRoadGraphDiagnostics(world);
+    const driveways = world.routingGraph?.driveways || [];
 
     // 1. Driveway Frontage Links (`lotX, lotY -> roadX, roadY`)
     ctx.strokeStyle = "rgba(22, 163, 74, 0.65)";
     ctx.lineWidth = 1.3;
     ctx.setLineDash([2.5, 2.5]);
     ctx.beginPath();
-    for (const h of world.houses) {
-      ctx.moveTo(h.x * ts + ox, h.y * ts + oy);
-      ctx.lineTo(h.roadX * ts + ox, h.roadY * ts + oy);
-    }
-    for (const d of world.destinations) {
-      const lx = d.lotX ?? d.x;
-      const ly = d.lotY ?? d.y;
-      ctx.moveTo(lx * ts + ox, ly * ts + oy);
-      ctx.lineTo(d.roadX * ts + ox, d.roadY * ts + oy);
+    for (const dw of driveways) {
+      ctx.moveTo(dw.x0 * ts + ox, dw.y0 * ts + oy);
+      ctx.lineTo(dw.x1 * ts + ox, dw.y1 * ts + oy);
     }
     ctx.stroke();
     ctx.setLineDash([]);

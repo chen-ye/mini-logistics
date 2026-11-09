@@ -19,5 +19,11 @@
     "allowUnreachableCode": false,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.js", "src/**/*.d.ts", "tests/**/*.js", "tests/**/*.d.ts"]
+  "include": [
+    "src/**/*.js",
+    "src/**/*.d.ts",
+    "tests/**/*.js",
+    "tests/**/*.d.ts",
+    "scripts/**/*.js"
+  ]
 }

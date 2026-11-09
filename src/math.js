@@ -222,3 +222,107 @@ export class FastNoise2D {
     return Math.max(0, Math.min(1, total / (maxWeight || 1)));
   }
 }
+
+/***************************************************************************
+ * 2. FLAT TYPED-ARRAY MIN-HEAP
+ ***************************************************************************/
+/**
+ * High-performance binary min-heap backed by flat typed arrays (Int32Array & Float64Array).
+ * Eliminates GC pressure and per-node object allocations during A* and Priority-Flood passes.
+ */
+export class FlatMinHeap {
+  /**
+   * @param {number} [initialCapacity]
+   */
+  constructor(initialCapacity = 1024) {
+    /** @type {number} */
+    this._capacity = Math.max(1, initialCapacity || 1024);
+    /** @type {Int32Array} */
+    this._nodes = new Int32Array(this._capacity);
+    /** @type {Float64Array} */
+    this._prios = new Float64Array(this._capacity);
+    /** @type {number} */
+    this._size = 0;
+  }
+
+  /**
+   * Current number of elements in the heap.
+   * @returns {number}
+   */
+  get size() {
+    return this._size;
+  }
+
+  /**
+   * Reset the heap to empty state without releasing underlying typed arrays.
+   * @returns {void}
+   */
+  clear() {
+    this._size = 0;
+  }
+
+  /**
+   * Push a node ID and its priority onto the min-heap.
+   * @param {number} id
+   * @param {number} priority
+   * @returns {void}
+   */
+  push(id, priority) {
+    if (this._size >= this._capacity) {
+      this._grow();
+    }
+    let i = this._size++;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this._prios[p] <= priority) break;
+      this._nodes[i] = this._nodes[p];
+      this._prios[i] = this._prios[p];
+      i = p;
+    }
+    this._nodes[i] = id;
+    this._prios[i] = priority;
+  }
+
+  /**
+   * Pop and return the node ID with the minimum priority.
+   * @returns {number} Node ID, or -1 if the heap is empty.
+   */
+  pop() {
+    if (this._size === 0) return -1;
+    const top = this._nodes[0];
+    this._size--;
+    if (this._size > 0) {
+      const lastN = this._nodes[this._size];
+      const lastP = this._prios[this._size];
+      let i = 0;
+      const n = this._size;
+      while ((i << 1) + 1 < n) {
+        let c = (i << 1) + 1;
+        if (c + 1 < n && this._prios[c + 1] < this._prios[c]) c++;
+        if (lastP <= this._prios[c]) break;
+        this._nodes[i] = this._nodes[c];
+        this._prios[i] = this._prios[c];
+        i = c;
+      }
+      this._nodes[i] = lastN;
+      this._prios[i] = lastP;
+    }
+    return top;
+  }
+
+  /**
+   * Doubles the backing buffer capacity.
+   * @private
+   * @returns {void}
+   */
+  _grow() {
+    const newCap = Math.max(4, this._capacity << 1);
+    const newNodes = new Int32Array(newCap);
+    const newPrios = new Float64Array(newCap);
+    newNodes.set(this._nodes);
+    newPrios.set(this._prios);
+    this._capacity = newCap;
+    this._nodes = newNodes;
+    this._prios = newPrios;
+  }
+}

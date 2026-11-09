@@ -1,5 +1,6 @@
 /** @import { CarAgent, PlaneAgent } from './types.js' */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
+import { SIM_CONFIG } from "./constants.js";
 
 /***************************************************************************
  * 4. LIVE TRAFFIC (CARS) & AVIATION (FLIGHTS) SIMULATION ENGINE
@@ -16,7 +17,7 @@ export class LogisticsSimulator {
     /** @type {PlaneAgent[]} */
     this.planes = [];
     /** @type {number} */
-    this.tripsCompleted = 1372;
+    this.tripsCompleted = SIM_CONFIG.FLEET.initialTrips;
     /** @type {number} */
     this.simTime = 0;
     this.initAgents();
@@ -25,16 +26,19 @@ export class LogisticsSimulator {
   initAgents() {
     const { world } = this;
     // Spawn Mini Motorways commuter cars along road paths and motorways
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < SIM_CONFIG.FLEET.commuterCars; i++) {
       this.spawnCar(false);
     }
     // Spawn Inter-Industrial Freight Trucks along the `RAW -> MFG -> LOG -> COM` cargo chain!
-    for (let i = 0; i < 42; i++) {
+    for (let i = 0; i < SIM_CONFIG.FLEET.freightTrucks; i++) {
       this.spawnCar(true);
     }
     // Spawn aircraft operating between airports (with 3x air fleet in Island Hopper mode!)
     if (world.airports.length > 0) {
-      const mult = world.config.archetype === "island-hopper" ? 3 : 2;
+      const mult =
+        world.config.archetype === "island-hopper"
+          ? SIM_CONFIG.FLEET.islandHopperPlanesPerAirport
+          : SIM_CONFIG.FLEET.basePlanesPerAirport;
       const planeCount = Math.max(2, world.airports.length * mult);
       for (let i = 0; i < planeCount; i++) {
         this.spawnPlane(i / planeCount);
@@ -172,7 +176,11 @@ export class LogisticsSimulator {
       if (!track || !track.pts || track.pts.length < 2) continue;
       const idx = Math.min(car.segIdx, track.pts.length - 2);
       const pt = track.pts[idx];
-      const speedMult = pt.onMotorway ? 1.65 : pt.isStreet ? 0.82 : 1.0;
+      const speedMult = pt.onMotorway
+        ? SIM_CONFIG.VEHICLE_ROUTING.speedMultMotorway
+        : pt.isStreet
+          ? SIM_CONFIG.VEHICLE_ROUTING.speedMultStreet
+          : SIM_CONFIG.VEHICLE_ROUTING.speedMultArterial;
       car.dist += car.speed * speedMult * effDt;
 
       while (
@@ -195,7 +203,7 @@ export class LogisticsSimulator {
       p.progress += p.speed * effDt;
       if (p.progress >= 1.0) {
         p.progress = 0;
-        this.tripsCompleted += 6;
+        this.tripsCompleted += SIM_CONFIG.FLEET.flightTripWeight;
         // Swap origin and destination for continuous air bridge
         p.origin = p.dest.id !== undefined ? p.dest : p.origin;
         if (this.world.airports.length > 1) {

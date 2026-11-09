@@ -47,8 +47,8 @@ const runWorldPipeline = createWorldPipeline({
       currentBakePromise = null;
       return;
     }
-    // Stream Stage 6/7 urban blush & trees to TerrainBakeWorker BEFORE Stage 8 (Motorways) & Stage 9 (Cargo) start
-    // so `composeTerrainBitmap` runs on Core 2 concurrently with Stage 8 & Stage 9 on Core 1!
+    // Stream post-clearance urban blush & trees to TerrainBakeWorker once Stage 9 ramps & tunnels clear right-of-way
+    // so `composeTerrainBitmap` runs on Core 2 concurrently with Stage 9 Cargo on Core 1!
     const reqId = currentRequestId;
     const zoneCopy = new Int8Array(s67State.zoneColorIdx);
     currentBakePromise = new Promise((resolve) => {
