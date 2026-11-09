@@ -1072,6 +1072,24 @@ export class MiniMotorwaysRenderer {
       ctx.stroke();
     }
 
+    // Diamond slip-ramp casings (`PALETTE.motorwayBorder`) drawn in the unified casing pass
+    // before any surface road or roundabout asphalt fill is stroked!
+    ctx.strokeStyle = PALETTE.motorwayBorder;
+    ctx.lineWidth = ts * 0.36;
+    ctx.beginPath();
+    for (const ic of world.interchanges) {
+      if (ic.type !== 'diamond-ramp') continue;
+      for (const ramp of ic.ramps || []) {
+        ctx.moveTo(ramp.p0.x * ts + ts * 0.5, ramp.p0.y * ts + ts * 0.5);
+        ctx.bezierCurveTo(
+          ramp.p1.x * ts + ts * 0.5, ramp.p1.y * ts + ts * 0.5,
+          ramp.p2.x * ts + ts * 0.5, ramp.p2.y * ts + ts * 0.5,
+          ramp.p3.x * ts + ts * 0.5, ramp.p3.y * ts + ts * 0.5
+        );
+      }
+    }
+    ctx.stroke();
+
     // =========================================================================
     // PASS 2: BRIDGE GUARDRAILS OVER WATER (continuous smoothed spans matching `traceSmoothPath`)
     // =========================================================================
@@ -1145,10 +1163,26 @@ export class MiniMotorwaysRenderer {
     ctx.lineCap = 'round';
 
     // =========================================================================
-    // PASS 3: UNIFIED SURFACE ROAD ASPHALT FILLS (Driveways + Streets + Arterials + Airport Loops & Spines + Roundabout Rings)
-    // Because all white fills are drawn after all casings, every intersection, T-junction, and roundabout throat
-    // merges seamlessly with zero casing overdraw or throat-patching hacks!
+    // PASS 3: UNIFIED SURFACE ROAD & SLIP-RAMP ASPHALT FILLS
+    // Because all fills are drawn in a single unified pass after all casings, every
+    // slip-ramp mouth, T-junction, and roundabout throat merges with zero clip masks!
     // =========================================================================
+    ctx.strokeStyle = '#f48fb1';
+    ctx.lineWidth = ts * 0.22;
+    ctx.beginPath();
+    for (const ic of world.interchanges) {
+      if (ic.type !== 'diamond-ramp') continue;
+      for (const ramp of ic.ramps || []) {
+        ctx.moveTo(ramp.p0.x * ts + ox, ramp.p0.y * ts + oy);
+        ctx.bezierCurveTo(
+          ramp.p1.x * ts + ox, ramp.p1.y * ts + oy,
+          ramp.p2.x * ts + ox, ramp.p2.y * ts + oy,
+          ramp.p3.x * ts + ox, ramp.p3.y * ts + oy
+        );
+      }
+    }
+    ctx.stroke();
+
     ctx.strokeStyle = PALETTE.roadAsphalt;
     ctx.lineWidth = ts * 0.26;
     ctx.beginPath();
@@ -2141,56 +2175,11 @@ export class MiniMotorwaysRenderer {
         ctx.restore();
       } else if (ic.type === 'diamond-ramp') {
         // =================================================================
-        // 4 FLEXIBLE SLIP-RAMPS BRIDGING ORGANIC EXPRESSWAY & OCTILINEAR SURFACE ROAD
+        // DIAMOND INTERCHANGE OVERPASS BRIDGE PARAPETS & UNDERPASS SHADOW
+        // (Slip-ramp casings & fills are drawn in `drawRoadNetwork` Passes 1 & 3
+        //  so they merge into surface roads & roundabouts without clip masks!)
         // =================================================================
-        const ox = ts * 0.5;
-        const oy = ts * 0.5;
         ctx.save();
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        // If this is a Diamond-T (`!ic.isThroughDiamond`), clip out the far-side roundabout's asphalt ring
-        // (`rRing + ts * 0.24`) so the two far-side pink ramps terminate cleanly at the left & right flanks of the roundabout!
-        if (!ic.isThroughDiamond && ic.oppTermX !== undefined && ic.oppTermY !== undefined) {
-          const rbx = ic.oppTermX * ts + ox;
-          const rby = ic.oppTermY * ts + oy;
-          const clipR = ts * 0.56 + ts * 0.24;
-          ctx.beginPath();
-          ctx.rect(-ts * 50, -ts * 50, (world.W + 100) * ts, (world.H + 100) * ts);
-          ctx.moveTo(rbx + clipR, rby);
-          ctx.arc(rbx, rby, clipR, 0, Math.PI * 2);
-          ctx.clip('evenodd');
-        }
-
-        // 1. Draw all 4 Flexible World-Space Bezier Slip-Ramps (`ic.ramps`)
-        for (const pass of ['border', 'fill']) {
-          ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : '#f48fb1';
-          ctx.lineWidth = pass === 'border' ? ts * 0.36 : ts * 0.22;
-
-          for (const ramp of ic.ramps || []) {
-            ctx.beginPath();
-            ctx.moveTo(ramp.p0.x * ts + ox, ramp.p0.y * ts + oy);
-            ctx.bezierCurveTo(
-              ramp.p1.x * ts + ox, ramp.p1.y * ts + oy,
-              ramp.p2.x * ts + ox, ramp.p2.y * ts + oy,
-              ramp.p3.x * ts + ox, ramp.p3.y * ts + oy
-            );
-            ctx.stroke();
-          }
-        }
-
-        // 2. Re-stroke the octilinear white surface underpass road fill (`posTerm <-> negTerm`)
-        //    over the through-side slip-ramp tips at `p3` so the pink ramps tuck cleanly under the surface road edge
-        if (ic.posTerm && ic.negTerm) {
-          ctx.strokeStyle = PALETTE.roadAsphalt;
-          ctx.lineWidth = ts * 0.54;
-          ctx.beginPath();
-          ctx.moveTo(ic.posTerm.x * ts + ox, ic.posTerm.y * ts + oy);
-          ctx.lineTo(ic.negTerm.x * ts + ox, ic.negTerm.y * ts + oy);
-          ctx.stroke();
-        }
-
-        // 3. Draw underpass drop shadow & charcoal overpass bridge parapet rails (`#36383e`) along the expressway
         ctx.translate(cx, cy);
         ctx.rotate(ic.angleRad);
         ctx.fillStyle = 'rgba(45, 42, 38, 0.16)';
@@ -2203,7 +2192,6 @@ export class MiniMotorwaysRenderer {
         ctx.moveTo(-ts * 0.72, 0);
         ctx.lineTo(ts * 0.72, 0);
         ctx.stroke();
-
         ctx.restore();
       }
     }
