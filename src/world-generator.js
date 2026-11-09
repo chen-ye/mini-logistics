@@ -4076,11 +4076,648 @@ export class ProceduralLogisticsWorld {
   }
 
   /**
+   * Builds and caches a unified Multi-Modal Vehicle Routing Graph (`this._vehicleGraph`)
+   * combining committed surface roads (`this.roads`), elevated expressways (`this.motorways`),
+   * terminal roundabouts (`terminal-stub`), intermediate diamond slip-ramps (`diamond-ramp`),
+   * and system interchanges (`cloverleaf`, `trumpet`).
+   */
+  ensureVehicleRoutingGraph() {
+    if (this._vehicleGraph) return this._vehicleGraph;
+    const { W, H } = this;
+    const nodes = [];
+    const adj = [];
+    const tileToNode = new Int32Array(W * H).fill(-1);
+
+    const addNode = (x, y, onMotorway = false, inTunnel = false, isStreet = false, isRoundabout = false, isSlipRamp = false) => {
+      const id = nodes.length;
+      nodes.push({ x, y, onMotorway, inTunnel, isStreet, isRoundabout, isSlipRamp });
+      adj.push([]);
+      return id;
+    };
+
+    const addEdge = (u, v, cost) => {
+      if (u === v || u < 0 || v < 0) return;
+      const listU = adj[u];
+      for (let i = 0; i < listU.length; i++) {
+        if (listU[i].to === v) {
+          if (cost < listU[i].cost) listU[i].cost = cost;
+          return;
+        }
+      }
+      listU.push({ to: v, cost });
+    };
+
+    const addBiEdge = (u, v, cost) => {
+      addEdge(u, v, cost);
+      addEdge(v, u, cost);
+    };
+
+    const ensureSurfaceNode = (gx, gy) => {
+      const tid = gy * W + gx;
+      if (tileToNode[tid] !== -1) return tileToNode[tid];
+      const isStreet = this.roadGrid[tid] === 1;
+      const nid = addNode(gx, gy, false, false, isStreet, false);
+      tileToNode[tid] = nid;
+      return nid;
+    };
+
+    // 1. Add all committed surface road edges from `this.roads`
+    for (const r of this.roads) {
+      const pts = r.points;
+      if (!pts || pts.length < 2) continue;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const x0 = Math.round(pts[i].x);
+        const y0 = Math.round(pts[i].y);
+        const x1 = Math.round(pts[i + 1].x);
+        const y1 = Math.round(pts[i + 1].y);
+        if (!this.inBounds(x0, y0, 1) || !this.inBounds(x1, y1, 1)) continue;
+        const u = ensureSurfaceNode(x0, y0);
+        const v = ensureSurfaceNode(x1, y1);
+        const dist = Math.hypot(x1 - x0, y1 - y0) || 1;
+        const mult = (nodes[u].isStreet || nodes[v].isStreet) ? 1.35 : 1.0;
+        addBiEdge(u, v, dist * mult);
+      }
+    }
+
+    const numSurfaceNodes = nodes.length;
+
+    // Helper: connect a portal node to all nearby surface road nodes within `maxR`
+    const connectToNearbySurfaceNodes = (portalNode, px, py, maxR, rampCost = 0.85) => {
+      const rCeil = Math.ceil(maxR);
+      const gx0 = Math.round(px);
+      const gy0 = Math.round(py);
+      let connectedAny = false;
+      for (let dy = -rCeil; dy <= rCeil; dy++) {
+        for (let dx = -rCeil; dx <= rCeil; dx++) {
+          const gx = gx0 + dx;
+          const gy = gy0 + dy;
+          if (!this.inBounds(gx, gy, 1)) continue;
+          const sNode = tileToNode[gy * W + gx];
+          if (sNode === -1) continue;
+          const d = Math.hypot(gx - px, gy - py);
+          if (d <= maxR) {
+            addBiEdge(portalNode, sNode, d * 0.9 + rampCost);
+            connectedAny = true;
+          }
+        }
+      }
+      if (!connectedAny && numSurfaceNodes > 0) {
+        let bestS = -1;
+        let bestD = Infinity;
+        for (let s = 0; s < numSurfaceNodes; s++) {
+          const d = Math.hypot(nodes[s].x - px, nodes[s].y - py);
+          if (d < bestD) {
+            bestD = d;
+            bestS = s;
+          }
+        }
+        if (bestS !== -1 && bestD <= 6.5) {
+          addBiEdge(portalNode, bestS, bestD + rampCost);
+        }
+      }
+    };
+
+    // 2. Add expressway spline sample nodes (`onMotorway = true`, `0.38x` travel cost per tile)
+    const mwNodeLists = new Map();
+    for (const mw of this.motorways || []) {
+      const samples = mw.samples;
+      if (!samples || samples.length < 2) continue;
+      const mNodes = new Int32Array(samples.length);
+      for (let k = 0; k < samples.length; k++) {
+        const pt = samples[k];
+        const inTunnel = Boolean(mw.tunnels && mw.tunnels.some(tun => k >= tun.i0 && k <= tun.i1));
+        mNodes[k] = addNode(pt.x, pt.y, true, inTunnel, false, false);
+        if (k > 0) {
+          const prevPt = samples[k - 1];
+          const segDist = Math.hypot(pt.x - prevPt.x, pt.y - prevPt.y) || 0.5;
+          addBiEdge(mNodes[k - 1], mNodes[k], segDist * 0.38);
+        }
+      }
+      mwNodeLists.set(mw.number, { mw, mNodes });
+
+      // Connect terminal roundabout endpoints (`k = 0` and `k = last`) to surface roads
+      const startPortal = addNode(mw.sx, mw.sy, false, false, false, true);
+      addBiEdge(startPortal, mNodes[0], 0.65);
+      connectToNearbySurfaceNodes(startPortal, mw.sx, mw.sy, 2.4, 0.75);
+
+      const endPortal = addNode(mw.ex, mw.ey, false, false, false, true);
+      addBiEdge(endPortal, mNodes[samples.length - 1], 0.65);
+      connectToNearbySurfaceNodes(endPortal, mw.ex, mw.ey, 2.4, 0.75);
+    }
+
+    // 3. Connect intermediate diamond slip-ramps (`diamond-ramp`) and system interchanges (`cloverleaf`, `trumpet`)
+    for (const ic of this.interchanges || []) {
+      if (ic.type === 'diamond-ramp') {
+        const entry = mwNodeLists.get(ic.mwayNumber);
+        if (!entry) continue;
+        const { mw, mNodes } = entry;
+        const samples = mw.samples;
+        let bestK = 0;
+        let bestD = Infinity;
+        for (let k = 0; k < samples.length; k++) {
+          const d = Math.hypot(samples[k].x - ic.x, samples[k].y - ic.y);
+          if (d < bestD) {
+            bestD = d;
+            bestK = k;
+          }
+        }
+        const rbNode = addNode(ic.termX, ic.termY, false, false, false, true);
+        if (ic.connectX !== undefined && ic.connectY !== undefined) {
+          connectToNearbySurfaceNodes(rbNode, ic.connectX, ic.connectY, 1.8, 0.6);
+        }
+        connectToNearbySurfaceNodes(rbNode, ic.termX, ic.termY, 2.2, 0.6);
+
+        const cosA = Math.cos(ic.angleRad || 0);
+        const sinA = Math.sin(ic.angleRad || 0);
+        const nx = -sinA;
+        const ny = cosA;
+        const sySign = ic.connSide !== undefined ? ic.connSide : 1;
+
+        for (const sxSign of [-1, 1]) {
+          const deckAttachX = ic.x + cosA * (sxSign * 2.85);
+          const deckAttachY = ic.y + sinA * (sxSign * 2.85);
+          let kRamp = bestK;
+          let bestAttachD = Infinity;
+          for (let k = 0; k < samples.length; k++) {
+            const d = Math.hypot(samples[k].x - deckAttachX, samples[k].y - deckAttachY);
+            if (d < bestAttachD) {
+              bestAttachD = d;
+              kRamp = k;
+            }
+          }
+
+          const along = 2.85;
+          const across = 2.65;
+          const deckEdge = 0.36;
+          const evalRampBezier = (t) => {
+            const mt = 1 - t;
+            const u =
+              mt * mt * mt * (sxSign * along) +
+              3 * mt * mt * t * (sxSign * along * 0.46) +
+              3 * mt * t * t * (sxSign * along * 0.16);
+            const v =
+              mt * mt * mt * (sySign * deckEdge) +
+              3 * mt * mt * t * (sySign * deckEdge) +
+              3 * mt * t * t * (sySign * across * 0.82) +
+              t * t * t * (sySign * across);
+            return {
+              x: ic.x + cosA * u + nx * v,
+              y: ic.y + sinA * u + ny * v
+            };
+          };
+
+          let prevRampNode = mNodes[kRamp];
+          for (const t of [0.22, 0.50, 0.76]) {
+            const rPt = evalRampBezier(t);
+            const rNode = addNode(rPt.x, rPt.y, true, false, false, false, true);
+            const segD = Math.hypot(rPt.x - nodes[prevRampNode].x, rPt.y - nodes[prevRampNode].y) || 0.4;
+            addBiEdge(prevRampNode, rNode, segD * 0.55 + 0.12);
+            prevRampNode = rNode;
+          }
+          const lastD = Math.hypot(ic.termX - nodes[prevRampNode].x, ic.termY - nodes[prevRampNode].y) || 0.4;
+          addBiEdge(prevRampNode, rbNode, lastD * 0.55 + 0.15);
+        }
+      } else if (ic.type === 'cloverleaf' || ic.type === 'trumpet') {
+        const xferNode = addNode(ic.x, ic.y, true, false, false, false);
+        for (const { mw, mNodes } of mwNodeLists.values()) {
+          let bestK = -1;
+          let bestD = Infinity;
+          for (let k = 0; k < mw.samples.length; k++) {
+            const d = Math.hypot(mw.samples[k].x - ic.x, mw.samples[k].y - ic.y);
+            if (d < bestD) {
+              bestD = d;
+              bestK = k;
+            }
+          }
+          if (bestK !== -1 && bestD <= 6.5) {
+            addBiEdge(xferNode, mNodes[bestK], bestD * 0.55 + 0.8);
+          }
+        }
+      }
+    }
+
+    // 4. Collect roundabout geometry for right-hand circulatory arc generation
+    const roundabouts = [];
+    for (const ap of this.airports || []) {
+      roundabouts.push({ x: ap.gateX, y: ap.gateY, rTiles: 0.68 });
+    }
+    for (const ic of this.interchanges || []) {
+      if (ic.type === 'terminal-stub' && !ic.isAirportStub) {
+        roundabouts.push({ x: ic.x, y: ic.y, rTiles: 0.64 });
+      } else if (ic.type === 'diamond-ramp') {
+        roundabouts.push({ x: ic.termX, y: ic.termY, rTiles: 0.56 });
+      }
+    }
+
+    const totalNodes = nodes.length;
+    this._vehicleGraph = {
+      nodes,
+      adj,
+      tileToNode,
+      numSurfaceNodes,
+      roundabouts,
+      gScore: new Float64Array(totalNodes),
+      parent: new Int32Array(totalNodes),
+      seenGen: new Int32Array(totalNodes),
+      closedGen: new Int32Array(totalNodes),
+      gen: 0
+    };
+    return this._vehicleGraph;
+  }
+
+  /**
+   * Dedicated On-Network Multi-Modal Vehicle A* (`findVehicleNetworkPath`):
+   * Routes strictly over committed surface road edges and grade-separated expressways
+   * with realistic travel-time weights (`0.38x` expressway, `1.0x` arterial, `1.35x` local street)
+   * and light intersection turn costs (`+0.30` for 45°, `+0.55` for 90°).
+   */
+  findVehicleNetworkPath(sx, sy, ex, ey) {
+    const graph = this.ensureVehicleRoutingGraph();
+    const { nodes, adj, tileToNode, numSurfaceNodes, gScore, parent, seenGen, closedGen } = graph;
+    if (numSurfaceNodes < 2) return null;
+    const { W } = this;
+
+    const findNearestSurfaceNode = (px, py) => {
+      const gx0 = Math.round(px);
+      const gy0 = Math.round(py);
+      if (this.inBounds(gx0, gy0, 1)) {
+        const direct = tileToNode[gy0 * W + gx0];
+        if (direct !== -1) return direct;
+      }
+      let best = -1;
+      let bestD = Infinity;
+      for (let dy = -3; dy <= 3; dy++) {
+        for (let dx = -3; dx <= 3; dx++) {
+          const gx = gx0 + dx;
+          const gy = gy0 + dy;
+          if (!this.inBounds(gx, gy, 1)) continue;
+          const nid = tileToNode[gy * W + gx];
+          if (nid !== -1) {
+            const d = Math.hypot(gx - px, gy - py);
+            if (d < bestD) {
+              bestD = d;
+              best = nid;
+            }
+          }
+        }
+      }
+      return best;
+    };
+
+    const startNode = findNearestSurfaceNode(sx, sy);
+    const endNode = findNearestSurfaceNode(ex, ey);
+    if (startNode === -1 || endNode === -1 || startNode === endNode) return null;
+
+    const gen = ++graph.gen;
+    const endX = nodes[endNode].x;
+    const endY = nodes[endNode].y;
+
+    const heapId = [startNode];
+    const heapF = [0];
+    const heapPush = (id, f) => {
+      let i = heapId.length;
+      heapId.push(id);
+      heapF.push(f);
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heapF[p] <= f) break;
+        heapId[i] = heapId[p];
+        heapF[i] = heapF[p];
+        i = p;
+      }
+      heapId[i] = id;
+      heapF[i] = f;
+    };
+    const heapPop = () => {
+      const top = heapId[0];
+      const lastId = heapId.pop();
+      const lastF = heapF.pop();
+      if (heapId.length > 0) {
+        let i = 0;
+        const len = heapId.length;
+        while ((i << 1) + 1 < len) {
+          let c = (i << 1) + 1;
+          if (c + 1 < len && heapF[c + 1] < heapF[c]) c++;
+          if (lastF <= heapF[c]) break;
+          heapId[i] = heapId[c];
+          heapF[i] = heapF[c];
+          i = c;
+        }
+        heapId[i] = lastId;
+        heapF[i] = lastF;
+      }
+      return top;
+    };
+
+    seenGen[startNode] = gen;
+    gScore[startNode] = 0;
+    parent[startNode] = -1;
+
+    while (heapId.length > 0) {
+      const u = heapPop();
+      if (u === endNode) {
+        const out = [];
+        let cur = u;
+        while (cur !== -1) {
+          const n = nodes[cur];
+          out.push({
+            x: n.x,
+            y: n.y,
+            onMotorway: n.onMotorway,
+            inTunnel: n.inTunnel,
+            isStreet: n.isStreet,
+            isRoundabout: n.isRoundabout,
+            isSlipRamp: n.isSlipRamp
+          });
+          cur = parent[cur];
+        }
+        return out.reverse();
+      }
+
+      if (closedGen[u] === gen) continue;
+      closedGen[u] = gen;
+
+      const nu = nodes[u];
+      const pu = parent[u];
+      const prevDx = pu !== -1 ? nu.x - nodes[pu].x : 0;
+      const prevDy = pu !== -1 ? nu.y - nodes[pu].y : 0;
+
+      const edges = adj[u];
+      for (let i = 0; i < edges.length; i++) {
+        const { to: v, cost: baseCost } = edges[i];
+        if (closedGen[v] === gen) continue;
+        const nv = nodes[v];
+        let stepCost = baseCost;
+
+        if (pu !== -1 && !nu.onMotorway && !nv.onMotorway) {
+          const dx = nv.x - nu.x;
+          const dy = nv.y - nu.y;
+          if (dx !== prevDx || dy !== prevDy) {
+            const dot = dx * prevDx + dy * prevDy;
+            stepCost += dot > 0 ? 0.30 : (dot === 0 ? 0.55 : 3.5);
+          }
+        }
+
+        const tentativeG = gScore[u] + stepCost;
+        if (seenGen[v] !== gen || tentativeG < gScore[v]) {
+          seenGen[v] = gen;
+          gScore[v] = tentativeG;
+          parent[v] = u;
+          const h = Math.hypot(endX - nv.x, endY - nv.y) * 0.36;
+          heapPush(v, tentativeG + h);
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Directly models a directed right-hand vehicle lane trajectory (`pts`, `cumLen`, `totalLength`)
+   * from `srcPt` to `dstPt` along `rawPath`, embedding driveway pull-out/in, counter-clockwise
+   * roundabout circulatory arcs, quadratic corner fillets, and right-hand carriageway lanes.
+   */
+  buildDirectedLaneTrajectory(srcPt, dstPt, rawPath) {
+    if (!rawPath || rawPath.length < 2) return null;
+    const graph = this.ensureVehicleRoutingGraph();
+    const roundabouts = graph.roundabouts || [];
+
+    // 1. Build centerline spine with origin/destination driveways and right-hand roundabout arcs
+    const spine = [];
+    const pushSpinePt = (pt) => {
+      if (spine.length > 0) {
+        const last = spine[spine.length - 1];
+        if (Math.hypot(pt.x - last.x, pt.y - last.y) < 0.04) return;
+      }
+      spine.push(pt);
+    };
+
+    if (srcPt && Math.hypot(srcPt.x - rawPath[0].x, srcPt.y - rawPath[0].y) > 0.2) {
+      pushSpinePt({
+        x: rawPath[0].x + (srcPt.x - rawPath[0].x) * 0.52,
+        y: rawPath[0].y + (srcPt.y - rawPath[0].y) * 0.52,
+        onMotorway: false,
+        inTunnel: false,
+        isStreet: true,
+        isDriveway: true
+      });
+    }
+
+    for (let i = 0; i < rawPath.length; i++) {
+      const pt = rawPath[i];
+      let matchedRb = null;
+      if (i > 0 && i < rawPath.length - 1) {
+        for (let r = 0; r < roundabouts.length; r++) {
+          const rb = roundabouts[r];
+          if (Math.hypot(pt.x - rb.x, pt.y - rb.y) <= rb.rTiles * 1.18) {
+            matchedRb = rb;
+            break;
+          }
+        }
+      }
+
+      if (matchedRb) {
+        let j = i;
+        while (
+          j + 1 < rawPath.length - 1 &&
+          Math.hypot(rawPath[j + 1].x - matchedRb.x, rawPath[j + 1].y - matchedRb.y) <= matchedRb.rTiles * 1.18
+        ) {
+          j++;
+        }
+        const pIn = spine.length > 0 ? spine[spine.length - 1] : rawPath[i - 1];
+        const pOut = rawPath[Math.min(rawPath.length - 1, j + 1)];
+        const thetaIn = Math.atan2(pIn.y - matchedRb.y, pIn.x - matchedRb.x);
+        const thetaOut = Math.atan2(pOut.y - matchedRb.y, pOut.x - matchedRb.x);
+        const thetaStart = thetaIn - 0.18;
+        const thetaEnd = thetaOut + 0.18;
+        let sweep = ((thetaStart - thetaEnd) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+        if (sweep < 0.22) sweep = 0.22;
+        if (sweep > Math.PI * 1.82) sweep = Math.PI * 0.45;
+        const arcSteps = Math.max(3, Math.ceil(sweep / 0.42));
+        for (let s = 0; s <= arcSteps; s++) {
+          const ang = thetaStart - sweep * (s / arcSteps);
+          pushSpinePt({
+            x: matchedRb.x + Math.cos(ang) * matchedRb.rTiles,
+            y: matchedRb.y + Math.sin(ang) * matchedRb.rTiles,
+            onMotorway: false,
+            inTunnel: false,
+            isStreet: false,
+            isRoundaboutArc: true
+          });
+        }
+        i = j;
+      } else {
+        pushSpinePt({ ...pt });
+      }
+    }
+
+    const lastRaw = rawPath[rawPath.length - 1];
+    if (dstPt && Math.hypot(dstPt.x - lastRaw.x, dstPt.y - lastRaw.y) > 0.2) {
+      pushSpinePt({
+        x: lastRaw.x + (dstPt.x - lastRaw.x) * 0.52,
+        y: lastRaw.y + (dstPt.y - lastRaw.y) * 0.52,
+        onMotorway: false,
+        inTunnel: false,
+        isStreet: true,
+        isDriveway: true
+      });
+    }
+
+    if (spine.length < 2) return null;
+
+    // 2. Shift spine vertices into their directed right-hand travel lane (`(-ty, tx)`)
+    const shifted = new Array(spine.length);
+    for (let i = 0; i < spine.length; i++) {
+      const p = spine[i];
+      let tx = 0, ty = 0;
+      if (i > 0) {
+        const dx0 = p.x - spine[i - 1].x;
+        const dy0 = p.y - spine[i - 1].y;
+        const l0 = Math.hypot(dx0, dy0) || 1;
+        tx += dx0 / l0;
+        ty += dy0 / l0;
+      }
+      if (i + 1 < spine.length) {
+        const dx1 = spine[i + 1].x - p.x;
+        const dy1 = spine[i + 1].y - p.y;
+        const l1 = Math.hypot(dx1, dy1) || 1;
+        tx += dx1 / l1;
+        ty += dy1 / l1;
+      }
+      const tLen = Math.hypot(tx, ty) || 1;
+      tx /= tLen;
+      ty /= tLen;
+      const rx = -ty;
+      const ry = tx;
+
+      let laneOff = 0.13;
+      if (p.isRoundaboutArc) laneOff = 0.0;
+      else if (p.isSlipRamp) laneOff = 0.04;
+      else if (p.isDriveway) laneOff = 0.06;
+      else if (p.onMotorway) laneOff = 0.18;
+
+      shifted[i] = {
+        ...p,
+        x: p.x + rx * laneOff,
+        y: p.y + ry * laneOff
+      };
+    }
+
+    // 3. Fillet surface road turns with quadratic Bezier samples so the path curve is smooth
+    const pts = [shifted[0]];
+    for (let i = 1; i < shifted.length - 1; i++) {
+      const pPrev = shifted[i - 1];
+      const pCurr = shifted[i];
+      const pNext = shifted[i + 1];
+      if (pCurr.onMotorway || pCurr.isRoundaboutArc) {
+        pts.push(pCurr);
+        continue;
+      }
+      const dx0 = pCurr.x - pPrev.x;
+      const dy0 = pCurr.y - pPrev.y;
+      const dx1 = pNext.x - pCurr.x;
+      const dy1 = pNext.y - pCurr.y;
+      const l0 = Math.hypot(dx0, dy0) || 1;
+      const l1 = Math.hypot(dx1, dy1) || 1;
+      const cross = Math.abs((dx0 / l0) * (dy1 / l1) - (dy0 / l0) * (dx1 / l1));
+      if (cross > 0.08) {
+        const r = Math.min(0.24, l0 * 0.42, l1 * 0.42);
+        const ax = pCurr.x - (dx0 / l0) * r;
+        const ay = pCurr.y - (dy0 / l0) * r;
+        const cx = pCurr.x + (dx1 / l1) * r;
+        const cy = pCurr.y + (dy1 / l1) * r;
+        for (const t of [0.15, 0.5, 0.85]) {
+          const mt = 1 - t;
+          pts.push({
+            ...pCurr,
+            x: mt * mt * ax + 2 * mt * t * pCurr.x + t * t * cx,
+            y: mt * mt * ay + 2 * mt * t * pCurr.y + t * t * cy
+          });
+        }
+      } else {
+        pts.push(pCurr);
+      }
+    }
+    pts.push(shifted[shifted.length - 1]);
+
+    // 4. Precompute cumulative arc-length parameterization
+    const cumLen = new Float32Array(pts.length);
+    let acc = 0;
+    for (let i = 1; i < pts.length; i++) {
+      acc += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      cumLen[i] = acc;
+    }
+
+    return {
+      pts,
+      cumLen,
+      totalLength: Math.max(0.01, acc)
+    };
+  }
+
+  /**
+   * Builds Origin-to-Destination Commuter Routes (`this.commuterRoutes`) between
+   * residential houses (`this.houses`) and Commercial/Industrial/Airport sinks
+   * across both local streets and regional expressways.
+   */
+  buildCommuterRoutes() {
+    this.commuterRoutes = [];
+    if (!this.houses || this.houses.length === 0 || !this.destinations || this.destinations.length === 0) {
+      return;
+    }
+
+    const targetRoutes = Math.min(130, Math.max(60, Math.round(this.houses.length * 0.35)));
+    const step = Math.max(1, Math.floor(this.houses.length / targetRoutes));
+
+    for (let i = 0; i < this.houses.length && this.commuterRoutes.length < targetRoutes; i += step) {
+      const h = this.houses[i];
+      const hx = Math.round(h.roadX ?? h.x);
+      const hy = Math.round(h.roadY ?? h.y);
+      const wantRegional = (this.commuterRoutes.length % 3 === 0) && this.motorways.length > 0;
+
+      // Pick best matching destination (same color or regional expressway partner)
+      let bestDst = null;
+      let bestScore = Infinity;
+      for (let j = 0; j < this.destinations.length; j++) {
+        const d = this.destinations[(i * 7 + j * 13) % this.destinations.length];
+        const crowD = Math.hypot(d.x - h.x, d.y - h.y);
+        if (crowD < 3.5) continue;
+        if (wantRegional && crowD < 34) continue;
+        if (!wantRegional && crowD > 68) continue;
+        const sameColor = d.colorIdx === h.colorIdx ? -14 : 0;
+        const score = (wantRegional ? Math.abs(crowD - 62) : crowD) + sameColor;
+        if (score < bestScore) {
+          bestScore = score;
+          bestDst = d;
+          if (!wantRegional && sameColor < 0 && crowD <= 28) break;
+        }
+      }
+      if (!bestDst) continue;
+
+      const dx = Math.round(bestDst.roadX ?? bestDst.x);
+      const dy = Math.round(bestDst.roadY ?? bestDst.y);
+      const rawPath = this.findVehicleNetworkPath(hx, hy, dx, dy);
+      if (!rawPath || rawPath.length < 2) continue;
+
+      const outboundTrack = this.buildDirectedLaneTrajectory(h, bestDst, rawPath);
+      const inboundTrack = this.buildDirectedLaneTrajectory(bestDst, h, [...rawPath].reverse());
+      if (!outboundTrack || !inboundTrack) continue;
+
+      this.commuterRoutes.push({
+        color: h.palette?.roof || PALETTE.districtColors[Math.max(0, h.colorIdx || 0) % PALETTE.districtColors.length].roof,
+        usesMotorway: rawPath.some(p => p.onMotorway),
+        outboundTrack,
+        inboundTrack
+      });
+    }
+  }
+
+  /**
    * STAGE 8B: INTER-INDUSTRIAL CARGO SUPPLY CHAIN (`RAW -> MFG -> LOG -> COM`)
    * Links Primary Extraction (`RAW`), Secondary Manufacturing (`MFG`), Wholesale Logistics (`LOG`),
    * and CBD/Arterial Commercial Sinks (`COM`) into an active road-routed regional freight network.
    */
   buildIndustrialCargoChain() {
+    this._vehicleGraph = null;
     this.cargoLinks = [];
     const rawNodes = this.destinations.filter(d => d.zoneType === 'industrial' && d.subType === 'RAW');
     const mfgNodes = this.destinations.filter(d => d.zoneType === 'industrial' && d.subType === 'MFG');
@@ -4094,16 +4731,17 @@ export class ProceduralLogisticsWorld {
       const sy = Math.round(src.roadY || src.y);
       const ex = Math.round(dst.roadX || dst.x);
       const ey = Math.round(dst.roadY || dst.y);
-      // Strictly route freight trucks along committed road edges (`this.roadEdges`)!
-      const roadPath = this.findRoadPathAStar(
-        sx,
-        sy,
-        ex,
-        ey,
-        true,
-        (nx, ny, cx, cy) => !this.hasRoadEdge(cx, cy, nx, ny)
-      );
-      if (!roadPath || roadPath.length < 2 || roadPath.length > crowD * 3.4 + 35) return false;
+      // Route freight trucks across the unified surface + expressway vehicle network!
+      const roadPath = this.findVehicleNetworkPath(sx, sy, ex, ey);
+      if (!roadPath || roadPath.length < 2) return false;
+      let pathArcLen = 0;
+      for (let i = 1; i < roadPath.length; i++) {
+        pathArcLen += Math.hypot(roadPath[i].x - roadPath[i - 1].x, roadPath[i].y - roadPath[i - 1].y);
+      }
+      if (pathArcLen > crowD * 3.4 + 35) return false;
+
+      const outboundTrack = this.buildDirectedLaneTrajectory(src, dst, roadPath);
+      const inboundTrack = this.buildDirectedLaneTrajectory(dst, src, [...roadPath].reverse());
 
       this.cargoLinks.push({
         from: src,
@@ -4111,7 +4749,10 @@ export class ProceduralLogisticsWorld {
         stage, // 'RAW->MFG' | 'MFG->LOG' | 'MFG->COM' | 'LOG->COM'
         label,
         color,
-        points: roadPath
+        points: roadPath,
+        usesMotorway: roadPath.some(p => p.onMotorway),
+        outboundTrack,
+        inboundTrack
       });
       return true;
     };
@@ -4193,7 +4834,7 @@ export class ProceduralLogisticsWorld {
       }
     }
 
-    // 3. Stage 3: Logistics Warehouses (`LOG`) -> High-Demand Commercial CBD Sinks (`COM`)
+    // 3. Stage 3: Logistics Warehouses (`LOG`) -> High-Demand Commercial CBD Sinks (`COM`) (local + inter-town regional)
     for (const lg of logNodes) {
       const nearComs = rankComTargets(lg).slice(0, 4);
       let count = 0;
@@ -4201,6 +4842,15 @@ export class ProceduralLogisticsWorld {
         if (tryAddFreightLink(lg, com, 'LOG->COM', 'Last-Mile Freight → Commercial Sink', '#7c3aed', 65)) {
           count++;
           if (count >= 2) break;
+        }
+      }
+      // Regional inter-town wholesale corridor (`com.townId !== lg.townId`) across expressways/arterials
+      const regionalComs = rankComTargets(lg).filter(
+        c => c.townId !== lg.townId && Math.hypot(c.x - lg.x, c.y - lg.y) >= 30
+      ).slice(0, 4);
+      for (const rCom of regionalComs) {
+        if (tryAddFreightLink(lg, rCom, 'LOG->COM', 'Regional Wholesale → Metro CBD', '#7c3aed', 135)) {
+          break;
         }
       }
     }
@@ -7292,6 +7942,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
 
       w.setStageRNG('stage8b_cargo');
       w.buildIndustrialCargoChain();
+      w.buildCommuterRoutes();
       const cargoLog = w.logs[w.logs.length - 1];
 
       return {
@@ -7306,6 +7957,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
         motorways: w.motorways,
         interchanges: w.interchanges,
         cargoLinks: w.cargoLinks,
+        commuterRoutes: w.commuterRoutes,
         displacedBuildingsCount: w.displacedBuildingsCount,
         bridgeCount: w.bridgeCount,
         mwayLog,
@@ -7394,6 +8046,7 @@ export function createWorldPipeline({ onHydrologyReady = null, onUrbanReady = nu
     out.motorways = s9.value.motorways;
     out.interchanges = s9.value.interchanges;
     out.cargoLinks = s9.value.cargoLinks;
+    out.commuterRoutes = s9.value.commuterRoutes;
     out.displacedBuildingsCount = s9.value.displacedBuildingsCount;
     out.hydroVersion = s2b.value.hydroVersion;
     out.urbanVersion = s67.value.urbanVersion;
@@ -7417,6 +8070,7 @@ export function extractWorldTransferables(world) {
   delete world.rng;
   delete world.noise;
   delete world.roadEdges;
+  delete world._vehicleGraph;
   delete world._astarG;
   delete world._astarParent;
   delete world._astarSeenGen;

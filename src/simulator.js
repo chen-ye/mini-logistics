@@ -35,54 +35,60 @@ export class LogisticsSimulator {
 
   spawnCar(isFreightTruck = false) {
     const { world } = this;
-    const preferMotorwayFreight = isFreightTruck && world.motorways.length > 0 && Math.random() < 0.25;
-    if (isFreightTruck && !preferMotorwayFreight && world.cargoLinks && world.cargoLinks.length > 0) {
-      const link = world.cargoLinks[Math.floor(Math.random() * world.cargoLinks.length)];
-      if (link.points && link.points.length >= 2) {
+    if (isFreightTruck && world.cargoLinks && world.cargoLinks.length > 0) {
+      const mwayLinks = world.cargoLinks.filter(l => l.usesMotorway && l.outboundTrack && l.inboundTrack);
+      const validLinks = world.cargoLinks.filter(l => l.outboundTrack && l.inboundTrack);
+      const pool = (mwayLinks.length > 0 && Math.random() < 0.45) ? mwayLinks : validLinks;
+      if (pool.length > 0) {
+        const link = pool[Math.floor(Math.random() * pool.length)];
+        const returning = Math.random() < 0.32;
+        const track = returning ? link.inboundTrack : link.outboundTrack;
+        const dist = Math.random() * track.totalLength;
+        let segIdx = 0;
+        while (segIdx < track.pts.length - 2 && track.cumLen[segIdx + 1] <= dist) {
+          segIdx++;
+        }
         this.cars.push({
-          mode: 'road',
           isFreightTruck: true,
           isCargoLink: true,
           cargoStage: link.stage,
-          road: { points: link.points },
-          segIdx: Math.floor(Math.random() * (link.points.length - 1)),
-          segT: Math.random(),
-          dir: Math.random() < 0.72 ? 1 : -1,
-          speed: 2.8 + Math.random() * 1.4,
+          outboundTrack: link.outboundTrack,
+          inboundTrack: link.inboundTrack,
+          returning,
+          dist,
+          segIdx,
+          speed: 3.1 + Math.random() * 1.3,
           color: link.color
         });
         return;
       }
     }
-    const useMotorway = world.motorways.length > 0 && Math.random() < (isFreightTruck ? 0.55 : 0.28);
-    if (useMotorway) {
-      const mw = world.motorways[Math.floor(Math.random() * world.motorways.length)];
-      const color = isFreightTruck
-        ? '#ea580c'
-        : PALETTE.districtColors[Math.floor(Math.random() * PALETTE.districtColors.length)].roof;
-      this.cars.push({
-        mode: 'motorway',
-        isFreightTruck,
-        mw,
-        t: Math.random(),
-        dir: Math.random() < 0.5 ? 1 : -1,
-        speed: (isFreightTruck ? 0.14 : 0.18) + Math.random() * 0.07,
-        color
-      });
-    } else if (world.roads.length > 0) {
-      const road = world.roads[Math.floor(Math.random() * world.roads.length)];
-      if (road.points.length < 3) return;
-      const color = PALETTE.districtColors[Math.floor(Math.random() * PALETTE.districtColors.length)].roof;
-      this.cars.push({
-        mode: 'road',
-        isFreightTruck: false,
-        road,
-        segIdx: Math.floor(Math.random() * (road.points.length - 1)),
-        segT: Math.random(),
-        dir: Math.random() < 0.5 ? 1 : -1,
-        speed: 3.5 + Math.random() * 2.0,
-        color
-      });
+
+    if (world.commuterRoutes && world.commuterRoutes.length > 0) {
+      const mwayRoutes = world.commuterRoutes.filter(r => r.usesMotorway && r.outboundTrack && r.inboundTrack);
+      const validRoutes = world.commuterRoutes.filter(r => r.outboundTrack && r.inboundTrack);
+      const pool = (mwayRoutes.length > 0 && Math.random() < 0.42) ? mwayRoutes : validRoutes;
+      if (pool.length > 0) {
+        const route = pool[Math.floor(Math.random() * pool.length)];
+        const returning = Math.random() < 0.5;
+        const track = returning ? route.inboundTrack : route.outboundTrack;
+        const dist = Math.random() * track.totalLength;
+        let segIdx = 0;
+        while (segIdx < track.pts.length - 2 && track.cumLen[segIdx + 1] <= dist) {
+          segIdx++;
+        }
+        this.cars.push({
+          isFreightTruck: false,
+          isCargoLink: false,
+          outboundTrack: route.outboundTrack,
+          inboundTrack: route.inboundTrack,
+          returning,
+          dist,
+          segIdx,
+          speed: 3.8 + Math.random() * 1.8,
+          color: route.color
+        });
+      }
     }
   }
 
@@ -119,37 +125,24 @@ export class LogisticsSimulator {
     const effDt = dt * simSpeed;
     this.simTime += effDt;
 
-    // Update Cars
+    // Update Cars along their directly modeled directed travel paths (`outboundTrack` / `inboundTrack`)
     for (const car of this.cars) {
-      if (car.mode === 'motorway') {
-        car.t += car.dir * car.speed * effDt;
-        if (car.t >= 1) {
-          car.t = 1;
-          car.dir = -1;
-          this.tripsCompleted++;
-        } else if (car.t <= 0) {
-          car.t = 0;
-          car.dir = 1;
-          this.tripsCompleted++;
-        }
-      } else {
-        const pts = car.road.points;
-        const p0 = pts[car.segIdx];
-        const p1 = pts[car.segIdx + 1];
-        const segLen = p0 && p1 ? Math.max(0.5, Math.hypot(p1.x - p0.x, p1.y - p0.y)) : 1.0;
-        car.segT += (car.speed / segLen) * effDt;
-        if (car.segT >= 1.0) {
-          car.segT -= 1.0;
-          car.segIdx += car.dir;
-          if (car.segIdx >= car.road.points.length - 1) {
-            car.segIdx = car.road.points.length - 2;
-            car.dir = -1;
-            this.tripsCompleted++;
-          } else if (car.segIdx < 0) {
-            car.segIdx = 0;
-            car.dir = 1;
-          }
-        }
+      const track = car.returning ? car.inboundTrack : car.outboundTrack;
+      if (!track || !track.pts || track.pts.length < 2) continue;
+      const idx = Math.min(car.segIdx, track.pts.length - 2);
+      const pt = track.pts[idx];
+      const speedMult = pt.onMotorway ? 1.65 : (pt.isStreet ? 0.82 : 1.0);
+      car.dist += car.speed * speedMult * effDt;
+
+      while (car.segIdx < track.pts.length - 2 && car.dist >= track.cumLen[car.segIdx + 1]) {
+        car.segIdx++;
+      }
+
+      if (car.dist >= track.totalLength) {
+        car.dist = 0;
+        car.segIdx = 0;
+        car.returning = !car.returning;
+        this.tripsCompleted++;
       }
     }
 

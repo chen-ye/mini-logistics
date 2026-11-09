@@ -2493,128 +2493,26 @@ export class MiniMotorwaysRenderer {
     const ox = ts * 0.5;
     const oy = ts * 0.5;
 
-    // Gather all roundabout centers & radii so vehicles follow the circulatory ring lane
-    // around the central landscaped island rather than driving straight through the island!
-    const roundabouts = [];
-    for (const ap of world.airports) {
-      roundabouts.push({ x: ap.gateX * ts + ox, y: ap.gateY * ts + oy, rRing: ts * 0.68 });
-    }
-    for (const ic of world.interchanges) {
-      if (ic.type === 'terminal-stub' && !ic.isAirportStub) {
-        roundabouts.push({ x: ic.x * ts + ox, y: ic.y * ts + oy, rRing: ts * 0.64 });
-      } else if (ic.type === 'diamond-ramp') {
-        roundabouts.push({ x: ic.termX * ts + ox, y: ic.termY * ts + oy, rRing: ts * 0.56 });
-      }
-    }
-
     for (const car of sim.cars) {
-      if (modeFilter && car.mode !== modeFilter) continue;
+      const track = car.returning ? car.inboundTrack : car.outboundTrack;
+      if (!track || !track.pts || track.pts.length < 2) continue;
 
-      let x, y, ang;
-      if (car.mode === 'motorway') {
-        const samples = car.mw.samples;
-        if (!samples || samples.length < 2) continue;
-        const scaled = Math.max(0, Math.min(0.9999, car.t)) * (samples.length - 1);
-        const idx = Math.floor(scaled);
-        if (car.mw.tunnels && car.mw.tunnels.some(tun => scaled >= tun.i0 && scaled <= tun.i1)) {
-          continue; // Vehicle is inside a subterranean mountain tunnel
-        }
-        const frac = scaled - idx;
-        const p0 = samples[idx];
-        const p1 = samples[idx + 1];
-        x = (p0.x + (p1.x - p0.x) * frac) * ts + ox;
-        y = (p0.y + (p1.y - p0.y) * frac) * ts + oy;
-        ang = Math.atan2((p1.y - p0.y) * car.dir, (p1.x - p0.x) * car.dir);
-      } else {
-        const pts = car.road.points;
-        const p0 = pts[car.segIdx];
-        const p1 = pts[car.segIdx + 1];
-        if (!p0 || !p1) continue;
-        const u = car.dir > 0 ? car.segT : 1 - car.segT;
-        const dx = p1.x - p0.x;
-        const dy = p1.y - p0.y;
-        const len = Math.hypot(dx, dy) || 1;
+      const idx = Math.min(car.segIdx, track.pts.length - 2);
+      const p0 = track.pts[idx];
+      const p1 = track.pts[idx + 1];
+      if (!p0 || !p1) continue;
+      if (p0.inTunnel && p1.inTunnel) continue;
 
-        let tx = p0.x + dx * u;
-        let ty = p0.y + dy * u;
-        let tanX = dx * car.dir;
-        let tanY = dy * car.dir;
+      const curMode = (p0.onMotorway || p1.onMotorway) ? 'motorway' : 'road';
+      if (modeFilter && curMode !== modeFilter) continue;
 
-        // Evaluate `traceSmoothPath` quadratic Bezier corner fillet near `p0` (`segIdx > 0`)
-        if (car.segIdx > 0) {
-          const pPrev = pts[car.segIdx - 1];
-          const dxPrev = p0.x - pPrev.x;
-          const dyPrev = p0.y - pPrev.y;
-          if (dxPrev !== dx || dyPrev !== dy) {
-            const lenPrev = Math.hypot(dxPrev, dyPrev) || 1;
-            const r0 = Math.min(0.24, lenPrev * 0.45, len * 0.45);
-            const u0 = r0 / len;
-            if (u < u0 && u0 > 1e-4) {
-              const bT = 0.5 + 0.5 * (u / u0);
-              const mt = 1 - bT;
-              const ax = p0.x - (dxPrev / lenPrev) * r0;
-              const ay = p0.y - (dyPrev / lenPrev) * r0;
-              const cx = p0.x + (dx / len) * r0;
-              const cy = p0.y + (dy / len) * r0;
-              tx = mt * mt * ax + 2 * mt * bT * p0.x + bT * bT * cx;
-              ty = mt * mt * ay + 2 * mt * bT * p0.y + bT * bT * cy;
-              tanX = (mt * (p0.x - ax) + bT * (cx - p0.x)) * car.dir;
-              tanY = (mt * (p0.y - ay) + bT * (cy - p0.y)) * car.dir;
-            }
-          }
-        }
+      const d0 = track.cumLen[idx];
+      const segLen = Math.max(1e-4, track.cumLen[idx + 1] - d0);
+      const frac = Math.max(0, Math.min(1, (car.dist - d0) / segLen));
 
-        // Evaluate `traceSmoothPath` quadratic Bezier corner fillet near `p1` (`segIdx + 1 < pts.length - 1`)
-        if (car.segIdx + 1 < pts.length - 1) {
-          const pNext = pts[car.segIdx + 2];
-          const dxNext = pNext.x - p1.x;
-          const dyNext = pNext.y - p1.y;
-          if (dx !== dxNext || dy !== dyNext) {
-            const lenNext = Math.hypot(dxNext, dyNext) || 1;
-            const r1 = Math.min(0.24, len * 0.45, lenNext * 0.45);
-            const u1 = r1 / len;
-            if (u > 1 - u1 && u1 > 1e-4) {
-              const bT = 0.5 * ((u - (1 - u1)) / u1);
-              const mt = 1 - bT;
-              const ax = p1.x - (dx / len) * r1;
-              const ay = p1.y - (dy / len) * r1;
-              const cx = p1.x + (dxNext / lenNext) * r1;
-              const cy = p1.y + (dyNext / lenNext) * r1;
-              tx = mt * mt * ax + 2 * mt * bT * p1.x + bT * bT * cx;
-              ty = mt * mt * ay + 2 * mt * bT * p1.y + bT * bT * cy;
-              tanX = (mt * (p1.x - ax) + bT * (cx - p1.x)) * car.dir;
-              tanY = (mt * (p1.y - ay) + bT * (cy - p1.y)) * car.dir;
-            }
-          }
-        }
-
-        x = tx * ts + ox;
-        y = ty * ts + oy;
-        ang = Math.atan2(tanY, tanX);
-      }
-
-      // If the vehicle is within a roundabout's footprint, deflect it onto the right-hand
-      // circulatory ring lane (`rRing`) so it orbits the landscaped island instead of clipping through it!
-      for (const rb of roundabouts) {
-        const dx = x - rb.x;
-        const dy = y - rb.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist < rb.rRing * 0.98) {
-          const ux = Math.cos(ang);
-          const uy = Math.sin(ang);
-          const rx = -uy; // right-hand perpendicular unit vector
-          const ry = ux;
-          const along = dx * ux + dy * uy;
-          const clampedAlong = Math.max(-rb.rRing * 0.92, Math.min(rb.rRing * 0.92, along));
-          const lateral = Math.sqrt(Math.max(0, rb.rRing * rb.rRing - clampedAlong * clampedAlong));
-          x = rb.x + ux * clampedAlong + rx * lateral;
-          y = rb.y + uy * clampedAlong + ry * lateral;
-          // Tangent angle along the counter-clockwise / right-hand circulatory arc
-          const radAng = Math.atan2(y - rb.y, x - rb.x);
-          ang = radAng + Math.PI * 0.5;
-          break;
-        }
-      }
+      const x = (p0.x + (p1.x - p0.x) * frac) * ts + ox;
+      const y = (p0.y + (p1.y - p0.y) * frac) * ts + oy;
+      const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x);
 
       ctx.save();
       ctx.translate(x, y);
@@ -2625,7 +2523,7 @@ export class MiniMotorwaysRenderer {
         ctx.beginPath();
         ctx.roundRect(1.8, -2.8, 4.2, 5.6, 1.5);
         ctx.fill();
-        ctx.fillStyle = (car.isCargoLink && car.dir === -1) ? '#94a3b8' : car.color;
+        ctx.fillStyle = (car.isCargoLink && car.returning) ? '#94a3b8' : car.color;
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1.0;
         ctx.beginPath();
@@ -2844,7 +2742,7 @@ export class MiniMotorwaysRenderer {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const link of world.cargoLinks || []) {
-      const pts = link.points;
+      const pts = link.outboundTrack?.pts || link.points;
       if (!pts || pts.length < 2) continue;
 
       // Subtle white halo under freight route
@@ -3302,7 +3200,7 @@ export class MiniMotorwaysRenderer {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       for (const link of connectedLinks) {
-        const pts = link.points;
+        const pts = link.outboundTrack?.pts || link.points;
         if (!pts || pts.length < 2) continue;
         const isOutbound = link.from.id === entity.id;
         const partner = isOutbound ? link.to : link.from;
