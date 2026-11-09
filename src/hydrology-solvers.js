@@ -1,6 +1,9 @@
 /** @import { WaterBasin, PrimarySink, RiverPoint, Point2D } from './types.js' */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
 
+import { FlatMinHeap } from "./math.js";
+import { WATER_MASK, WORLD_GEOMETRY } from "./constants.js";
+
 /**
  * STAGE 2B: PLUGGABLE FLUVIAL HYDROLOGY & RIVER EROSION ENGINES
  * Supports 3 selectable in-game river & watershed algorithms:
@@ -168,7 +171,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     // If starting inside a lake/water basin (`waterMask === 2`), flood-fill `sourceBasinMask`
     // so the A* path never re-enters or terminates inside its own starting lake!
     const sourceBasinMask = new Uint8Array(W * H);
-    if (world.waterMask[startId] === 2) {
+    if (world.waterMask[startId] === WATER_MASK.OPEN_WATER) {
       const bq = [startId];
       sourceBasinMask[startId] = 1;
       let head = 0;
@@ -186,7 +189,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
             ny = by + dy;
           if (!world.inBounds(nx, ny, 1)) continue;
           const nid = world.idx(nx, ny);
-          if (!sourceBasinMask[nid] && world.waterMask[nid] === 2) {
+          if (
+            !sourceBasinMask[nid] &&
+            world.waterMask[nid] === WATER_MASK.OPEN_WATER
+          ) {
             sourceBasinMask[nid] = 1;
             bq.push(nid);
           }
@@ -194,45 +200,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       }
     }
 
-    const heapNodes = [];
-    const heapPriorities = [];
-    const heapPush = (node, prio) => {
-      let i = heapNodes.length;
-      heapNodes.push(node);
-      heapPriorities.push(prio);
-      while (i > 0) {
-        const p = (i - 1) >> 1;
-        if (heapPriorities[p] <= prio) break;
-        heapNodes[i] = heapNodes[p];
-        heapPriorities[i] = heapPriorities[p];
-        i = p;
-      }
-      heapNodes[i] = node;
-      heapPriorities[i] = prio;
-    };
-    const heapPop = () => {
-      const top = heapNodes[0];
-      const lastN = heapNodes.pop();
-      const lastP = heapPriorities.pop();
-      if (heapNodes.length > 0) {
-        let i = 0;
-        const n = heapNodes.length;
-        while ((i << 1) + 1 < n) {
-          let c = (i << 1) + 1;
-          if (c + 1 < n && heapPriorities[c + 1] < heapPriorities[c]) c++;
-          if (lastP <= heapPriorities[c]) break;
-          heapNodes[i] = heapNodes[c];
-          heapPriorities[i] = heapPriorities[c];
-          i = c;
-        }
-        heapNodes[i] = lastN;
-        heapPriorities[i] = lastP;
-      }
-      return top;
-    };
+    const openHeap = new FlatMinHeap(1024);
 
     gScore[startId] = 0;
-    heapPush(startId, 0);
+    openHeap.push(startId, 0);
     const dirs = [
       [1, 0, 1.0],
       [-1, 0, 1.0],
@@ -246,8 +217,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
 
     let steps = 0;
     const maxAStarSteps = Math.max(56000, Math.round(W * H * 0.72));
-    while (heapNodes.length > 0 && steps++ < maxAStarSteps) {
-      const cid = heapPop();
+    while (openHeap.size > 0 && steps++ < maxAStarSteps) {
+      const cid = openHeap.pop();
       if (closed[cid]) continue;
       closed[cid] = 1;
 
@@ -262,11 +233,11 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         (hasLeft &&
           sourceBasinMask[cid] === 0 &&
           distFromShore >= Math.min(8, minTravel) &&
-          world.waterMask[cid] === 2) ||
+          world.waterMask[cid] === WATER_MASK.OPEN_WATER) ||
         (stopOnExistingRiver &&
           hasLeft &&
           distFromShore >= minTravel * 0.65 &&
-          world.waterMask[cid] === 1)
+          world.waterMask[cid] === WATER_MASK.RIVER)
       ) {
         const path = [];
         let curr = cid;
@@ -275,7 +246,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           curr = parent[curr];
         }
         path.reverse();
-        if (world.waterMask[cid] === 1) {
+        if (world.waterMask[cid] === WATER_MASK.RIVER) {
           world.hydroFeatures.push({ x: cx, y: cy, type: "confluence" });
         }
         return path;
@@ -307,7 +278,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         const earlyWaterPenalty =
           hasLeft &&
           distFromShore < Math.min(8, minTravel) &&
-          world.waterMask[nid] > 0
+          world.waterMask[nid] > WATER_MASK.DRY
             ? 110.0
             : 0;
 
@@ -321,7 +292,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           Math.sin(nx * 0.12 + ny * 0.1 + seedPhase) * 1.05;
 
         const stepCost =
-          !hasLeft && world.waterMask[nid] === 2
+          !hasLeft && world.waterMask[nid] === WATER_MASK.OPEN_WATER
             ? baseStep * 0.14
             : baseStep * (0.72 + Math.max(0, nextElev - seaLevel) * 2.2) +
               uphill * 85.0 -
@@ -337,13 +308,14 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           runLen[nid] = nextRun;
           const nextLeft =
             hasLeft ||
-            (sourceBasinMask[nid] === 0 && world.waterMask[nid] === 0)
+            (sourceBasinMask[nid] === 0 &&
+              world.waterMask[nid] === WATER_MASK.DRY)
               ? 1
               : 0;
           leftSource[nid] = nextLeft;
           drySteps[nid] = nextLeft ? drySteps[cid] + baseStep : 0;
           const h = Math.hypot(ex - nx, ey - ny) * 0.78;
-          heapPush(nid, tentativeG + h);
+          openHeap.push(nid, tentativeG + h);
         }
       }
     }
@@ -365,9 +337,13 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         const sx = world.rng.int(48, W - 49);
         const sy = world.rng.int(38, H - 39);
         const id = world.idx(sx, sy);
-        if (world.waterMask[id] > 0) continue;
+        if (world.waterMask[id] > WATER_MASK.DRY) continue;
         const el = world.elevationField[id];
-        if (el < seaLevel + 0.21) continue;
+        if (
+          el <
+          seaLevel + WORLD_GEOMETRY.ELEVATION_THRESHOLDS.springMinAboveSea
+        )
+          continue;
         if (springs.some((p) => Math.hypot(p.x - sx, p.y - sy) < 82)) continue;
 
         let minBasinD = Infinity;
@@ -400,7 +376,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       // Avoid placing border river entries directly underneath the top-left Seed HUD or top-right Zoom/Playback HUD!
       if ((x <= 105 && y <= 24) || (x >= W - 22 && y <= 88)) return;
       const id = world.idx(x, y);
-      if (world.waterMask[id] > 0) return;
+      if (world.waterMask[id] > WATER_MASK.DRY) return;
       for (const b of basins) {
         if (Math.hypot(x - b.cx, y - b.cy) < 52) return;
       }
@@ -408,7 +384,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         for (let dx = -14; dx <= 14; dx += 4) {
           if (
             world.inBounds(x + dx, y + dy, 1) &&
-            world.waterMask[world.idx(x + dx, y + dy)] > 0
+            world.waterMask[world.idx(x + dx, y + dy)] > WATER_MASK.DRY
           )
             return;
         }
@@ -461,7 +437,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     if (isMainOutflow) {
       while (
         i0 < rawPath.length - 4 &&
-        world.waterMask[world.idx(rawPath[i0 + 2].x, rawPath[i0 + 2].y)] === 2
+        world.waterMask[world.idx(rawPath[i0 + 2].x, rawPath[i0 + 2].y)] ===
+          WATER_MASK.OPEN_WATER
       ) {
         i0++;
       }
@@ -532,7 +509,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     // Extend final vertex into the receiving water basin / parent river so confluences & mouths join seamlessly!
     const last = path[path.length - 1];
     const prev = path[Math.max(0, path.length - 3)];
-    if (world.waterMask[world.idx(last.x, last.y)] > 0) {
+    if (world.waterMask[world.idx(last.x, last.y)] > WATER_MASK.DRY) {
       const dx = last.x - prev.x;
       const dy = last.y - prev.y;
       const len = Math.hypot(dx, dy) || 1;
@@ -549,7 +526,9 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       path[0].x >= W - 4 ||
       path[0].y <= 3 ||
       path[0].y >= H - 4;
-    const startsInLake = world.waterMask[world.idx(path[0].x, path[0].y)] === 2;
+    const startsInLake =
+      world.waterMask[world.idx(path[0].x, path[0].y)] ===
+      WATER_MASK.OPEN_WATER;
     const isInteriorSpring = !startsAtBorder && !startsInLake && !isMainOutflow;
 
     // Assign bold, Mini Motorways-scale cartographic channel widths:
@@ -670,7 +649,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       const valleyRad = valleyRadii[i];
       const bankElev = thalwegBankElev[i];
       if (d2 <= chanRad * chanRad) {
-        if (world.waterMask[gid] === 0) world.waterMask[gid] = 1;
+        if (world.waterMask[gid] === WATER_MASK.DRY)
+          world.waterMask[gid] = WATER_MASK.RIVER;
         world.elevationField[gid] = Math.min(
           world.elevationField[gid],
           bankElev - 0.015,
@@ -745,42 +725,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     const visited = new Uint8Array(N);
     const receiver = new Int32Array(N).fill(-1);
 
-    const heapNodes = [];
-    const heapPrios = [];
-    const hPush = (node, prio) => {
-      let i = heapNodes.length;
-      heapNodes.push(node);
-      heapPrios.push(prio);
-      while (i > 0) {
-        const p = (i - 1) >> 1;
-        if (heapPrios[p] <= prio) break;
-        heapNodes[i] = heapNodes[p];
-        heapPrios[i] = heapPrios[p];
-        i = p;
-      }
-      heapNodes[i] = node;
-      heapPrios[i] = prio;
-    };
-    const hPop = () => {
-      const top = heapNodes[0];
-      const lastN = heapNodes.pop();
-      const lastP = heapPrios.pop();
-      if (heapNodes.length > 0) {
-        let i = 0;
-        const len = heapNodes.length;
-        while ((i << 1) + 1 < len) {
-          let c = (i << 1) + 1;
-          if (c + 1 < len && heapPrios[c + 1] < heapPrios[c]) c++;
-          if (lastP <= heapPrios[c]) break;
-          heapNodes[i] = heapNodes[c];
-          heapPrios[i] = heapPrios[c];
-          i = c;
-        }
-        heapNodes[i] = lastN;
-        heapPrios[i] = lastP;
-      }
-      return top;
-    };
+    const pfHeap = new FlatMinHeap(1024);
 
     for (let cy = 0; cy < ch; cy++) {
       for (let cx = 0; cx < cw; cx++) {
@@ -794,9 +739,9 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         const el = world.elevationField[gid] + meanderPotential;
         filledElev[cid] = el;
         // Seed Priority-Flood from existing lakes/sea and already-carved lake outflow rivers!
-        if (world.waterMask[gid] > 0) {
+        if (world.waterMask[gid] > WATER_MASK.DRY) {
           visited[cid] = 1;
-          hPush(cid, el);
+          pfHeap.push(cid, el);
         }
       }
     }
@@ -811,8 +756,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       [1, -1, 1.414],
       [-1, -1, 1.414],
     ];
-    while (heapNodes.length > 0) {
-      const u = hPop();
+    while (pfHeap.size > 0) {
+      const u = pfHeap.pop();
       const ux = u % cw;
       const uy = Math.floor(u / cw);
       const uEl = filledElev[u];
@@ -831,7 +776,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         if (filledElev[v] <= minNext) {
           filledElev[v] = minNext;
         }
-        hPush(v, filledElev[v]);
+        pfHeap.push(v, filledElev[v]);
       }
     }
 
@@ -855,8 +800,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         const cy = Math.floor(curr / cw) * stride + 1;
         rawPts.push({ x: cx, y: cy });
         const gid = world.idx(cx, cy);
-        if (rawPts.length >= 16 && world.waterMask[gid] > 0) {
-          if (world.waterMask[gid] === 1) {
+        if (rawPts.length >= 16 && world.waterMask[gid] > WATER_MASK.DRY) {
+          if (world.waterMask[gid] === WATER_MASK.RIVER) {
             world.hydroFeatures.push({ x: cx, y: cy, type: "confluence" });
           }
           break;
@@ -882,7 +827,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         const sx = world.rng.int(16, W - 17);
         const sy = world.rng.int(16, H - 17);
         const id = world.idx(sx, sy);
-        if (world.waterMask[id] > 0) continue;
+        if (world.waterMask[id] > WATER_MASK.DRY) continue;
         const el = world.elevationField[id];
         if (el < seaLevel + 0.16) continue;
         if (placedSprings.some((p) => Math.hypot(p.x - sx, p.y - sy) < 34))
@@ -906,7 +851,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
             wx <= Math.min(W - 5, bestSp.x + 45);
             wx += 3
           ) {
-            if (world.waterMask[world.idx(wx, wy)] === 2) {
+            if (world.waterMask[world.idx(wx, wy)] === WATER_MASK.OPEN_WATER) {
               const d = Math.hypot(bestSp.x - wx, bestSp.y - wy);
               if (d < minSD) {
                 minSD = d;

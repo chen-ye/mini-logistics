@@ -1,8 +1,8 @@
 /**
  * @import {
  *   GeneratorConfig,
- *   Destination,
- *   InspectedEntity
+ *   InspectedEntity,
+ *   ViewLayer
  * } from './types.js'
  */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
@@ -12,6 +12,14 @@ import {
 } from "./world-generator.js";
 import { LogisticsSimulator } from "./simulator.js";
 import { MiniMotorwaysRenderer } from "./renderer.js";
+import {
+  createAppStore,
+  deriveControlLabels,
+  batch,
+  shallowEqual,
+} from "./state.js";
+import { WORLD_SIZE_DEFAULTS, DEFAULT_GENERATOR_CONFIG } from "./constants.js";
+import { mountEntityInspector } from "./inspector-component.js";
 
 /**
  * @param {string} id
@@ -124,6 +132,9 @@ function dispatchToWorker(job) {
   });
 }
 
+// Signal-grade immutable store holding app state
+const store = createAppStore(DEFAULT_GENERATOR_CONFIG);
+
 async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
   if (world.terrainBitmap) {
     renderer.setTerrainBitmap(world.terrainBitmap);
@@ -136,8 +147,7 @@ async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
   window.simulator = simulator;
 
   renderer.selectedEntity = null;
-  currentInspected = { type: null, entity: null };
-  document.getElementById("inspectorCard").classList.add("hidden");
+  store.setInspected(null, null);
 
   if (!preserveCamera) {
     renderer.fitCamera(currentWorld);
@@ -146,38 +156,115 @@ async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
 }
 
 /**
+ * Synchronizes generator configuration from DOM inputs into the store
+ * and returns the frozen config state.
+ *
  * @returns {GeneratorConfig}
  */
 export function getGeneratorConfig() {
-  return {
-    seed: getInput("seedInput").value.trim() || "MINI-TYCOON",
-    worldSize: getSelect("worldSizeSelect")?.value || "standard",
-    archetype: getSelect("archetypeSelect").value,
-    terrainAlgo: getSelect("terrainAlgoSelect")?.value || "tectonic-fbm",
-    hydrologyAlgo: getSelect("hydrologyAlgoSelect")?.value || "thalweg-astar",
-    airportMix: getSelect("airportMixSelect").value,
-    includeIntermediateRamps: getInput("toggleInterRamps").checked,
-    waterCoverage: parseInt(getInput("sliderWater").value, 10),
-    townCount: parseInt(getInput("sliderTowns").value, 10),
-    buildingDensity: parseInt(getInput("sliderDensity").value, 10),
-    airportCount: parseInt(getInput("sliderAirports").value, 10),
-    windAxis: parseInt(getInput("sliderWind").value, 10),
+  const cfg = {
+    seed: getInput("seedInput")?.value.trim() || DEFAULT_GENERATOR_CONFIG.seed,
+    worldSize:
+      getSelect("worldSizeSelect")?.value || DEFAULT_GENERATOR_CONFIG.worldSize,
+    archetype:
+      getSelect("archetypeSelect")?.value || DEFAULT_GENERATOR_CONFIG.archetype,
+    terrainAlgo:
+      getSelect("terrainAlgoSelect")?.value ||
+      DEFAULT_GENERATOR_CONFIG.terrainAlgo,
+    hydrologyAlgo:
+      getSelect("hydrologyAlgoSelect")?.value ||
+      DEFAULT_GENERATOR_CONFIG.hydrologyAlgo,
+    airportMix:
+      getSelect("airportMixSelect")?.value ||
+      DEFAULT_GENERATOR_CONFIG.airportMix,
+    includeIntermediateRamps: getInput("toggleInterRamps")
+      ? getInput("toggleInterRamps").checked
+      : DEFAULT_GENERATOR_CONFIG.includeIntermediateRamps,
+    waterCoverage: getInput("sliderWater")
+      ? parseInt(getInput("sliderWater").value, 10)
+      : DEFAULT_GENERATOR_CONFIG.waterCoverage,
+    townCount: getInput("sliderTowns")
+      ? parseInt(getInput("sliderTowns").value, 10)
+      : DEFAULT_GENERATOR_CONFIG.townCount,
+    buildingDensity: getInput("sliderDensity")
+      ? parseInt(getInput("sliderDensity").value, 10)
+      : DEFAULT_GENERATOR_CONFIG.buildingDensity,
+    airportCount: getInput("sliderAirports")
+      ? parseInt(getInput("sliderAirports").value, 10)
+      : DEFAULT_GENERATOR_CONFIG.airportCount,
+    windAxis: getInput("sliderWind")
+      ? parseInt(getInput("sliderWind").value, 10)
+      : DEFAULT_GENERATOR_CONFIG.windAxis,
   };
+  store.patchConfig(cfg);
+  return store.getState().config;
 }
 
+/**
+ * Updates airport slider label directly, maintaining backwards compatibility.
+ */
 export function updateAirportSliderLabel() {
-  const total = parseInt(getInput("sliderAirports").value, 10);
-  const mix = getSelect("airportMixSelect").value;
-  let hubs = 1;
-  let cargo = 0;
-  if (mix === "dual-hub" && total >= 2) hubs = 2;
-  if (mix === "hub-reg-cargo" && total >= 3) cargo = 1;
-  const reg = Math.max(0, total - hubs - cargo);
-  const parts = [`${hubs} Hub`];
-  if (reg > 0) parts.push(`${reg} Reg`);
-  if (cargo > 0) parts.push(`${cargo} Crg`);
-  getEl("valAirports").textContent = `${total} (${parts.join(", ")})`;
+  const cfg = getGeneratorConfig();
+  const labels = deriveControlLabels(cfg);
+  const el = getEl("valAirports");
+  if (el) el.textContent = labels.airportsLabel;
 }
+
+// Subscribe generator control labels to store config updates
+store.subscribe(
+  (s) => deriveControlLabels(s.config),
+  (labels) => {
+    const valWater = getEl("valWater");
+    if (valWater) valWater.textContent = labels.waterLabel;
+    const valTowns = getEl("valTowns");
+    if (valTowns) valTowns.textContent = labels.townsLabel;
+    const valDensity = getEl("valDensity");
+    if (valDensity) valDensity.textContent = labels.densityLabel;
+    const valAirports = getEl("valAirports");
+    if (valAirports) valAirports.textContent = labels.airportsLabel;
+    const valWind = getEl("valWind");
+    if (valWind) valWind.textContent = labels.windLabel;
+  },
+  shallowEqual,
+);
+
+// Subscribe active view layer to store
+store.subscribe(
+  (s) => s.activeLayer,
+  (layer) => {
+    renderer.activeLayer = layer;
+    document.querySelectorAll(".layer-btn").forEach((b) => {
+      const btn = /** @type {HTMLElement} */ (b);
+      btn.classList.toggle("active", btn.dataset.layer === layer);
+    });
+  },
+);
+
+// Subscribe simulation speed to store
+store.subscribe(
+  (s) => s.simSpeed,
+  (speed) => {
+    simSpeed = speed;
+    document.querySelectorAll(".speed-btn").forEach((el) => {
+      const btn = /** @type {HTMLElement} */ (el);
+      const isActive = parseFloat(btn.dataset.speed || "1") === speed;
+      btn.classList.toggle("bg-[#36383e]", isActive);
+      btn.classList.toggle("text-[#f2efe9]", isActive);
+      btn.classList.toggle("text-stone-500", !isActive);
+    });
+  },
+);
+
+// Subscribe generator drawer open/closed state to store
+store.subscribe(
+  (s) => s.drawerOpen,
+  (open) => {
+    const drawer = document.getElementById("generatorDrawer");
+    if (drawer) {
+      drawer.classList.toggle("hidden", !open);
+    }
+  },
+);
 
 /**
  * @param {boolean} [preserveCamera]
@@ -225,7 +312,6 @@ export function rebuildWorld(preserveCamera = false) {
 }
 
 window.rebuildWorld = rebuildWorld;
-window.openEntityInspector = openEntityInspector;
 
 function updateTelemetryUI(world, fromWorker = false) {
   const gridLabelEl = document.getElementById("telemetryGridLabel");
@@ -265,106 +351,9 @@ function updateTelemetryUI(world, fromWorker = false) {
     .join("");
 }
 
-/** @type {{ type: string | null, entity: InspectedEntity | null }} */
-let currentInspected = { type: null, entity: null };
-
 /**
- * @param {number} dx
- * @param {number} dy
- * @returns {string}
- */
-function compassSector(dx, dy) {
-  if (Math.hypot(dx, dy) < 2.5) return "Core";
-  const dirs = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"];
-  const ang = Math.atan2(dy, dx);
-  const idx =
-    Math.round(((ang + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 0.25)) % 8;
-  return dirs[idx];
-}
-
-/**
- * @param {Destination} d
- */
-function describeBuildingDossier(d) {
-  const hostTown = currentWorld ? currentWorld.towns[d.townId] : null;
-  const townName = hostTown ? hostTown.name : "Regional";
-  const sec = hostTown
-    ? compassSector(d.x - hostTown.x, d.y - hostTown.y)
-    : `#${d.id}`;
-
-  if (d.zoneType === "commercial") {
-    return {
-      stage: "COM",
-      badge: d.isCircular ? "CBD · LANDMARK" : "COM · ARTERIAL",
-      badgeClass: "bg-blue-700 text-white",
-      shortTag: d.isCircular ? "CBD" : "COM",
-      typeLabel: d.isCircular ? `CBD Plaza (${sec})` : `Commercial (${sec})`,
-      title: d.isCircular
-        ? `${townName} CBD Plaza (${sec})`
-        : `${townName} Commercial (${sec})`,
-    };
-  }
-  if (d.subType === "RAW") {
-    if (d.resourceType === "MINE") {
-      return {
-        stage: "RAW",
-        badge: "RAW · MINE",
-        badgeClass: "bg-amber-700 text-white",
-        shortTag: "MINE",
-        typeLabel: `Quarry (${sec})`,
-        title: `${townName} Quarry (${sec})`,
-      };
-    }
-    if (d.resourceType === "TIMBER") {
-      return {
-        stage: "RAW",
-        badge: "RAW · TIMBER",
-        badgeClass: "bg-amber-700 text-white",
-        shortTag: "WOOD",
-        typeLabel: `Sawmill (${sec})`,
-        title: `${townName} Sawmill (${sec})`,
-      };
-    }
-    if (d.resourceType === "FARM") {
-      return {
-        stage: "RAW",
-        badge: "RAW · FARM",
-        badgeClass: "bg-amber-700 text-white",
-        shortTag: "FARM",
-        typeLabel: `Farm (${sec})`,
-        title: `${townName} Farm (${sec})`,
-      };
-    }
-    return {
-      stage: "RAW",
-      badge: "RAW · CHEM",
-      badgeClass: "bg-amber-700 text-white",
-      shortTag: "CHEM",
-      typeLabel: `Chem (${sec})`,
-      title: `${townName} Chemical Plant (${sec})`,
-    };
-  }
-  if (d.subType === "LOG") {
-    return {
-      stage: "LOG",
-      badge: "LOG · HUB",
-      badgeClass: "bg-purple-700 text-white",
-      shortTag: "LOG",
-      typeLabel: `Depot (${sec})`,
-      title: `${townName} Logistics Hub (${sec})`,
-    };
-  }
-  return {
-    stage: "MFG",
-    badge: "MFG · FACTORY",
-    badgeClass: "bg-orange-700 text-white",
-    shortTag: "MFG",
-    typeLabel: `Factory (${sec})`,
-    title: `${townName} Factory (${sec})`,
-  };
-}
-
-/**
+ * Centers and zooms the camera on a selected entity.
+ *
  * @param {string | null} type
  * @param {InspectedEntity | null} entity
  */
@@ -383,363 +372,41 @@ function focusCameraOnEntity(type, entity) {
 }
 
 /**
+ * Opens the entity inspector dossier and optionally focuses the camera.
+ *
  * @param {string} type
- * @param {any} entity
+ * @param {InspectedEntity} entity
  * @param {boolean} [shouldFocus]
  */
-function openEntityInspector(type, entity, shouldFocus = false) {
+export function openEntityInspector(type, entity, shouldFocus = false) {
   const normalizedType = type === "resource" ? "building" : type;
-  currentInspected = { type: normalizedType, entity };
   renderer.selectedEntity = entity;
+  store.setInspected(normalizedType, entity);
   if (shouldFocus) {
     focusCameraOnEntity(normalizedType, entity);
   }
-
-  const card = document.getElementById("inspectorCard");
-  const badge = document.getElementById("inspBadge");
-  const code = document.getElementById("inspCode");
-  const title = document.getElementById("inspTitle");
-  const body = document.getElementById("inspBody");
-
-  card.classList.remove("hidden");
-
-  if (normalizedType === "airport") {
-    const hostTown = currentWorld.towns[entity.hostTownId];
-    badge.textContent = entity.classLabel.toUpperCase();
-    badge.className =
-      "text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-[#e85c90] text-white tracking-wide";
-    code.textContent = `IATA ${entity.iata} • (${Math.round(entity.x)}, ${Math.round(entity.y)})`;
-    title.textContent = entity.name;
-    body.innerHTML = `
-      <div class="divide-y divide-stone-300/60 border-y border-stone-300/60">
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Runways</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">${entity.runwayCount} Parallel • ${entity.runwayLabel}</span>
-        </div>
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Approach Cone</span>
-          <span class="mono font-bold text-emerald-700 tabular-nums">${entity.approachClearance}% Clear</span>
-        </div>
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Expressway Spur</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">Motorway ${entity.motorwayId || 1} (${entity.distToCBD} tiles to CBD)</span>
-        </div>
-        ${
-          hostTown
-            ? `
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Municipality</span>
-          <button type="button" data-jump-town="${hostTown.id}" class="font-bold text-[#36383e] hover:text-[#e85c90] underline underline-offset-2 transition flex items-center gap-1">
-            <span>${hostTown.name} (Tier ${hostTown.tier})</span>
-            <svg class="w-3 h-3" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-          </button>
-        </div>`
-            : ""
-        }
-      </div>
-    `;
-  } else if (normalizedType === "building") {
-    const info = describeBuildingDossier(entity);
-    const hostTown = currentWorld.towns[entity.townId];
-    const allLinks = currentWorld.cargoLinks || [];
-    const inboundLinks = allLinks.filter((l) => l.to.id === entity.id);
-    const outboundLinks = allLinks.filter((l) => l.from.id === entity.id);
-
-    badge.textContent = info.badge;
-    badge.className = `text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md ${info.badgeClass} tracking-wide`;
-    code.textContent = `LOT #${entity.id} • (${entity.gx}, ${entity.gy})`;
-    title.textContent = info.title;
-
-    // 4-Stage Supply-Chain Pipeline Stepper (`RAW -> MFG -> LOG -> COM`)
-    const stages = [
-      {
-        key: "RAW",
-        label: "1. RAW",
-        tone: "bg-amber-700 text-white border-amber-700",
-      },
-      {
-        key: "MFG",
-        label: "2. MFG",
-        tone: "bg-orange-700 text-white border-orange-700",
-      },
-      {
-        key: "LOG",
-        label: "3. LOG",
-        tone: "bg-purple-700 text-white border-purple-700",
-      },
-      {
-        key: "COM",
-        label: "4. COM",
-        tone: "bg-blue-700 text-white border-blue-700",
-      },
-    ];
-    const connectedStageSet = new Set();
-    for (const l of inboundLinks)
-      connectedStageSet.add(describeBuildingDossier(l.from).stage);
-    for (const l of outboundLinks)
-      connectedStageSet.add(describeBuildingDossier(l.to).stage);
-
-    const pipelineHtml = stages
-      .map((st, idx) => {
-        const isActive = st.key === info.stage;
-        const isLinked = !isActive && connectedStageSet.has(st.key);
-        const pillCls = isActive
-          ? `${st.tone} shadow-xs font-extrabold`
-          : isLinked
-            ? "bg-white text-[#36383e] border-stone-400 font-bold"
-            : "bg-stone-200/60 text-stone-500 border-stone-300/70 font-semibold";
-        const arrow =
-          idx < stages.length - 1
-            ? `<svg class="w-3 h-3 text-stone-400 shrink-0" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>`
-            : "";
-        return `
-        <div class="flex items-center gap-1 flex-1 min-w-0">
-          <div class="flex-1 text-center text-[10px] py-1 px-1.5 rounded-lg border ${pillCls} truncate">
-            ${st.label}
-          </div>
-          ${arrow}
-        </div>
-      `;
-      })
-      .join("");
-
-    const wT = entity.wTiles || 2;
-    const hT = entity.hTiles || 2;
-    let siteMetricLabel = "Footprint & Access";
-    let siteMetricVal = `${wT}×${hT} Tiles • Road (${entity.roadX}, ${entity.roadY})`;
-    if (entity.resourceType === "FARM" && entity.bspParcels) {
-      siteMetricLabel = "Estate Layout";
-      siteMetricVal = `${entity.bspParcels.length} Parcels • ${(entity.tractorTracks || []).length} Tracks`;
-    } else if (entity.resourceType === "MINE") {
-      const slopePct = Math.round(
-        (currentWorld.slopeField[currentWorld.idx(entity.gx, entity.gy)] ||
-          0.1) * 100,
-      );
-      siteMetricLabel = "Foothill Bench";
-      siteMetricVal = `${wT}×${hT} Tiles • ${slopePct}% Slope`;
-    } else if (entity.resourceType === "TIMBER") {
-      const fertPct = Math.round(
-        (currentWorld.fertilityField[currentWorld.idx(entity.gx, entity.gy)] ||
-          0.6) * 100,
-      );
-      siteMetricLabel = "Forest Stand";
-      siteMetricVal = `${wT}×${hT} Tiles • ${fertPct}% Fertility`;
-    }
-
-    const renderLinkRow = (link, dir) => {
-      const partner = dir === "in" ? link.from : link.to;
-      const pInfo = describeBuildingDossier(partner);
-      const distTiles = (link.points || []).length;
-      const dirBadge =
-        dir === "in"
-          ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 shrink-0">← ${pInfo.shortTag} #${partner.id}</span>`
-          : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 shrink-0">→ ${pInfo.shortTag} #${partner.id}</span>`;
-      return `
-        <button type="button" data-jump-dest="${partner.id}" class="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
-          <div class="flex items-center gap-2 min-w-0">
-            ${dirBadge}
-            <span class="font-bold text-[#36383e] group-hover:text-[#e85c90] truncate">${pInfo.title}</span>
-          </div>
-          <div class="flex items-center gap-1 shrink-0">
-            <span class="mono text-[10px] font-bold text-stone-500 tabular-nums">${distTiles} tiles</span>
-            <svg class="w-3.5 h-3.5 text-stone-400 group-hover:text-[#36383e]" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-          </div>
-        </button>
-      `;
-    };
-
-    const allLinksHtml = [
-      ...inboundLinks.map((l) => renderLinkRow(l, "in")),
-      ...outboundLinks.map((l) => renderLinkRow(l, "out")),
-    ].join("");
-
-    body.innerHTML = `
-      <div class="flex items-center gap-1">${pipelineHtml}</div>
-
-      <div class="divide-y divide-stone-300/60 border-y border-stone-300/60">
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Municipality</span>
-          ${
-            hostTown
-              ? `
-            <button type="button" data-jump-town="${hostTown.id}" class="font-bold text-[#36383e] hover:text-[#e85c90] underline underline-offset-2 transition flex items-center gap-1">
-              <span>${hostTown.name} (Tier ${hostTown.tier})</span>
-              <svg class="w-3 h-3" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-            </button>
-          `
-              : '<span class="font-bold text-[#36383e]">Unincorporated</span>'
-          }
-        </div>
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Demand Channel</span>
-          <span class="flex items-center gap-1.5 font-bold text-[#36383e] tabular-nums">
-            <span class="w-2.5 h-2.5 rounded-xs inline-block" style="background:${entity.palette.roof}; border-bottom: 2px solid ${entity.palette.base}"></span>
-            <span>${entity.palette.name} • ${entity.pinsCount} Bays</span>
-          </span>
-        </div>
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">${siteMetricLabel}</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">${siteMetricVal}</span>
-        </div>
-      </div>
-
-      ${
-        allLinksHtml
-          ? `
-        <div class="space-y-1.5">
-          <div class="flex items-center justify-between text-[11px] font-bold text-stone-600">
-            <span>Cargo Links (${inboundLinks.length} In, ${outboundLinks.length} Out)</span>
-            <span class="text-[10px] font-normal text-stone-500">Click to jump</span>
-          </div>
-          <div class="space-y-1 max-h-36 overflow-y-auto drawer-scroll pr-0.5">
-            ${allLinksHtml}
-          </div>
-        </div>
-      `
-          : `
-        <div class="text-[11px] text-stone-500">
-          Local <b>${entity.palette.name}</b> commuter &amp; retail destination in <b>${hostTown ? hostTown.name : "the district"}</b>.
-        </div>
-      `
-      }
-    `;
-  } else {
-    badge.textContent = `TIER ${entity.tier} · ${entity.tierTitle.toUpperCase()}`;
-    badge.className =
-      "text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-[#36383e] text-white tracking-wide";
-    code.textContent = `CODE ${entity.iata} • (${Math.round(entity.x)}, ${Math.round(entity.y)})`;
-    title.textContent = entity.name;
-
-    const ap =
-      entity.airportId !== null
-        ? currentWorld.airports[entity.airportId]
-        : null;
-    const rCount = entity.housesCount || 0;
-    const cCount = entity.commercialCount || 0;
-    const iCount = entity.industrialCount || 0;
-    const totalBld = Math.max(1, rCount + cCount + iCount);
-    const rPct = Math.round((rCount / totalBld) * 100);
-    const cPct = Math.round((cCount / totalBld) * 100);
-    const iPct = Math.max(0, 100 - rPct - cPct);
-
-    const townFacilities = currentWorld.destinations
-      .filter(
-        (d) =>
-          d.townId === entity.id &&
-          (d.zoneType === "industrial" || d.isCircular),
-      )
-      .sort((a, b) => (b.isRuralNiche ? 1 : 0) - (a.isRuralNiche ? 1 : 0))
-      .slice(0, 6);
-
-    const facChipsHtml = townFacilities
-      .map((d) => {
-        const fInfo = describeBuildingDossier(d);
-        return `
-        <button type="button" data-jump-dest="${d.id}" class="flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
-          <span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${fInfo.badgeClass} shrink-0">${fInfo.shortTag} #${d.id}</span>
-          <span class="text-[11px] font-bold text-[#36383e] group-hover:text-[#e85c90] truncate flex-1">${fInfo.typeLabel}</span>
-          <svg class="w-3 h-3 text-stone-400 group-hover:text-[#36383e] shrink-0" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-        </button>
-      `;
-      })
-      .join("");
-
-    body.innerHTML = `
-      <div class="py-2 border-y border-stone-300/60 space-y-2">
-        <div class="h-2 w-full rounded-full overflow-hidden flex bg-stone-300/70">
-          <div style="width:${rPct}%" class="bg-emerald-600" title="Residential (${rCount})"></div>
-          <div style="width:${cPct}%" class="bg-blue-600" title="Commercial (${cCount})"></div>
-          <div style="width:${iPct}%" class="bg-amber-600" title="Industrial (${iCount})"></div>
-        </div>
-        <div class="flex items-center justify-between text-[11px] tabular-nums">
-          <span class="flex items-center gap-1 font-bold text-emerald-800"><span class="w-2 h-2 rounded-xs bg-emerald-600"></span>${rCount} Houses</span>
-          <span class="flex items-center gap-1 font-bold text-blue-800"><span class="w-2 h-2 rounded-xs bg-blue-600"></span>${cCount} Commercial</span>
-          <span class="flex items-center gap-1 font-bold text-amber-800"><span class="w-2 h-2 rounded-xs bg-amber-600"></span>${iCount} Industrial</span>
-        </div>
-      </div>
-
-      <div class="divide-y divide-stone-300/60 border-b border-stone-300/60">
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Urban Grid &amp; Fit</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">${(entity.boroughs || []).length || 1} Boroughs • ${entity.suitabilityScore}% Fit</span>
-        </div>
-        ${
-          ap
-            ? `
-        <div class="flex items-center justify-between py-1.5">
-          <span class="text-stone-500 font-medium">Airport</span>
-          <button type="button" data-jump-ap="${ap.id}" class="font-bold text-[#36383e] hover:text-[#e85c90] underline underline-offset-2 transition flex items-center gap-1">
-            <span>${ap.name} (${ap.iata})</span>
-            <svg class="w-3 h-3" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-          </button>
-        </div>`
-            : ""
-        }
-      </div>
-
-      ${
-        facChipsHtml
-          ? `
-        <div class="space-y-1.5">
-          <div class="flex items-center justify-between text-[11px] font-bold text-stone-600">
-            <span>Industries &amp; Landmarks</span>
-            <span class="text-[10px] font-normal text-stone-500">Click to jump</span>
-          </div>
-          <div class="grid grid-cols-2 gap-1.5">
-            ${facChipsHtml}
-          </div>
-        </div>
-      `
-          : ""
-      }
-    `;
-  }
 }
 
-// Event delegation inside `#inspBody` for Supply-Chain & Facility navigation buttons
-getEl("inspBody").addEventListener("click", (e) => {
-  if (!currentWorld) return;
-  const target = e.target instanceof Element ? e.target : null;
-  if (!target) return;
-  const destBtn = /** @type {HTMLElement | null} */ (
-    target.closest("[data-jump-dest]")
-  );
-  if (destBtn) {
-    const destId = Number(destBtn.dataset.jumpDest);
-    const targetDest = currentWorld.destinations.find((d) => d.id === destId);
-    if (targetDest) {
-      openEntityInspector("building", targetDest, true);
-    }
-    return;
-  }
-  const townBtn = /** @type {HTMLElement | null} */ (
-    target.closest("[data-jump-town]")
-  );
-  if (townBtn) {
-    const townId = Number(townBtn.dataset.jumpTown);
-    const targetTown = currentWorld.towns[townId];
-    if (targetTown) {
-      openEntityInspector("town", targetTown, true);
-    }
-    return;
-  }
-  const apBtn = /** @type {HTMLElement | null} */ (
-    target.closest("[data-jump-ap]")
-  );
-  if (apBtn) {
-    const apId = Number(apBtn.dataset.jumpAp);
-    const targetAp = currentWorld.airports.find((a) => a.id === apId);
-    if (targetAp) {
-      openEntityInspector("airport", targetAp, true);
-    }
-  }
-});
+window.openEntityInspector = openEntityInspector;
 
-document.getElementById("focusInspectorBtn").addEventListener("click", () => {
-  if (currentInspected.entity) {
-    focusCameraOnEntity(currentInspected.type, currentInspected.entity);
-  }
-});
+// Mount the custom Light-DOM entity inspector element
+const inspectorCard = document.getElementById("inspectorCard");
+if (inspectorCard) {
+  mountEntityInspector(inspectorCard, {
+    store,
+    getWorld: () => currentWorld,
+    onFocus: (type, entity) => {
+      focusCameraOnEntity(type, entity);
+    },
+    onSelectEntity: (type, entity, shouldFocus = false) => {
+      openEntityInspector(type, entity, shouldFocus);
+    },
+    onClose: () => {
+      renderer.selectedEntity = null;
+      store.setInspected(null, null);
+    },
+  });
+}
 
 function findEntityAtWorldPos(wx, wy, touchPad = 0) {
   if (!currentWorld) return null;
@@ -932,7 +599,7 @@ function handlePointerEnd(e) {
       const hit = findEntityAtWorldPos(wx, wy, touchPad);
       if (hit) {
         if (window.innerWidth < 640) {
-          document.getElementById("generatorDrawer").classList.add("hidden");
+          store.setDrawerOpen(false);
         }
         openEntityInspector(hit.type, hit.entity, false);
         return;
@@ -947,10 +614,9 @@ function handlePointerEnd(e) {
       lastTapTime = now;
 
       renderer.selectedEntity = null;
-      currentInspected = { type: null, entity: null };
-      document.getElementById("inspectorCard").classList.add("hidden");
+      store.setInspected(null, null);
       if (window.innerWidth < 640) {
-        document.getElementById("generatorDrawer").classList.add("hidden");
+        store.setDrawerOpen(false);
       }
     }
   }
@@ -972,148 +638,167 @@ canvas.addEventListener(
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     renderer.selectedEntity = null;
-    currentInspected = { type: null, entity: null };
-    document.getElementById("inspectorCard").classList.add("hidden");
+    store.setInspected(null, null);
     return;
   }
-  if (document.activeElement && document.activeElement.tagName === "INPUT")
+  if (document.activeElement && document.activeElement.tagName === "INPUT") {
     return;
+  }
   const panStep = 40;
   if (e.key === "ArrowLeft") renderer.camera.x += panStep;
   else if (e.key === "ArrowRight") renderer.camera.x -= panStep;
   else if (e.key === "ArrowUp") renderer.camera.y += panStep;
   else if (e.key === "ArrowDown") renderer.camera.y -= panStep;
-  else if (e.key === "+" || e.key === "=")
+  else if (e.key === "+" || e.key === "=") {
     zoomAroundPoint(1.18, canvas.width * 0.5, canvas.height * 0.5);
-  else if (e.key === "-")
+  } else if (e.key === "-") {
     zoomAroundPoint(0.84, canvas.width * 0.5, canvas.height * 0.5);
+  }
 });
 
 // UI Control Bindings
-document.getElementById("toggleDrawerBtn").addEventListener("click", () => {
-  const drawer = document.getElementById("generatorDrawer");
-  drawer.classList.toggle("hidden");
-  if (!drawer.classList.contains("hidden") && window.innerWidth < 640) {
-    document.getElementById("inspectorCard").classList.add("hidden");
+document.getElementById("toggleDrawerBtn")?.addEventListener("click", () => {
+  const nextOpen = !store.getState().drawerOpen;
+  store.setDrawerOpen(nextOpen);
+  if (nextOpen && window.innerWidth < 640) {
+    store.setInspected(null, null);
   }
 });
 
 document
   .getElementById("closeDrawerMobileBtn")
-  .addEventListener("click", () => {
-    document.getElementById("generatorDrawer").classList.add("hidden");
+  ?.addEventListener("click", () => {
+    store.setDrawerOpen(false);
   });
 
-document.getElementById("closeInspectorBtn").addEventListener("click", () => {
-  renderer.selectedEntity = null;
-  currentInspected = { type: null, entity: null };
-  document.getElementById("inspectorCard").classList.add("hidden");
-});
-
-document.getElementById("resetViewBtn").addEventListener("click", () => {
+document.getElementById("resetViewBtn")?.addEventListener("click", () => {
   if (currentWorld) renderer.fitCamera(currentWorld);
   if (window.innerWidth < 640) {
-    document.getElementById("generatorDrawer").classList.add("hidden");
+    store.setDrawerOpen(false);
   }
 });
 
-document.getElementById("zoomInBtn").addEventListener("click", () => {
+document.getElementById("zoomInBtn")?.addEventListener("click", () => {
   zoomAroundPoint(1.25, canvas.width * 0.5, canvas.height * 0.5);
 });
 
-document.getElementById("zoomOutBtn").addEventListener("click", () => {
+document.getElementById("zoomOutBtn")?.addEventListener("click", () => {
   zoomAroundPoint(0.8, canvas.width * 0.5, canvas.height * 0.5);
 });
 
-document.getElementById("hudFitBtn").addEventListener("click", () => {
+document.getElementById("hudFitBtn")?.addEventListener("click", () => {
   if (currentWorld) renderer.fitCamera(currentWorld);
 });
 
-getEl("randomSeedBtn").addEventListener("click", () => {
+getEl("randomSeedBtn")?.addEventListener("click", () => {
   const prefixes = ["METRO", "DELTA", "TYCOON", "AIRWAY", "VALLEY", "HARBOR"];
   const p = prefixes[Math.floor(Math.random() * prefixes.length)];
   const num = Math.floor(100 + Math.random() * 900);
-  getInput("seedInput").value = `${p}-${num}`;
+  const newSeed = `${p}-${num}`;
+  const seedInput = getInput("seedInput");
+  if (seedInput) seedInput.value = newSeed;
+  store.patchConfig({ seed: newSeed });
   rebuildWorld(false);
 });
 
-getInput("seedInput").addEventListener("change", () => rebuildWorld(false));
-getSelect("archetypeSelect").addEventListener("change", (e) => {
+getInput("seedInput")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ seed: inp.value.trim() });
+  rebuildWorld(false);
+});
+
+getSelect("archetypeSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
   if (sel.value === "island-hopper") {
     const apSlider = getInput("sliderAirports");
     if (parseInt(apSlider.value, 10) < 5) {
       apSlider.value = "5";
-      updateAirportSliderLabel();
+      batch(() => {
+        store.patchConfig({
+          archetype: sel.value,
+          airportCount: 5,
+        });
+      });
+      rebuildWorld(false);
+      return;
     }
   }
+  store.patchConfig({ archetype: sel.value });
   rebuildWorld(false);
 });
-/** @type {Record<string, { towns: number, airports: number }>} */
-const worldSizeDefaults = {
-  compact: { towns: 14, airports: 2 },
-  standard: { towns: 20, airports: 3 },
-  large: { towns: 28, airports: 4 },
-  huge: { towns: 36, airports: 5 },
-};
 
-getSelect("worldSizeSelect").addEventListener("change", (e) => {
+getSelect("worldSizeSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
-  const def = worldSizeDefaults[sel.value];
+  const def = WORLD_SIZE_DEFAULTS[sel.value];
   if (def) {
     const tSlider = getInput("sliderTowns");
     const aSlider = getInput("sliderAirports");
-    tSlider.value = String(def.towns);
-    getEl("valTowns").textContent = `${def.towns} Towns`;
-    aSlider.value = String(def.airports);
-    updateAirportSliderLabel();
+    if (tSlider) tSlider.value = String(def.towns);
+    if (aSlider) aSlider.value = String(def.airports);
+    batch(() => {
+      store.patchConfig({
+        worldSize: sel.value,
+        townCount: def.towns,
+        airportCount: def.airports,
+      });
+    });
+  } else {
+    store.patchConfig({ worldSize: sel.value });
   }
   rebuildWorld(false);
 });
-getSelect("terrainAlgoSelect").addEventListener("change", () =>
-  rebuildWorld(true),
-);
-getSelect("hydrologyAlgoSelect").addEventListener("change", () =>
-  rebuildWorld(true),
-);
-getSelect("airportMixSelect").addEventListener("change", () =>
-  rebuildWorld(true),
-);
-getInput("toggleInterRamps").addEventListener("change", () =>
-  rebuildWorld(true),
-);
 
-/** @type {Record<string, string>} */
-const windNames = {
-  "-1": "Auto (Seed)",
-  0: "09/27 (E–W)",
-  1: "04/22 (NE–SW)",
-  2: "18/36 (N–S)",
-  3: "13/31 (NW–SE)",
-};
+getSelect("terrainAlgoSelect")?.addEventListener("change", (e) => {
+  const sel = /** @type {HTMLSelectElement} */ (e.target);
+  store.patchConfig({ terrainAlgo: sel.value });
+  rebuildWorld(true);
+});
 
-getInput("sliderWater").addEventListener("input", (e) => {
-  const inp = /** @type {HTMLInputElement} */ (e.target);
-  getEl("valWater").textContent = `${inp.value}%`;
+getSelect("hydrologyAlgoSelect")?.addEventListener("change", (e) => {
+  const sel = /** @type {HTMLSelectElement} */ (e.target);
+  store.patchConfig({ hydrologyAlgo: sel.value });
   rebuildWorld(true);
 });
-getInput("sliderTowns").addEventListener("input", (e) => {
-  const inp = /** @type {HTMLInputElement} */ (e.target);
-  getEl("valTowns").textContent = `${inp.value} Towns`;
+
+getSelect("airportMixSelect")?.addEventListener("change", (e) => {
+  const sel = /** @type {HTMLSelectElement} */ (e.target);
+  store.patchConfig({ airportMix: sel.value });
   rebuildWorld(true);
 });
-getInput("sliderDensity").addEventListener("input", (e) => {
+
+getInput("toggleInterRamps")?.addEventListener("change", (e) => {
   const inp = /** @type {HTMLInputElement} */ (e.target);
-  getEl("valDensity").textContent = `${inp.value}%`;
+  store.patchConfig({ includeIntermediateRamps: inp.checked });
   rebuildWorld(true);
 });
-getInput("sliderAirports").addEventListener("input", () => {
-  updateAirportSliderLabel();
+
+getInput("sliderWater")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ waterCoverage: parseInt(inp.value, 10) });
   rebuildWorld(true);
 });
-getInput("sliderWind").addEventListener("input", (e) => {
+
+getInput("sliderTowns")?.addEventListener("input", (e) => {
   const inp = /** @type {HTMLInputElement} */ (e.target);
-  getEl("valWind").textContent = windNames[inp.value];
+  store.patchConfig({ townCount: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+
+getInput("sliderDensity")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ buildingDensity: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+
+getInput("sliderAirports")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ airportCount: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+
+getInput("sliderWind")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ windAxis: parseInt(inp.value, 10) });
   rebuildWorld(true);
 });
 
@@ -1121,11 +806,8 @@ getInput("sliderWind").addEventListener("input", (e) => {
 document.querySelectorAll(".layer-btn").forEach((el) => {
   const btn = /** @type {HTMLElement} */ (el);
   btn.addEventListener("click", () => {
-    document
-      .querySelectorAll(".layer-btn")
-      .forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    renderer.activeLayer = btn.dataset.layer || "aesthetic";
+    const layer = /** @type {ViewLayer} */ (btn.dataset.layer || "aesthetic");
+    store.setActiveLayer(layer);
   });
 });
 
@@ -1133,13 +815,8 @@ document.querySelectorAll(".layer-btn").forEach((el) => {
 document.querySelectorAll(".speed-btn").forEach((el) => {
   const btn = /** @type {HTMLElement} */ (el);
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".speed-btn").forEach((b) => {
-      b.classList.remove("bg-[#36383e]", "text-[#f2efe9]");
-      b.classList.add("text-stone-500");
-    });
-    btn.classList.remove("text-stone-500");
-    btn.classList.add("bg-[#36383e]", "text-[#f2efe9]");
-    simSpeed = parseFloat(btn.dataset.speed || "1");
+    const speed = parseFloat(btn.dataset.speed || "1");
+    store.setSimSpeed(speed);
   });
 });
 
@@ -1166,7 +843,7 @@ function animate(now) {
 
 function initApp() {
   if (window.innerWidth < 768) {
-    document.getElementById("generatorDrawer").classList.add("hidden");
+    store.setDrawerOpen(false);
   }
   handleResize();
   rebuildWorld(false);

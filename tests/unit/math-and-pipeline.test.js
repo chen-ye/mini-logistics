@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { SeededRNG, FastNoise2D } from "../../src/math.js";
+import { SeededRNG, FastNoise2D, FlatMinHeap } from "../../src/math.js";
 import {
   createMemoStage,
   createWorldPipeline,
@@ -66,6 +66,168 @@ describe("SeededRNG & FastNoise2D determinism and analytic derivatives", () => {
       const numeric = (noise.fade(t + eps) - noise.fade(t - eps)) / (2 * eps);
       expect(analytic).toBeCloseTo(numeric, 5);
     }
+  });
+});
+
+describe("FlatMinHeap typed-array binary min-heap", () => {
+  test("maintains strictly ascending priority order and pops smallest element first", () => {
+    const heap = new FlatMinHeap();
+    const items = [
+      { id: 10, prio: 42.5 },
+      { id: 20, prio: 3.14 },
+      { id: 30, prio: 100.0 },
+      { id: 40, prio: 0.05 },
+      { id: 50, prio: 18.2 },
+      { id: 60, prio: 7.89 },
+    ];
+
+    for (const item of items) {
+      heap.push(item.id, item.prio);
+    }
+    expect(heap.size).toBe(items.length);
+
+    const prios = new Map(items.map((it) => [it.id, it.prio]));
+    let prevPrio = -Infinity;
+    const poppedIds = [];
+
+    while (heap.size > 0) {
+      const id = heap.pop();
+      poppedIds.push(id);
+      const prio = prios.get(id);
+      expect(prio).toBeDefined();
+      expect(prio).toBeGreaterThanOrEqual(prevPrio);
+      prevPrio = prio;
+    }
+
+    expect(poppedIds).toEqual([40, 20, 60, 50, 10, 30]);
+    expect(heap.size).toBe(0);
+    expect(heap.pop()).toBe(-1);
+  });
+
+  test("guarantees deterministic tie-breaking bit-for-bit identical to legacy inline array heaps", () => {
+    const heap = new FlatMinHeap();
+
+    // Legacy inline array heap from routeValleyThalwegAStar / d8-strahler
+    /** @type {number[]} */
+    const refNodes = [];
+    /** @type {number[]} */
+    const refPriorities = [];
+    /**
+     * @param {number} node
+     * @param {number} prio
+     */
+    const refPush = (node, prio) => {
+      let i = refNodes.length;
+      refNodes.push(node);
+      refPriorities.push(prio);
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (refPriorities[p] <= prio) break;
+        refNodes[i] = refNodes[p];
+        refPriorities[i] = refPriorities[p];
+        i = p;
+      }
+      refNodes[i] = node;
+      refPriorities[i] = prio;
+    };
+    /**
+     * @returns {number | undefined}
+     */
+    const refPop = () => {
+      const top = refNodes[0];
+      const lastN = refNodes.pop();
+      const lastP = refPriorities.pop();
+      if (refNodes.length > 0 && lastN !== undefined && lastP !== undefined) {
+        let i = 0;
+        const n = refNodes.length;
+        while ((i << 1) + 1 < n) {
+          let c = (i << 1) + 1;
+          if (c + 1 < n && refPriorities[c + 1] < refPriorities[c]) c++;
+          if (lastP <= refPriorities[c]) break;
+          refNodes[i] = refNodes[c];
+          refPriorities[i] = refPriorities[c];
+          i = c;
+        }
+        refNodes[i] = lastN;
+        refPriorities[i] = lastP;
+      }
+      return top;
+    };
+
+    // Sequence with intentional priority collisions to test tie-breaking stability
+    const testCases = [
+      [101, 5.0],
+      [102, 2.0],
+      [103, 5.0], // tie at 5.0
+      [104, 1.0],
+      [105, 2.0], // tie at 2.0
+      [106, 5.0], // 3-way tie at 5.0
+      [107, 0.5],
+      [108, 2.0], // 3-way tie at 2.0
+      [109, 1.0], // tie at 1.0
+      [110, 0.5], // tie at 0.5
+    ];
+
+    for (const [id, prio] of testCases) {
+      heap.push(id, prio);
+      refPush(id, prio);
+    }
+
+    expect(heap.size).toBe(testCases.length);
+
+    const actualPops = [];
+    const refPops = [];
+    while (heap.size > 0) {
+      actualPops.push(heap.pop());
+      refPops.push(refPop());
+    }
+
+    expect(actualPops).toEqual(refPops);
+  });
+
+  test("automatically expands capacity from small initial capacity", () => {
+    const heap = new FlatMinHeap(4);
+    expect(heap.size).toBe(0);
+
+    const count = 100;
+    for (let i = 0; i < count; i++) {
+      // Inverted priority so items must be reordered
+      heap.push(i, (count - i) * 1.5);
+    }
+    expect(heap.size).toBe(count);
+
+    const popped = [];
+    while (heap.size > 0) {
+      popped.push(heap.pop());
+    }
+    expect(popped.length).toBe(count);
+    // Elements should pop in ascending priority order (smallest priority was for i = 99, 98, ... 0)
+    expect(popped).toEqual(
+      Array.from({ length: count }, (_, i) => count - 1 - i),
+    );
+  });
+
+  test("supports reuse across clear() cycles without reallocating backing arrays", () => {
+    const heap = new FlatMinHeap(8);
+
+    // Cycle 1
+    heap.push(1, 10);
+    heap.push(2, 5);
+    expect(heap.size).toBe(2);
+    expect(heap.pop()).toBe(2);
+    heap.clear();
+    expect(heap.size).toBe(0);
+    expect(heap.pop()).toBe(-1);
+
+    // Cycle 2: verify heap is fully operational after clear
+    heap.push(10, 20.0);
+    heap.push(20, 5.0);
+    heap.push(30, 15.0);
+    expect(heap.size).toBe(3);
+    expect(heap.pop()).toBe(20);
+    expect(heap.pop()).toBe(30);
+    expect(heap.pop()).toBe(10);
+    expect(heap.size).toBe(0);
   });
 });
 
@@ -162,6 +324,18 @@ describe("9-Stage Reactive DAG Memoization & Worker Transfer Contract", () => {
     expect(w5.reusedThroughStage).toBe(1);
     expect(w5.hydroVersion).toBe(w1.hydroVersion + 1);
     expect(hydroCallbacks).toBe(2);
+    expect(urbanCallbacks).toBe(3);
+
+    // 3-entry LRU cache hit revisit (`w4 -> w5 -> w4`): reuses all 9 stages (`reusedThroughStage === 9`),
+    // while signaling `terrainUnchanged: false` and firing `onHydrologyReady` / `onUrbanReady`
+    // because the emitted hydrology/urban version changed relative to `w5`!
+    const w6 = pipeline({ ...baseCfg, buildingDensity: 150 });
+    expect(w6.reusedThroughStage).toBe(9);
+    expect(w6.terrainUnchanged).toBe(false);
+    expect(w6.hydroVersion).toBe(w4.hydroVersion);
+    expect(w6.urbanVersion).toBe(w4.urbanVersion);
+    expect(hydroCallbacks).toBe(3);
+    expect(urbanCallbacks).toBe(4);
 
     // Scratch workspace isolation: running seedA -> seedB -> seedA yields bit-identical output
     const freshA = createWorldPipeline()(baseCfg);

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+bun fmt --no-script --check src/ tests/ scripts/ playwright.config.js index.html
+bun run lint
+bun check --no-script

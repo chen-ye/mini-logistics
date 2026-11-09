@@ -15,6 +15,10 @@ export type AirportMixKey = "hub-regional" | "hub-reg-cargo" | "dual-hub";
 export type ViewLayer =
   "aesthetic" | "rci" | "airport" | "hierarchy" | "hydrology" | "roadgrid";
 
+export type WaterMaskCode = 0 | 1 | 2;
+export type RoadGridCode = 0 | 1 | 2 | 3;
+export type BuildingMaskCode = 0 | 1 | 2 | 3 | 4 | 5;
+
 export interface WorldSizePreset {
   readonly W: number;
   readonly H: number;
@@ -257,6 +261,9 @@ export interface FarmParcel {
   slotIdx?: number;
   spineAxis?: string;
   spineCoord?: number;
+  meanElev?: number;
+  meanSlope?: number;
+  meanWater?: number;
   tiles: [number, number][];
   poly?: [number, number][];
 }
@@ -266,6 +273,7 @@ export interface TractorTrack {
   y0: number;
   x1: number;
   y1: number;
+  isLeaf?: boolean;
 }
 
 export interface Destination {
@@ -285,6 +293,8 @@ export interface Destination {
   colorIdx: number;
   palette: DistrictColor;
   townId: number;
+  townName?: string;
+  label?: string;
   isCircular: boolean;
   hasUrgentPin?: boolean;
   pinsCount: number;
@@ -448,12 +458,43 @@ export interface VehicleGraphNode {
   isSlipRamp?: boolean;
 }
 
+export interface RoundaboutSpec {
+  x: number;
+  y: number;
+  rTiles: number;
+  rIsland?: number;
+  accentColor?: string;
+  isAirport?: boolean;
+  isDiamondT?: boolean;
+}
+
+export interface DrivewaySpec {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface RoadTopology {
+  roadGrid?: Uint8Array;
+  roadEdges?: Set<number>;
+  bridgeCount?: number;
+  vertexDeg: Uint8Array;
+  edgeCount: number;
+  streetTiles: number;
+  arterialTiles: number;
+  bridgeTiles: number;
+  junctionCount: number;
+  anomalies: RoadGraphAnomaly[];
+}
+
 export interface VehicleRoutingGraph {
   nodes: VehicleGraphNode[];
   adj: VehicleGraphEdge[][];
   tileToNode: Int32Array;
   numSurfaceNodes: number;
-  roundabouts: Array<{ x: number; y: number; rTiles: number }>;
+  roundabouts: RoundaboutSpec[];
+  driveways?: DrivewaySpec[];
   gScore: Float64Array;
   parent: Int32Array;
   seenGen: Int32Array;
@@ -602,6 +643,11 @@ export interface Stage9RampsAndCargoState {
   interchanges: Interchange[];
   cargoLinks: CargoLink[];
   commuterRoutes: CommuterRoute[];
+  roadTopology: RoadTopology;
+  routingGraph: {
+    roundabouts: RoundaboutSpec[];
+    driveways?: DrivewaySpec[];
+  };
   displacedBuildingsCount: number;
   bridgeCount: number;
   mwayLog: string;
@@ -683,6 +729,27 @@ export interface RoadGraphDiagnostics {
 }
 
 export type InspectedEntity = Destination | Airport | Town;
+
+export interface InspectedSelection {
+  readonly type: "airport" | "building" | "town" | null;
+  readonly entity: InspectedEntity | null;
+}
+
+export interface ControlLabels {
+  readonly waterLabel: string;
+  readonly townsLabel: string;
+  readonly densityLabel: string;
+  readonly airportsLabel: string;
+  readonly windLabel: string;
+}
+
+export interface AppState {
+  readonly config: Readonly<Required<GeneratorConfig>>;
+  readonly activeLayer: ViewLayer;
+  readonly simSpeed: number;
+  readonly drawerOpen: boolean;
+  readonly inspected: InspectedSelection;
+}
 
 declare global {
   interface Window {
