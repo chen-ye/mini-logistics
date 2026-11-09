@@ -24,6 +24,7 @@
   "devDependencies": {
     "@playwright/test": "^1.52.0",
     "oxlint": "^1.0.0",
+    "oxlint-tsgolint": "^7.0.2006",
     "serve": "^14.2.4"
   }
 }

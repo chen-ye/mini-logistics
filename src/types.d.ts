@@ -24,11 +24,11 @@ export interface WorldSizePreset {
 
 export interface GeneratorConfig {
   seed?: string;
-  worldSize?: WorldSizeKey | string;
-  archetype?: ArchetypeKey | string;
-  terrainAlgo?: TerrainAlgoKey | string;
-  hydrologyAlgo?: HydrologyAlgoKey | string;
-  airportMix?: AirportMixKey | string;
+  worldSize?: WorldSizeKey | (string & {});
+  archetype?: ArchetypeKey | (string & {});
+  terrainAlgo?: TerrainAlgoKey | (string & {});
+  hydrologyAlgo?: HydrologyAlgoKey | (string & {});
+  airportMix?: AirportMixKey | (string & {});
   includeIntermediateRamps?: boolean;
   waterCoverage?: number;
   townCount?: number;
@@ -186,7 +186,7 @@ export interface Airport {
   apronSide?: number;
   stubDist?: number;
   isHub: boolean;
-  airportClass: "HUB" | "REG" | "CRG" | string;
+  airportClass: "HUB" | "REG" | "CRG" | (string & {});
   classLabel: string;
   hostTownId: number;
   hostTownName: string;
@@ -217,7 +217,8 @@ export interface RoadPoint {
 
 export interface RoadSegment {
   points: RoadPoint[];
-  type: "street" | "arterial" | "airport-loop" | "airport-spine" | string;
+  type:
+    "street" | "arterial" | "airport-loop" | "airport-spine" | (string & {});
   isMainBoulevard?: boolean;
   isUnderpassStem?: boolean;
   stubOriginX?: number;
@@ -289,7 +290,7 @@ export interface Destination {
   pinsCount: number;
   demandPins?: number[];
   zoneType: "commercial" | "industrial";
-  subType: "CBD" | "RET" | "RAW" | "MFG" | "LOG" | string;
+  subType: "CBD" | "RET" | "RAW" | "MFG" | "LOG" | (string & {});
   resourceType?: "MINE" | "TIMBER" | "FARM" | null;
   isRuralNiche?: boolean;
   bspParcels?: FarmParcel[];
@@ -480,7 +481,12 @@ export interface CargoLink {
   from: Destination;
   to: Destination;
   stage:
-    "RAW->MFG" | "MFG->LOG" | "MFG->COM" | "LOG->COM" | "RAW->LOG" | string;
+    | "RAW->MFG"
+    | "MFG->LOG"
+    | "MFG->COM"
+    | "LOG->COM"
+    | "RAW->LOG"
+    | (string & {});
   label: string;
   color: string;
   points: DirectedLanePoint[];

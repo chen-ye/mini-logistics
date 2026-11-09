@@ -2,8 +2,7 @@
  * @import {
  *   GeneratorConfig,
  *   Destination,
- *   InspectedEntity,
- *   ViewLayer
+ *   InspectedEntity
  * } from './types.js'
  */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
@@ -18,7 +17,7 @@ import { MiniMotorwaysRenderer } from "./renderer.js";
  * @param {string} id
  * @returns {HTMLElement}
  */
-const getEl = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
+const getEl = (id) => document.getElementById(id);
 
 /**
  * @param {string} id
@@ -1126,9 +1125,7 @@ document.querySelectorAll(".layer-btn").forEach((el) => {
       .querySelectorAll(".layer-btn")
       .forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    renderer.activeLayer = /** @type {ViewLayer} */ (
-      btn.dataset.layer || "aesthetic"
-    );
+    renderer.activeLayer = btn.dataset.layer || "aesthetic";
   });
 });
 

@@ -64,12 +64,15 @@ Add `"type": "module"` so `oxlint`, `bun check`, and `bun test` parse all `.js` 
 ```
 
 ### 2.2 `.oxlintrc.json`
-Initialized via `bunx oxlint --init` (read natively by both `oxlint` today and `bun lint` in Bun v1.4.5+):
+Initialized via `bunx oxlint --init` with `"options": { "typeAware": true }` powered by `oxlint-tsgolint` (read natively by both `oxlint` today and `bun lint` in Bun v1.4.5+):
 
 ```json
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "unicorn", "oxc"],
+  "options": {
+    "typeAware": true
+  },
   "categories": {
     "correctness": "error",
     "suspicious": "warn"
@@ -77,6 +80,11 @@ Initialized via `bunx oxlint --init` (read natively by both `oxlint` today and `
   "rules": {
     "eqeqeq": ["error", "smart"],
     "no-unused-vars": "error",
+    "@typescript-eslint/no-floating-promises": "off",
+    "typescript/no-unnecessary-boolean-literal-compare": "off",
+    "typescript/no-unnecessary-type-conversion": "off",
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/no-useless-default-assignment": "off",
     "no-underscore-dangle": "off",
     "no-shadow": "off",
     "oxc/approx-constant": "off",

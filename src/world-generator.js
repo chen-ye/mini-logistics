@@ -10197,7 +10197,7 @@ export function createMemoStage(selectDeps, computeFn) {
       prevDeps.every((val, idx) => Object.is(val, nextDeps[idx]));
     if (hit) {
       return {
-        value: /** @type {Readonly<Out>} */ (cachedOutput),
+        value: cachedOutput,
         cached: true,
         version,
       };
