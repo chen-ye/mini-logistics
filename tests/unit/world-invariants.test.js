@@ -189,6 +189,46 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
           }
         }
       }
+
+      // 6. Precomputed RCI counts, Farm estateBBox, Motorway surfaceSpans/shieldPt & VectorLayerRecorder display lists
+      expect(world.rciCounts).toBeDefined();
+      expect(
+        (world.rciCounts?.com || 0) +
+          (world.rciCounts?.raw || 0) +
+          (world.rciCounts?.mfg || 0) +
+          (world.rciCounts?.log || 0),
+      ).toBe(world.destinations.length);
+
+      for (const d of world.destinations) {
+        if (
+          d.resourceType === "FARM" &&
+          d.bspParcels &&
+          d.bspParcels.length > 0
+        ) {
+          expect(d.estateBBox).toBeDefined();
+          expect(d.estateBBox?.maxX).toBeGreaterThan(d.estateBBox?.minX ?? 0);
+          expect(d.estateBBox?.maxY).toBeGreaterThan(d.estateBBox?.minY ?? 0);
+        }
+      }
+
+      for (const mw of world.motorways) {
+        expect(Array.isArray(mw.surfaceSpans)).toBe(true);
+        expect(mw.shieldPt).toBeDefined();
+      }
+
+      renderer.prepareDisplayLists(world);
+      expect(
+        renderer.hydroDisplayList?.contours.getStats().commandCount,
+      ).toBeGreaterThan(0);
+      expect(
+        renderer.hydroDisplayList?.water.getStats().commandCount,
+      ).toBeGreaterThan(0);
+      expect(
+        renderer.urbanTerrainDisplayList?.treesAndFarms.getStats().commandCount,
+      ).toBeGreaterThan(0);
+      expect(
+        renderer.surfaceNetworkDisplayList?.recorder.getStats().commandCount,
+      ).toBeGreaterThan(0);
     }
   });
 });

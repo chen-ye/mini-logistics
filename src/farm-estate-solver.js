@@ -512,7 +512,30 @@ export function finalizeFarmEstateFromParcels(
     }
   }
 
-  return { bspParcels, estateLoops, tractorTracks, windbreakPts };
+  let bboxMinX = fgx,
+    bboxMinY = fgy,
+    bboxMaxX = fgx + 2,
+    bboxMaxY = fgy + 2;
+  for (const p of bspParcels) {
+    if (p.x0 < bboxMinX) bboxMinX = p.x0;
+    if (p.y0 < bboxMinY) bboxMinY = p.y0;
+    if (p.x1 > bboxMaxX) bboxMaxX = p.x1;
+    if (p.y1 > bboxMaxY) bboxMaxY = p.y1;
+  }
+  const estateBBox = {
+    minX: bboxMinX,
+    minY: bboxMinY,
+    maxX: bboxMaxX,
+    maxY: bboxMaxY,
+  };
+
+  return {
+    bspParcels,
+    estateLoops,
+    tractorTracks,
+    windbreakPts,
+    estateBBox,
+  };
 }
 
 /**

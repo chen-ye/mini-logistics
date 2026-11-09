@@ -23,7 +23,7 @@ Never develop or tune procedural generation rules blind, and never approach visu
   - Continental seeds (`OTTD-METRO-84`, `DELTA-402`, `HARBOR-305`, `VALLEY-618`) across the 3 [Stage 2A Terrain Engines](./src/terrain-solvers.js#L14-L574) and 3 [Stage 2B Hydrology Engines](./src/hydrology-solvers.js#L24-L913).
   - Multi-island seeds (`ISLAND-HOP-101`, `ARCHIPELAGO-77`, `AEGEAN-420`, `ATOLL-808`) in the `island-hopper` scenario.
   - Both the **Mini Motorways View** (`aesthetic`), the **RCI & Cargo Chain View** (`rci`), and the **Road Grid & Graph View** (`roadgrid`).
-- When modifying code that runs inside the [world Web Worker](./src/world-worker.js#L1-L156) or [terrain bake Web Worker](./src/terrain-bake-worker.js#L44-L676), always reload the page in the browser before capturing screenshots so the Worker threads reload updated ES modules.
+- When modifying code that runs inside the [world Web Worker](./src/world-worker.js#L1-L29) or [VectorLayerRecorder display-list cache](./src/canvas-layer-cache.js#L118-L625), always reload the page in the browser before capturing screenshots so the Worker thread and main-thread modules reload updated ES modules.
 - Run the automated static and behavioral verification suite (`bun run check`: `bun fmt --no-script --check`, `bunx oxlint --deny-warnings`, `bun check --no-script`, `bun test --check tests/unit`, and `bunx playwright test`) before concluding any round.
 
 ### Step 3 — Parallel Dual-Subagent Review Loop (Targeted + Uncued Holistic Reviewer)
@@ -48,7 +48,7 @@ Every major iteration must be audited by **two independent review subagents disp
 
 ### Pluggable Hourglass Architecture
 - Keep [Stage 2A Terrain Synthesis](./src/terrain-solvers.js#L14-L574), [Stage 2B Fluvial Hydrology](./src/hydrology-solvers.js#L24-L913), and [Stages 3–9 Urban & Transport Generation](./src/world-generator.js#L501-L2015) decoupled across the narrow `(elevationField, seaLevel, waterMask, rivers)` data contract in [src/types.d.ts](./src/types.d.ts#L1-L769) so all $3 \times 3$ Terrain $\times$ Hydrology combinations remain hot-swappable in-game.
-- Keep world generation off the main thread in the [world module Web Worker](./src/world-worker.js#L1-L156) and parallel [terrain bake Web Worker](./src/terrain-bake-worker.js#L44-L676) using [zero-copy Transferable ArrayBuffers](./src/world-generator.js#L2021-L2107), and keep main-thread fallback terrain baking inside the [50ms yielding budget](./src/renderer.js#L128-L253) (`scheduler.yield()` with a `setTimeout` fallback).
+- Keep world generation off the main thread in the [world module Web Worker](./src/world-worker.js#L1-L29) using [zero-copy Transferable ArrayBuffers](./src/world-generator.js#L2025-L2110), and record static terrain, hydrology, urban, road, building, airport, and motorway layers into the [4 retained `VectorLayerRecorder` `Path2D` display lists](./src/renderer.js#L186-L360) (`hydroDisplayList`, `urbanTerrainDisplayList`, `surfaceNetworkDisplayList`, and `motorwayDisplayList`) in [src/canvas-layer-cache.js](./src/canvas-layer-cache.js#L118-L625).
 
 ### Hydrology & Landform Invariants
 - **Bold Cartographic River Proportions**: Mainstem rivers scale from `1.85 → 3.20` tiles wide and carve `waterMask = 1` across their full physical half-width (`chanRad >= 1.05`) in [carveTaperingRiverPath](./src/hydrology-solvers.js#L424-L669) so waterfront setbacks and bank-to-bank bridges align with the rendered water ribbon.

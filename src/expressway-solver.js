@@ -3631,6 +3631,56 @@ export function finalizeExpresswayRampsAndTunnels(world) {
   world.detectMountainExpresswayTunnels();
   applyRightOfWayClearance(world);
 
+  // Precompute `mw.surfaceSpans` and `mw.shieldPt` once when Stage 9 finalizes motorways
+  for (const mw of world.motorways) {
+    const samples = mw.samples || [];
+    const tunnels = mw.tunnels || [];
+    /** @type {Array<Array<{ x: number, y: number }>>} */
+    const surfaceSpans = [];
+    let curStart = 0;
+    for (const tun of tunnels) {
+      if (tun.i0 >= curStart) {
+        const seg = samples.slice(curStart, tun.i0 + 1);
+        if (seg.length >= 2) surfaceSpans.push(seg);
+      }
+      curStart = tun.i1;
+    }
+    if (curStart < samples.length - 1) {
+      const tail = samples.slice(curStart);
+      if (tail.length >= 2) surfaceSpans.push(tail);
+    }
+    mw.surfaceSpans = surfaceSpans;
+
+    if (samples.length >= 2) {
+      let shieldPt = samples[Math.floor(samples.length * 0.5)];
+      let bestClearance = -Infinity;
+      const iMin = Math.max(2, Math.floor(samples.length * 0.16));
+      const iMax = Math.min(
+        samples.length - 3,
+        Math.ceil(samples.length * 0.84),
+      );
+      for (let i = iMin; i <= iMax; i++) {
+        const cand = samples[i];
+        let minIcDist = Math.min(
+          Math.hypot(cand.x - mw.sx, cand.y - mw.sy),
+          Math.hypot(cand.x - mw.ex, cand.y - mw.ey),
+        );
+        for (const ic of world.interchanges) {
+          const dIc = Math.hypot(ic.x - cand.x, ic.y - cand.y);
+          if (dIc < minIcDist) minIcDist = dIc;
+        }
+        const centerBias =
+          1.0 - Math.abs(i / (samples.length - 1) - 0.5) * 0.35;
+        const score = Math.min(minIcDist, 14.0) * centerBias;
+        if (score > bestClearance) {
+          bestClearance = score;
+          shieldPt = cand;
+        }
+      }
+      mw.shieldPt = { x: shieldPt.x, y: shieldPt.y };
+    }
+  }
+
   const cloverCount = world.interchanges.filter(
     (i) => i.type === "cloverleaf" || i.type === "trumpet",
   ).length;
@@ -3751,6 +3801,7 @@ export function displaceBuildingsAlongMotorwayCorridors(world) {
         d.estateLoops = rebuilt.estateLoops;
         d.tractorTracks = rebuilt.tractorTracks;
         d.windbreakPts = rebuilt.windbreakPts;
+        d.estateBBox = rebuilt.estateBBox;
       }
     }
     if (d.isRuralNiche) return true;

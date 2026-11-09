@@ -53,11 +53,16 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     const badgeText = await page.locator("#genTimeBadge").textContent();
     expect(badgeText).toContain("2W Parallel");
 
-    // Verify offscreen terrain bitmap was transferred to renderer
-    const hasOffscreenTerrain = await page.evaluate(() =>
-      Boolean(window.renderer?.offscreenTerrain),
+    // Verify all 4 VectorLayerRecorder Path2D display lists were built on renderer
+    const hasDisplayLists = await page.evaluate(() =>
+      Boolean(
+        window.renderer?.hydroDisplayList &&
+        window.renderer?.urbanTerrainDisplayList &&
+        window.renderer?.surfaceNetworkDisplayList &&
+        window.renderer?.motorwayDisplayList,
+      ),
     );
-    expect(hasOffscreenTerrain).toBe(true);
+    expect(hasDisplayLists).toBe(true);
 
     // Toggling Stage 9 Intermediate Expressway Ramps hits S1–S8 cache
     await page.locator("#toggleInterRamps").click();
@@ -65,7 +70,7 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
       timeout: 10000,
     });
 
-    // Switch through all 6 View Layers and verify renderer.activeLayer updates cleanly
+    // Switch through all 6 View Layers and verify renderer.activeLayer & 1x / 3.5x zoom rendering
     const layers = [
       "rci",
       "airport",
@@ -80,6 +85,28 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
         () => window.renderer.activeLayer,
       );
       expect(activeLayer).toBe(layer);
+
+      if (layer === "aesthetic" || layer === "rci" || layer === "roadgrid") {
+        const zoomCheck = await page.evaluate(() => {
+          const r = window.renderer;
+          const w = window.currentWorld;
+          const sim = window.simulator;
+          if (!r || !w || !sim || !r.ctx || !r.canvas) return false;
+          for (const z of [1.0, 3.5]) {
+            r.camera.zoom = z;
+            r.camera.x = r.canvas.width * 0.5 - w.W * 0.5 * w.tileSize * z;
+            r.camera.y = r.canvas.height * 0.5 - w.H * 0.5 * w.tileSize * z;
+            r.render(w, sim);
+          }
+          return Boolean(
+            r.hydroDisplayList &&
+            r.urbanTerrainDisplayList &&
+            r.surfaceNetworkDisplayList &&
+            r.motorwayDisplayList,
+          );
+        });
+        expect(zoomCheck).toBe(true);
+      }
     }
 
     // Open Entity Inspector on primary airport and navigate to host municipality & facility

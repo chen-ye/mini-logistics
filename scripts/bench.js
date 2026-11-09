@@ -24,6 +24,7 @@ import { synthesizeTerrainAndBasins } from "../src/terrain-solvers.js";
 import { synthesizeFluvialHydrology } from "../src/hydrology-solvers.js";
 import { SeededRNG, FastNoise2D } from "../src/math.js";
 import { LogisticsSimulator } from "../src/simulator.js";
+import { MiniMotorwaysRenderer } from "../src/renderer.js";
 import { DEFAULT_GENERATOR_CONFIG } from "../src/constants.js";
 
 /**
@@ -308,6 +309,113 @@ function benchmarkSimulation() {
 }
 
 /**
+ * Benchmarks VectorLayerRecorder display-list recording time (ms) and 60fps
+ * `MiniMotorwaysRenderer.prototype.render(world, sim)` replay frame time (ms)
+ * across `standard` (360×224) and `huge` (720×448) maps.
+ *
+ * @returns {Record<string, StatSummary>}
+ */
+function benchmarkRenderFrame() {
+  const createStubCanvas = () => {
+    const noop = () => {};
+    const grad = { addColorStop: noop };
+    const ctx = {
+      fillStyle: "#000",
+      strokeStyle: "#000",
+      lineWidth: 1,
+      lineCap: "butt",
+      lineJoin: "miter",
+      font: "10px sans-serif",
+      textAlign: "start",
+      textBaseline: "alphabetic",
+      clearRect: noop,
+      fillRect: noop,
+      strokeRect: noop,
+      save: noop,
+      restore: noop,
+      translate: noop,
+      rotate: noop,
+      scale: noop,
+      beginPath: noop,
+      closePath: noop,
+      moveTo: noop,
+      lineTo: noop,
+      quadraticCurveTo: noop,
+      bezierCurveTo: noop,
+      arc: noop,
+      rect: noop,
+      roundRect: noop,
+      clip: noop,
+      fill: noop,
+      stroke: noop,
+      setLineDash: noop,
+      fillText: noop,
+      measureText: (/** @type {string} */ t) => ({ width: t.length * 6 }),
+      createRadialGradient: () => grad,
+    };
+    return {
+      width: 1600,
+      height: 1000,
+      getContext: () => ctx,
+    };
+  };
+
+  /**
+   * @param {"standard" | "huge"} worldSize
+   * @param {number} recordRuns
+   */
+  const measureSize = (worldSize, recordRuns) => {
+    const p = createWorldPipeline();
+    const world = p({ ...DEFAULT_GENERATOR_CONFIG, worldSize });
+    const sim = new LogisticsSimulator(world);
+    const renderer = new MiniMotorwaysRenderer(
+      /** @type {any} */ (createStubCanvas()),
+    );
+    renderer.fitCamera(world);
+
+    // Warmup
+    renderer.prepareDisplayLists(world);
+    renderer.render(world, sim);
+
+    const recordSamples = [];
+    for (let i = 0; i < recordRuns; i++) {
+      renderer.hydroDisplayList = null;
+      renderer.urbanTerrainDisplayList = null;
+      renderer.surfaceNetworkDisplayList = null;
+      renderer.motorwayDisplayList = null;
+      renderer._cachedVectorPaths = null;
+      renderer._cachedArablePaths = null;
+      const t0 = performance.now();
+      renderer.prepareDisplayLists(world);
+      recordSamples.push(performance.now() - t0);
+    }
+
+    const replaySamples = [];
+    for (let i = 0; i < 300; i++) {
+      sim.update(0.016, 1.0);
+      const t0 = performance.now();
+      renderer.render(world, sim);
+      replaySamples.push(performance.now() - t0);
+    }
+
+    return {
+      record: computeStats(recordSamples),
+      replay: computeStats(replaySamples),
+    };
+  };
+
+  const std = measureSize("standard", 5);
+  const huge = measureSize("huge", 3);
+
+  return {
+    recordStandardMs: std.record,
+    replayStandardMs: std.replay,
+    recordHugeMs: huge.record,
+    replayHugeMs: huge.replay,
+  };
+}
+
+/**
  * Runs the full benchmark suite.
  *
  * @param {string} [label="current-run"]
@@ -355,6 +463,11 @@ export function runFullBenchmark(label = "current-run") {
   );
   const simulationUsPerTick = benchmarkSimulation();
 
+  process.stderr.write(
+    "  Benchmarking VectorLayerRecorder display-list record & 60fps replay…\n",
+  );
+  const renderFrame = benchmarkRenderFrame();
+
   return {
     label,
     gitSha,
@@ -371,6 +484,7 @@ export function runFullBenchmark(label = "current-run") {
     },
     incremental,
     simulationUsPerTick,
+    renderFrame,
   };
 }
 
@@ -472,6 +586,21 @@ export function formatComparisonMarkdown(baseline, current) {
   const cSim = current.simulationUsPerTick?.p50;
   if (bSim != null && cSim != null) {
     addRow("Simulation: us/tick", bSim, cSim, "µs");
+  }
+
+  // 5. Render Frame & Display-List Recording
+  const renderKeys = [
+    ["recordStandardMs", "Render: Display-List Record (standard)"],
+    ["replayStandardMs", "Render: 60fps Frame Replay (standard)"],
+    ["recordHugeMs", "Render: Display-List Record (huge)"],
+    ["replayHugeMs", "Render: 60fps Frame Replay (huge)"],
+  ];
+  for (const [key, label] of renderKeys) {
+    const bP50 = baseline.renderFrame?.[key]?.p50;
+    const cP50 = current.renderFrame?.[key]?.p50;
+    if (bP50 != null && cP50 != null) {
+      addRow(label, bP50, cP50, "ms");
+    }
   }
 
   return lines.join("\n");

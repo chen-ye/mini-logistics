@@ -57,11 +57,9 @@ window.renderer = renderer;
 window.currentWorld = null;
 window.simulator = null;
 
-// Dual-Worker Pipeline: `world-worker.js` (Stages 1–9) ∥ `terrain-bake-worker.js` (OffscreenCanvas -> ImageBitmap)
+// Off-Thread World Worker Pipeline (`world-worker.js` Stages 1–9 -> `VectorLayerRecorder` Path2D Display Lists)
 /** @type {Worker | null} */
 let worldWorker = null;
-/** @type {Worker | null} */
-let terrainBakeWorker = null;
 let workerBusy = false;
 let nextRequestId = 1;
 /** @type {{ requestId: number, config: GeneratorConfig, preserveCamera: boolean, resolvers: Array<(w: ProceduralLogisticsWorld) => void> } | null} */
@@ -75,20 +73,6 @@ function initWorldWorker() {
     const worker = new Worker(new URL("./world-worker.js", import.meta.url), {
       type: "module",
     });
-    try {
-      terrainBakeWorker = new Worker(
-        new URL("./terrain-bake-worker.js", import.meta.url),
-        { type: "module" },
-      );
-      const channel = new MessageChannel();
-      worker.postMessage({ type: "connectPort" }, [channel.port1]);
-      terrainBakeWorker.postMessage({ type: "connectPort" }, [channel.port2]);
-    } catch (bakeErr) {
-      console.warn(
-        "Could not initialize parallel TerrainBakeWorker, using in-worker OffscreenCanvas fallback:",
-        bakeErr,
-      );
-    }
 
     worker.addEventListener("message", async (event) => {
       const { requestId, preserveCamera, world: rawWorld } = event.data;
@@ -136,11 +120,7 @@ function dispatchToWorker(job) {
 const store = createAppStore(DEFAULT_GENERATOR_CONFIG);
 
 async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
-  if (world.terrainBitmap) {
-    renderer.setTerrainBitmap(world.terrainBitmap);
-  } else if (!world.reuseTerrainBitmap || !renderer.offscreenTerrain) {
-    await renderer.bakeStaticTerrainAsync(world);
-  }
+  renderer.prepareDisplayLists(world);
   currentWorld = world;
   simulator = new LogisticsSimulator(currentWorld);
   window.currentWorld = currentWorld;
@@ -259,6 +239,7 @@ store.subscribe(
 store.subscribe(
   (s) => s.drawerOpen,
   (open) => {
+    renderer.drawerOpen = open;
     const drawer = document.getElementById("generatorDrawer");
     if (drawer) {
       drawer.classList.toggle("hidden", !open);
@@ -454,6 +435,10 @@ function findEntityAtWorldPos(wx, wy, touchPad = 0) {
   // 3. Check Sprawling Farm Field Estates (`d.bspParcels`) so clicking a farm's crop fields also selects the farm
   for (const d of currentWorld.destinations) {
     if (d.resourceType !== "FARM" || !d.bspParcels) continue;
+    const bb = d.estateBBox;
+    if (bb && (wx < bb.minX || wx > bb.maxX || wy < bb.minY || wy > bb.maxY)) {
+      continue;
+    }
     for (const p of d.bspParcels) {
       if (wx >= p.x0 && wx <= p.x1 && wy >= p.y0 && wy <= p.y1) {
         return { type: "building", entity: d };
@@ -496,6 +481,7 @@ let pointerDownPos = { x: 0, y: 0 };
 let lastPinchDist = 0;
 let lastPinchMid = { x: 0, y: 0 };
 let lastTapTime = 0;
+let lastCursor = "";
 
 function getTwoPointerMetrics() {
   const pts = Array.from(activePointers.values());
@@ -538,7 +524,11 @@ window.addEventListener("pointermove", (e) => {
         (e.clientY - renderer.camera.y) /
         (renderer.camera.zoom * currentWorld.tileSize);
       const hit = findEntityAtWorldPos(wx, wy, 0);
-      canvas.style.cursor = hit ? "pointer" : "grab";
+      const nextCursor = hit ? "pointer" : "grab";
+      if (nextCursor !== lastCursor) {
+        canvas.style.cursor = nextCursor;
+        lastCursor = nextCursor;
+      }
     }
     return;
   }

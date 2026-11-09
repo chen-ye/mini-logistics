@@ -283,19 +283,13 @@ export class ProceduralLogisticsWorld {
     /** @type {number} */
     this.reusedThroughStage = 0;
     /** @type {number} */
-    this.bakeTimeMs = 0;
-    /** @type {number} */
-    this.waitAfterGenMs = 0;
-    /** @type {number} */
     this.wallTimeMs = 0;
-    /** @type {ImageBitmap | OffscreenCanvas | HTMLCanvasElement | null} */
-    this.terrainBitmap = null;
-    /** @type {boolean} */
-    this.reuseTerrainBitmap = false;
     /** @type {RoadTopology | undefined} */
     this.roadTopology = undefined;
     /** @type {{ roundabouts: any[], driveways?: any[] } | undefined} */
     this.routingGraph = undefined;
+    /** @type {{ com: number, raw: number, mfg: number, log: number } | undefined} */
+    this.rciCounts = undefined;
   }
 
   ensureGridSize(worldSize = "standard") {
@@ -1337,6 +1331,7 @@ const cloneDestination = (d) => ({
         (pt) => /** @type {[number, number]} */ ([pt[0], pt[1]]),
       )
     : undefined,
+  estateBBox: d.estateBBox ? { ...d.estateBBox } : undefined,
 });
 
 /**
@@ -1847,6 +1842,21 @@ export function createWorldPipeline({
       );
       const graph = ensureVehicleRoutingGraph(w);
 
+      let com = 0;
+      let raw = 0;
+      let mfg = 0;
+      let log = 0;
+      for (const d of w.destinations) {
+        if (d.zoneType === "commercial") {
+          com++;
+        } else if (d.zoneType === "industrial") {
+          if (d.subType === "RAW") raw++;
+          else if (d.subType === "MFG") mfg++;
+          else if (d.subType === "LOG") log++;
+        }
+      }
+      const rciCounts = { com, raw, mfg, log };
+
       return {
         towns: w.towns,
         airports: w.airports,
@@ -1867,6 +1877,7 @@ export function createWorldPipeline({
         },
         displacedBuildingsCount: w.displacedBuildingsCount,
         bridgeCount: w.bridgeCount,
+        rciCounts,
         mwayLog,
         cargoLog,
       };
@@ -2011,6 +2022,7 @@ export function createWorldPipeline({
 
     out.roadTopology = s9.value.roadTopology;
     out.routingGraph = s9.value.routingGraph;
+    out.rciCounts = s9.value.rciCounts;
 
     out.genTimeMs = Math.round(performance.now() - t0);
     return out;

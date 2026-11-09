@@ -1547,6 +1547,8 @@ export function seedOutOfTownResourceNiches(world) {
     let estateLoops = [];
     let tractorTracks = [];
     let windbreakPts = [];
+    /** @type {{ minX: number, minY: number, maxX: number, maxY: number } | undefined} */
+    let estateBBox = undefined;
     if (chosenCand.resourceType === "FARM") {
       const estate = world.buildFarmEstate(
         chosenCand.gx,
@@ -1559,6 +1561,7 @@ export function seedOutOfTownResourceNiches(world) {
       estateLoops = estate.estateLoops;
       tractorTracks = estate.tractorTracks;
       windbreakPts = estate.windbreakPts;
+      estateBBox = estate.estateBBox;
     }
 
     const hostTown = chosenCand.nearestTown;
@@ -1583,6 +1586,7 @@ export function seedOutOfTownResourceNiches(world) {
       estateLoops,
       tractorTracks,
       windbreakPts,
+      estateBBox,
       isRuralNiche: true,
       isCircular: false,
       hasUrgentPin: false,

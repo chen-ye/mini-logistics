@@ -9,13 +9,34 @@
 import { PALETTE } from "./palette.js";
 import { WATER_MASK, WORLD_GEOMETRY } from "./constants.js";
 import {
+  VectorLayerRecorder,
+  Path2DCtor,
   buildVignelliWaterPath,
   drawArchitectureGrid,
   drawTaperingRivers,
   drawTrees,
   drawUrbanBlushAndTrees,
-} from "./terrain-bake-worker.js";
+} from "./canvas-layer-cache.js";
 import { deriveRoadTopology } from "./vehicle-routing.js";
+
+/**
+ * @param {any} ctx
+ * @param {number} idx
+ */
+function setSub(ctx, idx) {
+  if (typeof ctx.setSubLayer === "function") {
+    ctx.setSubLayer(idx);
+  }
+}
+
+/**
+ * @param {any} ctx
+ */
+function nextPass(ctx) {
+  if (typeof ctx.nextLayerPass === "function") {
+    ctx.nextLayerPass();
+  }
+}
 
 /***************************************************************************
  * 5. MINI MOTORWAYS / MINI METRO CANVAS VECTOR RENDERER
@@ -35,21 +56,32 @@ export class MiniMotorwaysRenderer {
     this.activeLayer = "aesthetic";
     /** @type {InspectedEntity | null} */
     this.selectedEntity = null;
-    /** @type {HTMLCanvasElement | OffscreenCanvas | ImageBitmap | null} */
-    this.offscreenTerrain =
-      typeof document !== "undefined" ? document.createElement("canvas") : null;
-    /** @type {HTMLCanvasElement | null} */
-    this._cachedPreTreeCanvas = null;
-    /** @type {number} */
-    this._cachedPreTreeHydroVersion = -1;
-    /** @type {number} */
-    this._cachedPreTreeUrbanVersion = -1;
+    /** @type {boolean} */
+    this.drawerOpen = true;
     /** @type {{ contourLayers: Array<{ fill: string, stroke: string, cPath: Path2D, cEdgePath: Path2D }>, waterPath: Path2D, waterEdgePath: Path2D } | null} */
     this._cachedVectorPaths = null;
     /** @type {number} */
     this._cachedVectorHydroVersion = -1;
     /** @type {{ elevRef: Float32Array, waterRef: Uint8Array, ts: number, arableFillPath: Path2D, arableStrokePath: Path2D } | null} */
     this._cachedArablePaths = null;
+
+    // 4 Retained Vector Display Lists (`VectorLayerRecorder`)
+    /** @type {{ key: string, contours: VectorLayerRecorder, water: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
+    this.hydroDisplayList = null;
+    /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, blush: VectorLayerRecorder, treesAndFarms: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
+    this.urbanTerrainDisplayList = null;
+    /** @type {{ worldRef: ProceduralLogisticsWorld | null, isRCI: boolean, ts: number, recorder: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
+    this.surfaceNetworkDisplayList = null;
+    /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, recorder: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
+    this.motorwayDisplayList = null;
+
+    // Cached screen-space radial vignette gradient
+    /** @type {CanvasGradient | null} */
+    this._vignetteGrad = null;
+    /** @type {number} */
+    this._vignetteW = -1;
+    /** @type {number} */
+    this._vignetteH = -1;
   }
 
   /**
@@ -128,140 +160,210 @@ export class MiniMotorwaysRenderer {
     );
   }
 
-  async yieldToMainIfNeeded(deadline) {
-    if (performance.now() >= deadline) {
-      if ("scheduler" in window && "yield" in window.scheduler) {
-        await window.scheduler.yield();
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-      return performance.now() + 50;
-    }
-    return deadline;
-  }
-
   /**
-   * @param {ImageBitmap | OffscreenCanvas | HTMLCanvasElement} bitmap
-   */
-  setTerrainBitmap(bitmap) {
-    if (
-      this.offscreenTerrain &&
-      this.offscreenTerrain !== bitmap &&
-      "close" in this.offscreenTerrain &&
-      typeof this.offscreenTerrain.close === "function"
-    ) {
-      this.offscreenTerrain.close();
-    }
-    this.offscreenTerrain = bitmap;
-  }
-
-  /**
+   * Builds or reuses the retained hydrology display list (`hydroDisplayList`:
+   * paper grid + hypsometric contour terraces + open water & tapering rivers).
+   *
    * @param {ProceduralLogisticsWorld} world
    */
-  async bakeStaticTerrainAsync(world) {
-    let deadline = performance.now() + 50;
+  ensureHydroDisplayList(world) {
     const ts = world.tileSize;
     const pw = world.W * ts;
     const ph = world.H * ts;
-    const staging = document.createElement("canvas");
-    staging.width = pw;
-    staging.height = ph;
-    const ctx = staging.getContext("2d");
-
-    if (
-      this._cachedPreTreeCanvas &&
-      this._cachedPreTreeHydroVersion === world.hydroVersion &&
-      this._cachedPreTreeUrbanVersion === world.urbanVersion
-    ) {
-      ctx.drawImage(this._cachedPreTreeCanvas, 0, 0);
-    } else {
-      ctx.fillStyle = PALETTE.bgPaper;
-      ctx.fillRect(0, 0, pw, ph);
-
-      // Draw subtle architectural paper grid on the base paper sheet BEFORE elevation contours
-      // so the hypsometric mountain terraces remain crisp vector steps without plaid cross-hatching!
-      drawArchitectureGrid(ctx, pw, ph, ts);
-
-      const canReuseVectorPaths = Boolean(
-        this._cachedVectorPaths &&
-        this._cachedVectorHydroVersion === world.hydroVersion,
-      );
-      let contourLayers;
-      let waterPath;
-      let waterEdgePath;
-
-      if (canReuseVectorPaths) {
-        ({ contourLayers, waterPath, waterEdgePath } = this._cachedVectorPaths);
-      } else {
-        contourLayers = [];
-        for (const { dh, fill, stroke } of WORLD_GEOMETRY.CONTOUR_TERRACES) {
-          const thresh = world.seaLevel + dh;
-          const cEdgePath = new Path2D();
-          const cPath = this.buildVignelliWaterPath(
-            world,
-            ts,
-            thresh,
-            cEdgePath,
-          );
-          contourLayers.push({ fill, stroke, cPath, cEdgePath });
-          deadline = await this.yieldToMainIfNeeded(deadline);
-        }
-        waterEdgePath = new Path2D();
-        waterPath = this.buildVignelliWaterPath(world, ts, null, waterEdgePath);
-        this._cachedVectorPaths = { contourLayers, waterPath, waterEdgePath };
-        this._cachedVectorHydroVersion = world.hydroVersion;
-        deadline = await this.yieldToMainIfNeeded(deadline);
-      }
-
-      ctx.save();
-      ctx.lineJoin = "bevel";
-      ctx.lineWidth = 1.2;
-      for (const { fill, stroke, cPath, cEdgePath } of contourLayers) {
-        ctx.fillStyle = fill;
-        ctx.fill(cPath);
-        ctx.strokeStyle = stroke;
-        ctx.stroke(cEdgePath);
-      }
-      ctx.restore();
-
-      ctx.save();
-      drawUrbanBlushAndTrees(
-        ctx,
-        world.W,
-        world.H,
-        ts,
-        world.zoneColorIdx,
-        null,
-      );
-
-      ctx.lineCap = "butt";
-      ctx.lineJoin = "bevel";
-      ctx.strokeStyle = PALETTE.bgPaper;
-      ctx.lineWidth = ts * 1.45;
-      ctx.stroke(waterEdgePath);
-      ctx.fillStyle = PALETTE.bgPaper;
-      ctx.fill(waterPath);
-
-      drawTaperingRivers(ctx, world.rivers, ts);
-      deadline = await this.yieldToMainIfNeeded(deadline);
-
-      ctx.fillStyle = PALETTE.waterCyan;
-      ctx.fill(waterPath);
-      ctx.restore();
-
-      const preTree =
-        this._cachedPreTreeCanvas || document.createElement("canvas");
-      preTree.width = pw;
-      preTree.height = ph;
-      preTree.getContext("2d").drawImage(staging, 0, 0);
-      this._cachedPreTreeCanvas = preTree;
-      this._cachedPreTreeHydroVersion = world.hydroVersion;
-      this._cachedPreTreeUrbanVersion = world.urbanVersion;
+    const key = `${world.hydroVersion}:${world.W}:${world.H}:${ts}:${world.seaLevel}`;
+    if (this.hydroDisplayList && this.hydroDisplayList.key === key) {
+      return this.hydroDisplayList;
     }
 
-    drawTrees(ctx, world.trees, ts);
+    const canReuseVectorPaths = Boolean(
+      this._cachedVectorPaths &&
+      this._cachedVectorHydroVersion === world.hydroVersion,
+    );
+    let contourLayers;
+    let waterPath;
+    let waterEdgePath;
 
-    this.offscreenTerrain = staging;
+    if (canReuseVectorPaths) {
+      ({ contourLayers, waterPath, waterEdgePath } = this._cachedVectorPaths);
+    } else {
+      contourLayers = [];
+      for (const { dh, fill, stroke } of WORLD_GEOMETRY.CONTOUR_TERRACES) {
+        const thresh = world.seaLevel + dh;
+        const cEdgePath = new Path2DCtor();
+        const cPath = this.buildVignelliWaterPath(world, ts, thresh, cEdgePath);
+        contourLayers.push({ fill, stroke, cPath, cEdgePath });
+      }
+      waterEdgePath = new Path2DCtor();
+      waterPath = this.buildVignelliWaterPath(world, ts, null, waterEdgePath);
+      this._cachedVectorPaths = { contourLayers, waterPath, waterEdgePath };
+      this._cachedVectorHydroVersion = world.hydroVersion;
+    }
+
+    const contoursRec = new VectorLayerRecorder();
+    contoursRec.fillStyle = PALETTE.bgPaper;
+    contoursRec.fillRect(0, 0, pw, ph);
+    drawArchitectureGrid(contoursRec, pw, ph, ts);
+
+    contoursRec.nextLayerPass();
+    contoursRec.lineJoin = "bevel";
+    contoursRec.lineWidth = 1.2;
+    for (const { fill, stroke, cPath, cEdgePath } of contourLayers) {
+      contoursRec.fillStyle = fill;
+      contoursRec.fill(cPath);
+      contoursRec.strokeStyle = stroke;
+      contoursRec.stroke(cEdgePath);
+      contoursRec.nextLayerPass();
+    }
+
+    const waterRec = new VectorLayerRecorder();
+    waterRec.lineCap = "butt";
+    waterRec.lineJoin = "bevel";
+    waterRec.strokeStyle = PALETTE.bgPaper;
+    waterRec.lineWidth = ts * 1.45;
+    waterRec.stroke(waterEdgePath);
+    waterRec.fillStyle = PALETTE.bgPaper;
+    waterRec.fill(waterPath);
+
+    waterRec.nextLayerPass();
+    drawTaperingRivers(waterRec, world.rivers, ts);
+
+    waterRec.nextLayerPass();
+    waterRec.fillStyle = PALETTE.waterCyan;
+    waterRec.fill(waterPath);
+
+    this.hydroDisplayList = {
+      key,
+      contours: contoursRec,
+      water: waterRec,
+      replay(ctx) {
+        contoursRec.replay(ctx);
+        waterRec.replay(ctx);
+      },
+    };
+    return this.hydroDisplayList;
+  }
+
+  /**
+   * Builds or reuses the retained urban/woodland/farm terrain display list (`urbanTerrainDisplayList`).
+   *
+   * @param {ProceduralLogisticsWorld} world
+   */
+  ensureUrbanTerrainDisplayList(world) {
+    const ts = world.tileSize;
+    if (
+      this.urbanTerrainDisplayList &&
+      this.urbanTerrainDisplayList.worldRef === world &&
+      this.urbanTerrainDisplayList.ts === ts
+    ) {
+      return this.urbanTerrainDisplayList;
+    }
+
+    const blushRec = new VectorLayerRecorder();
+    drawUrbanBlushAndTrees(
+      blushRec,
+      world.W,
+      world.H,
+      ts,
+      world.zoneColorIdx,
+      null,
+    );
+
+    const treesAndFarmsRec = new VectorLayerRecorder();
+    drawTrees(treesAndFarmsRec, world.trees, ts);
+    treesAndFarmsRec.nextLayerPass();
+    this._recordFarmBackgroundFields(treesAndFarmsRec, world, ts);
+
+    this.urbanTerrainDisplayList = {
+      worldRef: world,
+      ts,
+      blush: blushRec,
+      treesAndFarms: treesAndFarmsRec,
+      replay(ctx) {
+        treesAndFarmsRec.replay(ctx);
+      },
+    };
+    return this.urbanTerrainDisplayList;
+  }
+
+  /**
+   * Builds or reuses the retained surface network display list (`surfaceNetworkDisplayList`:
+   * airport ground pads, unified road casings/guardrails/fills/roundabouts, houses, RCI buildings & airports).
+   *
+   * @param {ProceduralLogisticsWorld} world
+   */
+  ensureSurfaceNetworkDisplayList(world) {
+    const ts = world.tileSize;
+    const isRCI = this.activeLayer === "rci";
+    if (
+      this.surfaceNetworkDisplayList &&
+      this.surfaceNetworkDisplayList.worldRef === world &&
+      this.surfaceNetworkDisplayList.isRCI === isRCI &&
+      this.surfaceNetworkDisplayList.ts === ts
+    ) {
+      return this.surfaceNetworkDisplayList;
+    }
+
+    const rec = new VectorLayerRecorder();
+    this.drawAirportGroundPads(rec, world, ts);
+    rec.nextLayerPass();
+    this.drawRoadNetwork(rec, world, ts);
+    rec.nextLayerPass();
+    this.drawBuildings(rec, world, ts);
+    rec.nextLayerPass();
+    this.drawAirports(rec, world, ts);
+
+    this.surfaceNetworkDisplayList = {
+      worldRef: world,
+      isRCI,
+      ts,
+      recorder: rec,
+      replay(ctx) {
+        rec.replay(ctx);
+      },
+    };
+    return this.surfaceNetworkDisplayList;
+  }
+
+  /**
+   * Builds or reuses the retained motorway display list (`motorwayDisplayList`:
+   * cloverleaf/trumpet/diamond underlays, elevated motorway shadows/bores/decks/portals/shields, and overpass bridges).
+   *
+   * @param {ProceduralLogisticsWorld} world
+   */
+  ensureMotorwayDisplayList(world) {
+    const ts = world.tileSize;
+    if (
+      this.motorwayDisplayList &&
+      this.motorwayDisplayList.worldRef === world &&
+      this.motorwayDisplayList.ts === ts
+    ) {
+      return this.motorwayDisplayList;
+    }
+
+    const rec = new VectorLayerRecorder();
+    this.drawMotorways(rec, world, ts);
+
+    this.motorwayDisplayList = {
+      worldRef: world,
+      ts,
+      recorder: rec,
+      replay(ctx) {
+        rec.replay(ctx);
+      },
+    };
+    return this.motorwayDisplayList;
+  }
+
+  /**
+   * Pre-builds all 4 retained `VectorLayerRecorder` display lists for `world`.
+   *
+   * @param {ProceduralLogisticsWorld} world
+   */
+  prepareDisplayLists(world) {
+    this.ensureHydroDisplayList(world);
+    this.ensureUrbanTerrainDisplayList(world);
+    this.ensureSurfaceNetworkDisplayList(world);
+    this.ensureMotorwayDisplayList(world);
   }
 
   render(world, sim) {
@@ -276,11 +378,13 @@ export class MiniMotorwaysRenderer {
     ctx.translate(camera.x, camera.y);
     ctx.scale(camera.zoom, camera.zoom);
 
-    // 1. Draw Baked Base Terrain
-    ctx.drawImage(this.offscreenTerrain, 0, 0);
-
-    // 1B. Draw Free-Form Sprawling Background Farm Fields (underneath roads, buildings & expressways)
-    this.drawFarmBackgroundFields(ctx, world, ts);
+    // 1 & 1B. Replay Retained Hydrology, Urban Blush, Woodland Canopy & Farm Display Lists
+    const hydroDL = this.ensureHydroDisplayList(world);
+    const urbanDL = this.ensureUrbanTerrainDisplayList(world);
+    hydroDL.contours.replay(ctx);
+    urbanDL.blush.replay(ctx);
+    hydroDL.water.replay(ctx);
+    urbanDL.treesAndFarms.replay(ctx);
 
     // 2. Optional Diagnostic Overlay Underneath Roads/Buildings (Hydrology / Airport Heatmap / RCI Zones / Road Grid)
     if (this.activeLayer === "hydrology") {
@@ -293,26 +397,15 @@ export class MiniMotorwaysRenderer {
       this.drawRoadGridUnderlay(ctx, world, ts);
     }
 
-    // 2B. Draw Ground-Level Airport Concrete Apron Pads & Landside Parking Islands
-    // Drawn before the surface road network so all surface road casings and fills
-    // render in a single unified pass on top of the concrete pads!
-    this.drawAirportGroundPads(ctx, world, ts);
-
-    // 3. Draw Unified Surface Road Network (All Casings -> Bridge Guardrails -> All Asphalt Fills -> Central Islands)
-    this.drawRoadNetwork(ctx, world, ts);
-
-    // 4. Draw Houses & Differentiated Commercial / Industrial Sinks (with 45° Drop Shadows & Demand Pins)
-    this.drawBuildings(ctx, world, ts);
-
-    // 5. Draw Airport Airside & Terminal Structures (Runways, Taxiways, Concourses, Control Towers & Floating Badges)
-    this.drawAirports(ctx, world, ts);
+    // 2B–5. Replay Retained Surface Network Display List
+    // (Airport Ground Aprons -> Unified Road Network -> Batched Houses & RCI Sinks -> Airports)
+    this.ensureSurfaceNetworkDisplayList(world).replay(ctx);
 
     // 6. Draw Live Surface Road Vehicles (Commuter Cars + Articulated Freight Trucks on surface streets & roundabouts)
     this.drawCars(ctx, world, sim, ts, "road");
 
-    // 7. Draw Sweeping Pink Numbered Motorways Overpasses ([1], [2], [3])
-    // Clipped outside terminal roundabout rings so roundabouts are never drawn in a second pass!
-    this.drawMotorways(ctx, world, ts);
+    // 7. Replay Retained Motorway Display List ([1], [2], [3] Overpasses, Interchanges, Tunnels & Shields)
+    this.ensureMotorwayDisplayList(world).replay(ctx);
 
     // 7B. Draw Live Elevated Motorway Vehicles on Top of the Motorway Decks
     this.drawCars(ctx, world, sim, ts, "motorway");
@@ -336,18 +429,27 @@ export class MiniMotorwaysRenderer {
 
     ctx.restore();
 
-    // Soft paper vignette around screen edges
-    const grad = ctx.createRadialGradient(
-      canvas.width * 0.5,
-      canvas.height * 0.5,
-      Math.min(canvas.width, canvas.height) * 0.38,
-      canvas.width * 0.5,
-      canvas.height * 0.5,
-      Math.max(canvas.width, canvas.height) * 0.72,
-    );
-    grad.addColorStop(0, "rgba(242, 239, 233, 0)");
-    grad.addColorStop(1, "rgba(54, 56, 62, 0.08)");
-    ctx.fillStyle = grad;
+    // Soft paper vignette around screen edges (cached on canvas dimensions)
+    if (
+      !this._vignetteGrad ||
+      this._vignetteW !== canvas.width ||
+      this._vignetteH !== canvas.height
+    ) {
+      const grad = ctx.createRadialGradient(
+        canvas.width * 0.5,
+        canvas.height * 0.5,
+        Math.min(canvas.width, canvas.height) * 0.38,
+        canvas.width * 0.5,
+        canvas.height * 0.5,
+        Math.max(canvas.width, canvas.height) * 0.72,
+      );
+      grad.addColorStop(0, "rgba(242, 239, 233, 0)");
+      grad.addColorStop(1, "rgba(54, 56, 62, 0.08)");
+      this._vignetteGrad = grad;
+      this._vignetteW = canvas.width;
+      this._vignetteH = canvas.height;
+    }
+    ctx.fillStyle = this._vignetteGrad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     if (this.activeLayer === "rci") {
@@ -358,31 +460,29 @@ export class MiniMotorwaysRenderer {
   }
 
   drawRCIScreenLegend(ctx, world, canvas) {
-    const comCount = world.destinations.filter(
-      (d) => d.zoneType === "commercial",
-    ).length;
-    const rawCount = world.destinations.filter(
-      (d) => d.zoneType === "industrial" && d.subType === "RAW",
-    ).length;
-    const mfgCount = world.destinations.filter(
-      (d) => d.zoneType === "industrial" && d.subType === "MFG",
-    ).length;
-    const logCount = world.destinations.filter(
-      (d) => d.zoneType === "industrial" && d.subType === "LOG",
-    ).length;
+    const rci = world.rciCounts;
+    const comCount = rci
+      ? rci.com
+      : world.destinations.filter((d) => d.zoneType === "commercial").length;
+    const rawCount = rci
+      ? rci.raw
+      : world.destinations.filter(
+          (d) => d.zoneType === "industrial" && d.subType === "RAW",
+        ).length;
+    const mfgCount = rci
+      ? rci.mfg
+      : world.destinations.filter(
+          (d) => d.zoneType === "industrial" && d.subType === "MFG",
+        ).length;
+    const logCount = rci
+      ? rci.log
+      : world.destinations.filter(
+          (d) => d.zoneType === "industrial" && d.subType === "LOG",
+        ).length;
 
     ctx.save();
-    const drawerEl =
-      typeof document !== "undefined"
-        ? document.getElementById("generatorDrawer")
-        : null;
-    const inspEl =
-      typeof document !== "undefined"
-        ? document.getElementById("inspectorCard")
-        : null;
-    const drawerOpen =
-      canvas.width >= 640 && drawerEl && !drawerEl.classList.contains("hidden");
-    const inspOpen = inspEl && !inspEl.classList.contains("hidden");
+    const drawerOpen = canvas.width >= 640 && Boolean(this.drawerOpen);
+    const inspOpen = Boolean(this.selectedEntity);
     if (canvas.width < 640 && inspOpen) {
       ctx.restore();
       return;
@@ -437,8 +537,39 @@ export class MiniMotorwaysRenderer {
   }
 
   drawFarmBackgroundFields(ctx, world, ts) {
-    // Whisper-soft warm paper washes (~5–9% tonal shift from `#f2efe9`) so fields preserve
-    // the calm Mini Motorways negative-space ambiance while reading clearly as agricultural strips.
+    if (ctx instanceof VectorLayerRecorder) {
+      this._recordFarmBackgroundFields(ctx, world, ts);
+      return;
+    }
+    const rec = new VectorLayerRecorder();
+    this._recordFarmBackgroundFields(rec, world, ts);
+    rec.replay(ctx);
+  }
+
+  /**
+   * Records farm background fields into a `VectorLayerRecorder` with:
+   * 1) A single global `(allFarmsClipPath ∩ arableFillPath)` clip across all farm estates,
+   * 2) A single `arableStrokePath` stroke across all farms,
+   * 3) `||` bounding-box corridor culling against each farm's `estateBBox`,
+   * 4) Color-batched `Path2D`s for parcel fills, furrows, orchard dots, borders, tractor tracks, and windbreaks.
+   *
+   * @param {VectorLayerRecorder | CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D} ctx
+   * @param {ProceduralLogisticsWorld} world
+   * @param {number} ts
+   */
+  _recordFarmBackgroundFields(ctx, world, ts) {
+    const farms = [];
+    for (const d of world.destinations) {
+      if (
+        d.resourceType === "FARM" &&
+        d.bspParcels &&
+        d.bspParcels.length > 0
+      ) {
+        farms.push(d);
+      }
+    }
+    if (farms.length === 0) return;
+
     const cropStyles = {
       wheat: { fill: "#eee7d6", furrow: "#e4dcc7", border: "#dcd2ba" },
       pasture: { fill: "#e6ecdd", furrow: "#dce4d1", border: "#d4ddc7" },
@@ -453,7 +584,7 @@ export class MiniMotorwaysRenderer {
       this._cachedArablePaths.waterRef !== world.waterMask ||
       this._cachedArablePaths.ts !== ts
     ) {
-      const arableStrokePath = new Path2D();
+      const arableStrokePath = new Path2DCtor();
       const arableFillPath = this.buildVignelliWaterPath(
         world,
         ts,
@@ -477,28 +608,39 @@ export class MiniMotorwaysRenderer {
     }
     const { arableFillPath, arableStrokePath } = this._cachedArablePaths;
 
-    for (const d of world.destinations) {
-      if (d.resourceType !== "FARM") continue;
+    // 1. Build a single union clip path across all farm BSP parcels on the map
+    const allFarmsClipPath = new Path2DCtor();
+    const farmBBoxes = [];
+    for (let fIdx = 0; fIdx < farms.length; fIdx++) {
+      const d = farms[fIdx];
       const parcels = d.bspParcels || [];
-      if (parcels.length === 0) continue;
-
-      // (#3 & #4) Clip to the exact boolean intersection of:
-      // 1) The union of pure 0°/90° rectangular BSP parcels (`parcels`), AND
-      // 2) The exact 45°/90° octilinear Marching-Squares `arableFillPath` (`dh < 0.13` contour & riverbank setback)!
-      ctx.save();
-      ctx.beginPath();
+      let minX = d.gx,
+        minY = d.gy,
+        maxX = d.gx + 2,
+        maxY = d.gy + 2;
       for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
         const p = parcels[pIdx];
-        ctx.rect(
+        if (p.x0 < minX) minX = p.x0;
+        if (p.y0 < minY) minY = p.y0;
+        if (p.x1 > maxX) maxX = p.x1;
+        if (p.y1 > maxY) maxY = p.y1;
+        allFarmsClipPath.rect(
           p.x0 * ts - 1.0,
           p.y0 * ts - 1.0,
           (p.x1 - p.x0) * ts + 2.0,
           (p.y1 - p.y0) * ts + 2.0,
         );
       }
-      ctx.clip();
-      ctx.clip(arableFillPath);
+      farmBBoxes.push(d.estateBBox || { minX, minY, maxX, maxY });
+    }
 
+    ctx.save();
+    ctx.clip(allFarmsClipPath);
+    ctx.clip(arableFillPath);
+
+    for (let fIdx = 0; fIdx < farms.length; fIdx++) {
+      const d = farms[fIdx];
+      const parcels = d.bspParcels || [];
       const tracks = d.tractorTracks || [];
       const isNearTrackPx = (ox, oy) => {
         for (let tIdx = 0; tIdx < tracks.length; tIdx++) {
@@ -527,36 +669,25 @@ export class MiniMotorwaysRenderer {
         const ph = (p.y1 - p.y0) * ts;
         if (pw <= 4 || ph <= 4) continue;
 
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(px - 0.25, py - 0.25, pw + 0.5, ph + 0.5);
+        setSub(ctx, 0);
         ctx.fillStyle = st.fill;
-        ctx.fill();
-        ctx.clip();
+        ctx.fillRect(px - 0.25, py - 0.25, pw + 0.5, ph + 0.5);
 
+        setSub(ctx, 1);
         if (p.crop === "orchard") {
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(
-            px + 3.8,
-            py + 3.8,
-            Math.max(1, pw - 7.6),
-            Math.max(1, ph - 7.6),
-          );
-          ctx.clip();
           const step = 6.6;
           let rowIdx = 0;
           ctx.fillStyle = st.furrow;
+          ctx.beginPath();
           for (let oy = py + 5.6; oy < py + ph - 4.6; oy += step, rowIdx++) {
             const xShift = (rowIdx % 2) * (step * 0.45);
             for (let ox = px + 5.6 + xShift; ox < px + pw - 4.6; ox += step) {
               if (isNearTrackPx(ox, oy)) continue;
-              ctx.beginPath();
+              ctx.moveTo(ox + 1.55, oy);
               ctx.arc(ox, oy, 1.55, 0, Math.PI * 2);
-              ctx.fill();
             }
           }
-          ctx.restore();
+          ctx.fill();
         } else {
           const furrowStep = 4.8;
           ctx.strokeStyle = st.furrow;
@@ -583,19 +714,20 @@ export class MiniMotorwaysRenderer {
           }
           ctx.stroke();
         }
-        ctx.restore();
 
         // (#4) Crisp shared recursive BSP parcel boundary (forming X & Y T-junctions inside the estate)
+        setSub(ctx, 2);
         ctx.strokeStyle = st.border;
         ctx.lineWidth = 1.1;
         ctx.strokeRect(px, py, pw, ph);
       }
 
-      // (#6a) Broken-Grid Unpaved Farm Track Network (`d.tractorTracks`) serving every field & stopping
-      // fractionally in terminal fields (rendered in 2 unified passes: All Casings -> All Fills!)
+      // (#6a) Broken-Grid Unpaved Farm Track Network (`d.tractorTracks`)
       if (tracks.length > 0) {
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
+
+        setSub(ctx, 3);
         ctx.strokeStyle = "#d4cab5";
         ctx.lineWidth = 4.2;
         ctx.beginPath();
@@ -606,6 +738,7 @@ export class MiniMotorwaysRenderer {
         }
         ctx.stroke();
 
+        setSub(ctx, 4);
         ctx.strokeStyle = PALETTE.bgPaper;
         ctx.lineWidth = 2.2;
         ctx.beginPath();
@@ -616,98 +749,166 @@ export class MiniMotorwaysRenderer {
         }
         ctx.stroke();
       }
+    }
 
-      // Smooth vector road, expressway & farmstead slicing inside the clipped estate:
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      const strokeNearbyCorridors = (strokeCol, roadWidthPx, mwayWidthPx) => {
-        ctx.strokeStyle = strokeCol;
-        ctx.lineWidth = roadWidthPx;
-        ctx.beginPath();
-        for (const r of world.roads) {
-          const pts = r.points;
-          if (!pts || pts.length < 2) continue;
-          const p0 = pts[0];
-          if (Math.abs(p0.x - d.x) > 32 && Math.abs(p0.y - d.y) > 32) continue;
-          ctx.moveTo(p0.x * ts + ts * 0.5, p0.y * ts + ts * 0.5);
-          for (let i = 1; i < pts.length; i++) {
-            ctx.lineTo(pts[i].x * ts + ts * 0.5, pts[i].y * ts + ts * 0.5);
-          }
+    // Smooth vector road & expressway corridor slicing inside the clipped estates (with `||` estateBBox culling)
+    const isPointNearAnyFarm = (wx, wy, pad) => {
+      for (let b = 0; b < farmBBoxes.length; b++) {
+        const bb = farmBBoxes[b];
+        if (!(
+          wx < bb.minX - pad ||
+          wx > bb.maxX + pad ||
+          wy < bb.minY - pad ||
+          wy > bb.maxY + pad
+        )) {
+          return true;
         }
-        ctx.stroke();
+      }
+      return false;
+    };
 
-        if (world.motorways && world.motorways.length > 0) {
-          ctx.lineWidth = mwayWidthPx;
-          ctx.beginPath();
-          for (const mw of world.motorways) {
-            const samples = mw.samples || [];
-            const tunnels = mw.tunnels || [];
-            if (samples.length < 2) continue;
-            let penDown = false;
-            for (let i = 0; i < samples.length; i++) {
-              const inTunnel = tunnels.some((t) => i >= t.i0 && i <= t.i1);
-              if (inTunnel) {
-                penDown = false;
-                continue;
-              }
-              const sx = samples[i].x * ts + ts * 0.5;
-              const sy = samples[i].y * ts + ts * 0.5;
-              if (!penDown) {
-                ctx.moveTo(sx, sy);
-                penDown = true;
-              } else {
-                ctx.lineTo(sx, sy);
-              }
+    const nearbyRoadPath = new Path2DCtor();
+    let hasNearbyRoads = false;
+    for (const r of world.roads) {
+      const pts = r.points;
+      if (!pts || pts.length < 2) continue;
+      const p0 = pts[0];
+      if (!isPointNearAnyFarm(p0.x, p0.y, 32)) continue;
+      let hitsBBox = false;
+      for (let i = 0; i < pts.length; i++) {
+        if (isPointNearAnyFarm(pts[i].x, pts[i].y, 3)) {
+          hitsBBox = true;
+          break;
+        }
+      }
+      if (!hitsBBox) continue;
+      hasNearbyRoads = true;
+      nearbyRoadPath.moveTo(p0.x * ts + ts * 0.5, p0.y * ts + ts * 0.5);
+      for (let i = 1; i < pts.length; i++) {
+        nearbyRoadPath.lineTo(
+          pts[i].x * ts + ts * 0.5,
+          pts[i].y * ts + ts * 0.5,
+        );
+      }
+    }
+
+    const nearbyMwayPath = new Path2DCtor();
+    let hasNearbyMways = false;
+    if (world.motorways && world.motorways.length > 0) {
+      for (const mw of world.motorways) {
+        const spans = mw.surfaceSpans || [mw.samples || []];
+        for (const seg of spans) {
+          if (seg.length < 2) continue;
+          let penDown = false;
+          for (let i = 0; i < seg.length; i++) {
+            const pt = seg[i];
+            if (!isPointNearAnyFarm(pt.x, pt.y, 4)) {
+              penDown = false;
+              continue;
+            }
+            const sx = pt.x * ts + ts * 0.5;
+            const sy = pt.y * ts + ts * 0.5;
+            if (!penDown) {
+              nearbyMwayPath.moveTo(sx, sy);
+              penDown = true;
+              hasNearbyMways = true;
+            } else {
+              nearbyMwayPath.lineTo(sx, sy);
             }
           }
-          ctx.stroke();
         }
-      };
+      }
+    }
 
-      const roadCasingW = ts * 0.92;
-      const mwayCasingW = ts * 1.95;
-      strokeNearbyCorridors("#d4cab5", roadCasingW + 4.4, mwayCasingW + 6.4);
-      strokeNearbyCorridors(
-        PALETTE.bgPaper,
-        roadCasingW + 2.2,
-        mwayCasingW + 4.2,
-      );
+    const roadCasingW = ts * 0.92;
+    const mwayCasingW = ts * 1.95;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
 
-      // Stroke the octilinear Marching-Squares contour/riverbank clip boundary inside the estate
-      ctx.strokeStyle = "#d4cab5";
-      ctx.lineWidth = 1.8;
-      ctx.stroke(arableStrokePath);
+    setSub(ctx, 5);
+    ctx.strokeStyle = "#d4cab5";
+    if (hasNearbyRoads) {
+      ctx.lineWidth = roadCasingW + 4.4;
+      ctx.stroke(nearbyRoadPath);
+    }
+    if (hasNearbyMways) {
+      ctx.lineWidth = mwayCasingW + 6.4;
+      ctx.stroke(nearbyMwayPath);
+    }
 
-      // Frame the 2×2 farmstead yard itself with a clean rounded margin
+    setSub(ctx, 6);
+    ctx.strokeStyle = PALETTE.bgPaper;
+    if (hasNearbyRoads) {
+      ctx.lineWidth = roadCasingW + 2.2;
+      ctx.stroke(nearbyRoadPath);
+    }
+    if (hasNearbyMways) {
+      ctx.lineWidth = mwayCasingW + 4.2;
+      ctx.stroke(nearbyMwayPath);
+    }
+
+    // Stroke the octilinear Marching-Squares contour/riverbank clip boundary ONCE across all estates
+    setSub(ctx, 7);
+    ctx.strokeStyle = "#d4cab5";
+    ctx.lineWidth = 1.8;
+    ctx.stroke(arableStrokePath);
+
+    // Frame each 2×2 farmstead yard itself with a clean rounded margin
+    for (let fIdx = 0; fIdx < farms.length; fIdx++) {
+      const d = farms[fIdx];
       const padX = d.gx * ts - 1.6;
       const padY = d.gy * ts - 1.6;
       const padW = (d.wTiles || 2) * ts + 3.2;
       const padH = (d.hTiles || 2) * ts + 3.2;
-      ctx.fillStyle = PALETTE.bgPaper;
-      ctx.strokeStyle = "#d4cab5";
-      ctx.lineWidth = 2.2;
       ctx.beginPath();
       ctx.roundRect(padX, padY, padW, padH, 4.2);
+      setSub(ctx, 8);
+      ctx.strokeStyle = "#d4cab5";
+      ctx.lineWidth = 2.2;
       ctx.stroke();
+      setSub(ctx, 9);
+      ctx.fillStyle = PALETTE.bgPaper;
       ctx.fill();
+    }
 
-      ctx.restore();
+    ctx.restore();
 
-      // (#6b) Sparse Foothill Windbreak Poplar Row along the upland outer boundary edge
-      if (d.windbreakPts && d.windbreakPts.length > 0) {
-        for (let i = 0; i < d.windbreakPts.length; i++) {
-          const wx = d.windbreakPts[i][0] * ts;
-          const wy = d.windbreakPts[i][1] * ts;
-          ctx.fillStyle = "rgba(182, 200, 170, 0.55)";
-          ctx.beginPath();
+    // (#6b) Sparse Foothill Windbreak Poplar Row along the upland outer boundary edge (batched into 2 Path2Ds)
+    let hasWindbreaks = false;
+    for (let fIdx = 0; fIdx < farms.length; fIdx++) {
+      if (farms[fIdx].windbreakPts && farms[fIdx].windbreakPts.length > 0) {
+        hasWindbreaks = true;
+        break;
+      }
+    }
+    if (hasWindbreaks) {
+      setSub(ctx, 0);
+      ctx.fillStyle = "rgba(182, 200, 170, 0.55)";
+      ctx.beginPath();
+      for (let fIdx = 0; fIdx < farms.length; fIdx++) {
+        const wb = farms[fIdx].windbreakPts || [];
+        for (let i = 0; i < wb.length; i++) {
+          const wx = wb[i][0] * ts;
+          const wy = wb[i][1] * ts;
+          ctx.moveTo(wx + 3.4, wy);
           ctx.arc(wx, wy, 3.4, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "#97ae89";
-          ctx.beginPath();
-          ctx.arc(wx, wy, 2.0, 0, Math.PI * 2);
-          ctx.fill();
         }
       }
+      ctx.fill();
+
+      setSub(ctx, 1);
+      ctx.fillStyle = "#97ae89";
+      ctx.beginPath();
+      for (let fIdx = 0; fIdx < farms.length; fIdx++) {
+        const wb = farms[fIdx].windbreakPts || [];
+        for (let i = 0; i < wb.length; i++) {
+          const wx = wb[i][0] * ts;
+          const wy = wb[i][1] * ts;
+          ctx.moveTo(wx + 2.0, wy);
+          ctx.arc(wx, wy, 2.0, 0, Math.PI * 2);
+        }
+      }
+      ctx.fill();
     }
   }
 
@@ -725,12 +926,14 @@ export class MiniMotorwaysRenderer {
       ctx.rotate(ap.angleRad);
 
       // 1. Airport Perimeter Concrete Apron Pad
-      ctx.fillStyle = "#e5e2dc";
-      ctx.strokeStyle = "#b6b4ae";
-      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.roundRect(-padLen * 0.5, -padWid * 0.5, padLen, padWid, 11);
+      setSub(ctx, 0);
+      ctx.fillStyle = "#e5e2dc";
       ctx.fill();
+      setSub(ctx, 1);
+      ctx.strokeStyle = "#b6b4ae";
+      ctx.lineWidth = 2;
       ctx.stroke();
 
       // 2. Transit / Parking Plaza Island inside the Curbside Loop
@@ -746,9 +949,6 @@ export class MiniMotorwaysRenderer {
       const plazaMidY = (loopInnerY + loopOuterY) * 0.5;
       const plazaW = loopW * 0.74;
       const plazaH = loopBoxH * 0.45;
-      ctx.fillStyle = "#d8d5ce";
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.roundRect(
         -plazaW * 0.5,
@@ -757,7 +957,12 @@ export class MiniMotorwaysRenderer {
         plazaH,
         3.5,
       );
+      setSub(ctx, 2);
+      ctx.fillStyle = "#d8d5ce";
       ctx.fill();
+      setSub(ctx, 3);
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.2;
       ctx.stroke();
 
       ctx.restore();
@@ -900,6 +1105,7 @@ export class MiniMotorwaysRenderer {
     // =========================================================================
     // PASS 2: BRIDGE GUARDRAILS OVER WATER (continuous smoothed spans matching `traceSmoothPath`)
     // =========================================================================
+    nextPass(ctx);
     const ox = ts * 0.5;
     const oy = ts * 0.5;
     ctx.lineCap = "butt";
@@ -990,6 +1196,7 @@ export class MiniMotorwaysRenderer {
     // Because all fills are drawn in a single unified pass after all casings, every
     // slip-ramp mouth, T-junction, and roundabout throat merges with zero clip masks!
     // =========================================================================
+    nextPass(ctx);
     ctx.strokeStyle = "#f48fb1";
     ctx.lineWidth = ts * 0.22;
     ctx.beginPath();
@@ -1068,6 +1275,7 @@ export class MiniMotorwaysRenderer {
     // =========================================================================
     // PASS 4: LANDSCAPED CENTRAL ROUNDABOUT ISLANDS
     // =========================================================================
+    nextPass(ctx);
     for (const rb of roundabouts) {
       const px = rb.x * ts + ts * 0.5;
       const py = rb.y * ts + ts * 0.5;
@@ -1084,15 +1292,18 @@ export class MiniMotorwaysRenderer {
 
   drawRoundaboutCentralIsland(ctx, x, y, rIsland, accentColor) {
     // Inner curb casing around central landscaped island
-    ctx.fillStyle = PALETTE.parkSageGreen;
-    ctx.strokeStyle = PALETTE.roadCasing;
-    ctx.lineWidth = 1.8;
     ctx.beginPath();
     ctx.arc(x, y, rIsland, 0, Math.PI * 2);
+    setSub(ctx, 0);
+    ctx.fillStyle = PALETTE.parkSageGreen;
     ctx.fill();
+    setSub(ctx, 1);
+    ctx.strokeStyle = PALETTE.roadCasing;
+    ctx.lineWidth = 1.8;
     ctx.stroke();
 
     // Lush inner turf planter ring
+    setSub(ctx, 2);
     ctx.fillStyle = "#9fb99a";
     ctx.beginPath();
     ctx.arc(x, y, rIsland * 0.58, 0, Math.PI * 2);
@@ -1100,6 +1311,7 @@ export class MiniMotorwaysRenderer {
 
     // Subtle town/airport accent centerpiece
     if (accentColor) {
+      setSub(ctx, 3);
       ctx.fillStyle = accentColor;
       ctx.beginPath();
       ctx.arc(x, y, rIsland * 0.26, 0, Math.PI * 2);
@@ -1145,7 +1357,7 @@ export class MiniMotorwaysRenderer {
   drawBuildings(ctx, world, ts) {
     const isRCI = this.activeLayer === "rci";
 
-    // 1. Residential Houses (with per-house dimensional & setback variation)
+    // 1. Residential Houses (coalesced into 1 shadow Path2D + 7 base Path2Ds + 7 roof Path2Ds!)
     for (const h of world.houses) {
       const cx = (h.x + (h.offX || 0)) * ts + ts * 0.5;
       const cy = (h.y + (h.offY || 0)) * ts + ts * 0.5;
@@ -1154,21 +1366,26 @@ export class MiniMotorwaysRenderer {
       const baseCol = isRCI ? "#15803d" : h.palette.base;
       const roofCol = isRCI ? "#22c55e" : h.palette.roof;
 
+      setSub(ctx, 0);
       ctx.fillStyle = PALETTE.shadowColor;
       ctx.beginPath();
       ctx.roundRect(cx - hw * 0.5 + 3.0, cy - hh * 0.5 + 3.0, hw, hh, 2.5);
       ctx.fill();
 
+      setSub(ctx, 1);
       ctx.fillStyle = baseCol;
       ctx.beginPath();
       ctx.roundRect(cx - hw * 0.5, cy - hh * 0.5, hw, hh, 2.5);
       ctx.fill();
 
+      setSub(ctx, 2);
       ctx.fillStyle = roofCol;
       ctx.beginPath();
       ctx.roundRect(cx - hw * 0.5, cy - hh * 0.5, hw, hh * 0.68, 2.5);
       ctx.fill();
     }
+
+    nextPass(ctx);
 
     // 2. Differentiated Commercial (CBD/Arterial/Corner) & Industrial (RAW/MFG/LOG) Multi-Dimension Sinks
     for (const d of world.destinations) {
@@ -1209,16 +1426,19 @@ export class MiniMotorwaysRenderer {
         // =================================================================
         // COMMERCIAL SINK (2×2 Rotunda, 3×2/2×3 Arterial Hall, or 2×1/1×2 Corner Market)
         // =================================================================
-        ctx.fillStyle = isRCI ? "#dbeafe" : "#eceae4";
-        ctx.strokeStyle = isRCI ? "#60a5fa" : "#b8b5ad";
-        ctx.lineWidth = 1.25;
         ctx.beginPath();
         ctx.roundRect(cx - lotW * 0.5, cy - lotH * 0.5, lotW, lotH, 4.5);
+        setSub(ctx, 0);
+        ctx.fillStyle = isRCI ? "#dbeafe" : "#eceae4";
         ctx.fill();
+        setSub(ctx, 1);
+        ctx.strokeStyle = isRCI ? "#60a5fa" : "#b8b5ad";
+        ctx.lineWidth = 1.25;
         ctx.stroke();
 
         // 45° Building Drop Shadow
         const minDim = Math.min(bldW, bldH);
+        setSub(ctx, 2);
         ctx.fillStyle = PALETTE.shadowColor;
         ctx.beginPath();
         if (d.isCircular) {
@@ -1235,6 +1455,7 @@ export class MiniMotorwaysRenderer {
         ctx.fill();
 
         // Main Commercial Base & Stepped Roof
+        setSub(ctx, 3);
         ctx.fillStyle = baseCol;
         ctx.beginPath();
         if (d.isCircular) {
@@ -1244,6 +1465,7 @@ export class MiniMotorwaysRenderer {
         }
         ctx.fill();
 
+        setSub(ctx, 4);
         ctx.fillStyle = roofCol;
         ctx.beginPath();
         if (d.isCircular) {
@@ -1260,6 +1482,7 @@ export class MiniMotorwaysRenderer {
         ctx.fill();
 
         // Bright Glass Atrium Skylight Core
+        setSub(ctx, 5);
         ctx.fillStyle = "rgba(255, 255, 255, 0.36)";
         ctx.beginPath();
         if (d.isCircular) {
@@ -1276,9 +1499,6 @@ export class MiniMotorwaysRenderer {
         ctx.fill();
 
         // Round Consumer Demand Pins scaled to rectangular or circular roof
-        ctx.fillStyle = "#ffffff";
-        ctx.strokeStyle = pinCol;
-        ctx.lineWidth = 1.35;
         const cols = wT >= hT ? Math.min(3, Math.max(2, wT)) : Math.min(2, wT);
         const rows = Math.ceil(d.pinsCount / cols);
         for (let p = 0; p < d.pinsCount; p++) {
@@ -1301,27 +1521,34 @@ export class MiniMotorwaysRenderer {
           }
           ctx.beginPath();
           ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+          setSub(ctx, 7);
+          ctx.fillStyle = "#ffffff";
           ctx.fill();
+          setSub(ctx, 8);
+          ctx.strokeStyle = pinCol;
+          ctx.lineWidth = 1.35;
           ctx.stroke();
         }
       } else {
         // =================================================================
         // INDUSTRIAL FACILITY (`RAW` Silos, `MINE`, `TIMBER`, `FARM`, `MFG`, `LOG`)
         // =================================================================
+        ctx.beginPath();
+        ctx.roundRect(cx - lotW * 0.5, cy - lotH * 0.5, lotW, lotH, 3);
+        setSub(ctx, 0);
         ctx.fillStyle = isRCI
           ? "#fef3c7"
           : d.resourceType === "FARM"
             ? "#e5dec9"
             : "#d5d2ca";
+        ctx.fill();
+        setSub(ctx, 1);
         ctx.strokeStyle = isRCI
           ? "#f59e0b"
           : d.resourceType === "FARM"
             ? "#a89f89"
             : "#8c8980";
         ctx.lineWidth = 1.45;
-        ctx.beginPath();
-        ctx.roundRect(cx - lotW * 0.5, cy - lotH * 0.5, lotW, lotH, 3);
-        ctx.fill();
         ctx.stroke();
 
         // Yellow-amber freight loading apron stripes on heavy industrial yards (omitted on rural farmsteads)
@@ -1340,6 +1567,7 @@ export class MiniMotorwaysRenderer {
         }
 
         // 45° Industrial Shadow
+        setSub(ctx, 2);
         ctx.fillStyle = PALETTE.shadowColor;
         ctx.beginPath();
         ctx.roundRect(
@@ -1354,6 +1582,7 @@ export class MiniMotorwaysRenderer {
         if (d.subType === "RAW") {
           if (d.resourceType === "MINE") {
             // Foothill Quarry & Mine (`MINE`): Ore Crusher Headhouse on Left (under pins) + Stepped Stone Quarry Pit on Right
+            setSub(ctx, 3);
             ctx.fillStyle = baseCol;
             ctx.beginPath();
             ctx.roundRect(
@@ -1364,6 +1593,8 @@ export class MiniMotorwaysRenderer {
               2.5,
             );
             ctx.fill();
+
+            setSub(ctx, 4);
             ctx.fillStyle = roofCol;
             ctx.beginPath();
             ctx.roundRect(
@@ -1376,6 +1607,7 @@ export class MiniMotorwaysRenderer {
             ctx.fill();
 
             // Stepped stone excavation benches on right half
+            setSub(ctx, 3);
             ctx.fillStyle = "#a8a29e";
             ctx.beginPath();
             ctx.roundRect(
@@ -1386,6 +1618,8 @@ export class MiniMotorwaysRenderer {
               3,
             );
             ctx.fill();
+
+            setSub(ctx, 4);
             ctx.fillStyle = "#78716c";
             ctx.beginPath();
             ctx.roundRect(
@@ -1396,6 +1630,8 @@ export class MiniMotorwaysRenderer {
               2,
             );
             ctx.fill();
+
+            setSub(ctx, 5);
             ctx.fillStyle = "#57534e";
             ctx.beginPath();
             ctx.roundRect(
@@ -1408,6 +1644,7 @@ export class MiniMotorwaysRenderer {
             ctx.fill();
           } else if (d.resourceType === "TIMBER") {
             // Upland Forestry Camp (`TIMBER`): Cedar Sawmill Shed on Left + Stacked Timber Log Bunks on Right
+            setSub(ctx, 3);
             ctx.fillStyle = baseCol;
             ctx.beginPath();
             ctx.roundRect(
@@ -1418,6 +1655,8 @@ export class MiniMotorwaysRenderer {
               2.5,
             );
             ctx.fill();
+
+            setSub(ctx, 4);
             ctx.fillStyle = roofCol;
             ctx.beginPath();
             ctx.roundRect(
@@ -1431,6 +1670,7 @@ export class MiniMotorwaysRenderer {
 
             // 3 Stacked Cedar Log Bunks on right half of timber yard
             for (const lyOff of [-bldH * 0.26, 0, bldH * 0.26]) {
+              setSub(ctx, 3);
               ctx.fillStyle = "#78350f";
               ctx.beginPath();
               ctx.roundRect(
@@ -1441,6 +1681,8 @@ export class MiniMotorwaysRenderer {
                 2,
               );
               ctx.fill();
+
+              setSub(ctx, 4);
               ctx.fillStyle = "#fde68a";
               ctx.beginPath();
               ctx.arc(
@@ -1454,8 +1696,7 @@ export class MiniMotorwaysRenderer {
             }
           } else if (d.resourceType === "FARM") {
             // Alluvial Agribusiness Farm (`FARM`):
-            // Left half (under pins): Cross-Gable Terracotta Timber Barn (`+` white roof ridge)
-            // Right half: Single Tall White Grain Silo (top-right) + Glazed Greenhouse Nursery Bay (bottom-right)
+            setSub(ctx, 3);
             ctx.fillStyle = "#9e3b2b";
             ctx.beginPath();
             ctx.roundRect(
@@ -1466,6 +1707,8 @@ export class MiniMotorwaysRenderer {
               2.5,
             );
             ctx.fill();
+
+            setSub(ctx, 4);
             ctx.fillStyle = "#c85644";
             ctx.beginPath();
             ctx.roundRect(
@@ -1476,7 +1719,9 @@ export class MiniMotorwaysRenderer {
               2,
             );
             ctx.fill();
+
             // White cross-gable barn roof ridges (`+`)
+            setSub(ctx, 5);
             ctx.fillStyle = "rgba(255, 255, 255, 0.52)";
             ctx.fillRect(cx - bldW * 0.235, cy - bldH * 0.38, 1.5, bldH * 0.64);
             ctx.fillRect(cx - bldW * 0.42, cy - bldH * 0.08, bldW * 0.38, 1.4);
@@ -1485,6 +1730,7 @@ export class MiniMotorwaysRenderer {
             const siloR = Math.min(bldW, bldH) * 0.19;
             const siloX = cx + bldW * 0.24;
             const siloY = cy - bldH * 0.22;
+            setSub(ctx, 3);
             ctx.strokeStyle = "#9ca3af";
             ctx.lineWidth = 1.6;
             ctx.beginPath();
@@ -1492,10 +1738,13 @@ export class MiniMotorwaysRenderer {
             ctx.lineTo(siloX, siloY);
             ctx.stroke();
 
+            setSub(ctx, 4);
             ctx.fillStyle = "#6b7078";
             ctx.beginPath();
             ctx.arc(siloX, siloY, siloR, 0, Math.PI * 2);
             ctx.fill();
+
+            setSub(ctx, 5);
             ctx.fillStyle = "#f5f5f4";
             ctx.beginPath();
             ctx.arc(siloX, siloY - 0.9, siloR * 0.78, 0, Math.PI * 2);
@@ -1506,15 +1755,20 @@ export class MiniMotorwaysRenderer {
             const ghY = cy + bldH * 0.03;
             const ghW = bldW * 0.38;
             const ghH = bldH * 0.35;
+            setSub(ctx, 3);
             ctx.fillStyle = "#84a595";
             ctx.beginPath();
             ctx.roundRect(ghX, ghY, ghW, ghH, 2);
             ctx.fill();
+
+            setSub(ctx, 4);
             ctx.fillStyle = "#d7ebe2";
             ctx.beginPath();
             ctx.roundRect(ghX + 1.2, ghY + 1.2, ghW - 2.4, ghH - 2.4, 1.5);
             ctx.fill();
+
             // Glass roof mullions
+            setSub(ctx, 5);
             ctx.strokeStyle = "#84a595";
             ctx.lineWidth = 0.85;
             ctx.beginPath();
@@ -1525,8 +1779,7 @@ export class MiniMotorwaysRenderer {
             ctx.stroke();
           } else {
             // Urban Bulk Feedstock & Chemical Works (`RAW`):
-            // Left half (under pins): Heavy Process & Boiler Hall
-            // Right half: Steel Pipe-Rack Manifold + 3 Dark-Slate Spherical Pressure Vats + Industrial Flue Stack
+            setSub(ctx, 3);
             ctx.fillStyle = baseCol;
             ctx.beginPath();
             ctx.roundRect(
@@ -1538,6 +1791,7 @@ export class MiniMotorwaysRenderer {
             );
             ctx.fill();
 
+            setSub(ctx, 4);
             ctx.fillStyle = roofCol;
             ctx.beginPath();
             ctx.roundRect(
@@ -1551,6 +1805,7 @@ export class MiniMotorwaysRenderer {
 
             // Steel Pipe-Rack Gantry Manifold on right half
             const rackX = cx + bldW * 0.16;
+            setSub(ctx, 3);
             ctx.strokeStyle = "#64748b";
             ctx.lineWidth = 2.0;
             ctx.beginPath();
@@ -1570,14 +1825,19 @@ export class MiniMotorwaysRenderer {
               [cx + bldW * 0.15, cy + bldH * 0.06],
             ];
             for (const [vx, vy] of vatCoords) {
+              setSub(ctx, 4);
               ctx.fillStyle = "#334155";
               ctx.beginPath();
               ctx.arc(vx, vy, vatR, 0, Math.PI * 2);
               ctx.fill();
+
+              setSub(ctx, 5);
               ctx.fillStyle = "#64748b";
               ctx.beginPath();
               ctx.arc(vx, vy - 0.6, vatR * 0.78, 0, Math.PI * 2);
               ctx.fill();
+
+              setSub(ctx, 6);
               ctx.fillStyle = "#cbd5e1";
               ctx.beginPath();
               ctx.arc(vx - 0.5, vy - 0.9, vatR * 0.32, 0, Math.PI * 2);
@@ -1588,14 +1848,19 @@ export class MiniMotorwaysRenderer {
             const stX = cx + bldW * 0.34;
             const stY = cy + bldH * 0.22;
             const stR = Math.min(bldW, bldH) * 0.13;
+            setSub(ctx, 4);
             ctx.fillStyle = "#1e293b";
             ctx.beginPath();
             ctx.arc(stX, stY, stR, 0, Math.PI * 2);
             ctx.fill();
+
+            setSub(ctx, 5);
             ctx.fillStyle = "#94a3b8";
             ctx.beginPath();
             ctx.arc(stX, stY, stR * 0.65, 0, Math.PI * 2);
             ctx.fill();
+
+            setSub(ctx, 6);
             ctx.fillStyle = "#0f172a";
             ctx.beginPath();
             ctx.arc(stX, stY, stR * 0.35, 0, Math.PI * 2);
@@ -1603,6 +1868,7 @@ export class MiniMotorwaysRenderer {
           }
         } else if (d.subType === "LOG") {
           // Logistics Distribution Center (`LOG`): Elongated Cross-Dock Freight Terminal
+          setSub(ctx, 3);
           ctx.fillStyle = baseCol;
           ctx.beginPath();
           ctx.roundRect(
@@ -1614,6 +1880,7 @@ export class MiniMotorwaysRenderer {
           );
           ctx.fill();
 
+          setSub(ctx, 4);
           ctx.fillStyle = roofCol;
           ctx.beginPath();
           ctx.roundRect(
@@ -1626,6 +1893,7 @@ export class MiniMotorwaysRenderer {
           ctx.fill();
 
           // White roof cross-dock bay dividers along the long axis
+          setSub(ctx, 5);
           ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
           const bays = Math.max(3, wT + 1);
           for (let b = 0; b < bays; b++) {
@@ -1634,6 +1902,7 @@ export class MiniMotorwaysRenderer {
           }
         } else {
           // Secondary Manufacturing (`MFG`): Multi-Bay Sawtooth Factory Roof + Smokestack
+          setSub(ctx, 3);
           ctx.fillStyle = baseCol;
           ctx.beginPath();
           ctx.roundRect(
@@ -1645,6 +1914,7 @@ export class MiniMotorwaysRenderer {
           );
           ctx.fill();
 
+          setSub(ctx, 4);
           const numBays = hT >= 3 ? 4 : 3;
           const bayH = (bldH * 0.82) / numBays;
           for (let bay = 0; bay < numBays; bay++) {
@@ -1661,10 +1931,13 @@ export class MiniMotorwaysRenderer {
           }
 
           // Corner industrial smokestack cylinder
+          setSub(ctx, 5);
           ctx.fillStyle = "#36383e";
           ctx.beginPath();
           ctx.arc(cx + bldW * 0.34, cy - bldH * 0.3, ts * 0.24, 0, Math.PI * 2);
           ctx.fill();
+
+          setSub(ctx, 6);
           ctx.fillStyle = "#ffffff";
           ctx.beginPath();
           ctx.arc(cx + bldW * 0.34, cy - bldH * 0.3, ts * 0.1, 0, Math.PI * 2);
@@ -1672,16 +1945,18 @@ export class MiniMotorwaysRenderer {
         }
 
         // Square Cargo Crate Pins on Industrial Roof
-        ctx.fillStyle = "#ffffff";
-        ctx.strokeStyle = pinCol;
-        ctx.lineWidth = 1.25;
         const maxCrates = Math.min(wT * hT >= 6 ? 5 : 4, d.pinsCount);
         const crateCols = wT >= 3 ? 3 : 2;
         for (let p = 0; p < maxCrates; p++) {
           const px = cx - bldW * 0.32 + (p % crateCols) * (bldW * 0.24);
           const py =
             cy - bldH * 0.18 + Math.floor(p / crateCols) * (bldH * 0.26);
+          setSub(ctx, 7);
+          ctx.fillStyle = "#ffffff";
           ctx.fillRect(px - 2.1, py - 2.1, 4.2, 4.2);
+          setSub(ctx, 8);
+          ctx.strokeStyle = pinCol;
+          ctx.lineWidth = 1.25;
           ctx.strokeRect(px - 2.1, py - 2.1, 4.2, 4.2);
         }
       }
@@ -1689,10 +1964,12 @@ export class MiniMotorwaysRenderer {
       if (d.hasUrgentPin) {
         const bx = cx - bldW * 0.38;
         const by = cy - bldH * 0.52;
+        setSub(ctx, 9);
         ctx.fillStyle = "#d9383a";
         ctx.beginPath();
         ctx.arc(bx, by, 6.5, 0, Math.PI * 2);
         ctx.fill();
+        setSub(ctx, 10);
         ctx.fillStyle = "#ffffff";
         ctx.beginPath();
         ctx.arc(bx, by, 2.6, 0, Math.PI * 2);
@@ -1727,6 +2004,7 @@ export class MiniMotorwaysRenderer {
         const centralTaxiY = side * (ts * 0.4);
 
         // High-speed parallel & cross-field taxiways
+        setSub(ctx, 0);
         ctx.strokeStyle = "#9ca0a6";
         ctx.lineWidth = ts * 0.42;
         ctx.lineCap = "round";
@@ -1740,6 +2018,7 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
 
         // Yellow taxiway centerlines
+        setSub(ctx, 1);
         ctx.strokeStyle = "#f4c24f";
         ctx.lineWidth = 1.2;
         ctx.setLineDash([4, 4]);
@@ -1756,11 +2035,13 @@ export class MiniMotorwaysRenderer {
         ]) {
           const curLen = rwyLen * rLenScale;
           const curWid = rwyWid * rWidScale;
+          setSub(ctx, 2);
           ctx.fillStyle = "#36383e";
           ctx.beginPath();
           ctx.roundRect(-curLen * 0.5, ry - curWid * 0.5, curLen, curWid, 4);
           ctx.fill();
 
+          setSub(ctx, 3);
           ctx.strokeStyle = "#f2efe9";
           ctx.lineWidth = 1.6;
           ctx.setLineDash([7, 6]);
@@ -1787,6 +2068,7 @@ export class MiniMotorwaysRenderer {
         const termY = side * (ts * 1.32);
 
         // Jetbridge fingers extending toward central apron taxiway
+        setSub(ctx, 3);
         ctx.strokeStyle = "#7c7f87";
         ctx.lineWidth = 3.0;
         for (let g = -3; g <= 3; g++) {
@@ -1798,6 +2080,7 @@ export class MiniMotorwaysRenderer {
         }
 
         // Terminal Shadow, Base & Roof
+        setSub(ctx, 4);
         ctx.fillStyle = PALETTE.shadowColor;
         ctx.beginPath();
         ctx.roundRect(
@@ -1809,11 +2092,13 @@ export class MiniMotorwaysRenderer {
         );
         ctx.fill();
 
+        setSub(ctx, 5);
         ctx.fillStyle = ap.palette.base;
         ctx.beginPath();
         ctx.roundRect(-termW * 0.5, termY - termH * 0.5, termW, termH, 6);
         ctx.fill();
 
+        setSub(ctx, 6);
         ctx.fillStyle = ap.palette.roof;
         ctx.beginPath();
         ctx.roundRect(
@@ -1826,6 +2111,7 @@ export class MiniMotorwaysRenderer {
         ctx.fill();
 
         // Demand Pins along Concourse Roof
+        setSub(ctx, 7);
         ctx.fillStyle = "#ffffff";
         for (let p = 0; p < ap.demandPins; p++) {
           const px = -termW * 0.38 + (p / (ap.demandPins - 1)) * (termW * 0.76);
@@ -1844,6 +2130,7 @@ export class MiniMotorwaysRenderer {
         const mainRwyY = -side * (ts * 0.58);
         const taxiY = side * (ts * 0.45);
 
+        setSub(ctx, 0);
         ctx.strokeStyle = "#9ca0a6";
         ctx.lineWidth = ts * 0.38;
         ctx.lineCap = "round";
@@ -1859,6 +2146,7 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
 
         // Main Asphalt Runway Strip
+        setSub(ctx, 2);
         ctx.fillStyle = "#36383e";
         ctx.beginPath();
         ctx.roundRect(
@@ -1870,6 +2158,7 @@ export class MiniMotorwaysRenderer {
         );
         ctx.fill();
 
+        setSub(ctx, 3);
         ctx.strokeStyle = "#f2efe9";
         ctx.lineWidth = 1.5;
         ctx.setLineDash([6, 6]);
@@ -1888,6 +2177,7 @@ export class MiniMotorwaysRenderer {
           for (const wSign of [-1, 1]) {
             const wx = wSign * (termW * 0.32);
             const ww = termW * 0.48;
+            setSub(ctx, 4);
             ctx.fillStyle = PALETTE.shadowColor;
             ctx.beginPath();
             ctx.roundRect(
@@ -1899,11 +2189,13 @@ export class MiniMotorwaysRenderer {
             );
             ctx.fill();
 
+            setSub(ctx, 5);
             ctx.fillStyle = ap.palette.base;
             ctx.beginPath();
             ctx.roundRect(wx - ww * 0.5, termY - termH * 0.5, ww, termH, 4);
             ctx.fill();
 
+            setSub(ctx, 6);
             ctx.fillStyle = ap.palette.roof;
             ctx.beginPath();
             ctx.roundRect(
@@ -1917,6 +2209,7 @@ export class MiniMotorwaysRenderer {
           }
         } else {
           // Regional Passenger Terminal Concourse
+          setSub(ctx, 4);
           ctx.fillStyle = PALETTE.shadowColor;
           ctx.beginPath();
           ctx.roundRect(
@@ -1928,11 +2221,13 @@ export class MiniMotorwaysRenderer {
           );
           ctx.fill();
 
+          setSub(ctx, 5);
           ctx.fillStyle = ap.palette.base;
           ctx.beginPath();
           ctx.roundRect(-termW * 0.5, termY - termH * 0.5, termW, termH, 6);
           ctx.fill();
 
+          setSub(ctx, 6);
           ctx.fillStyle = ap.palette.roof;
           ctx.beginPath();
           ctx.roundRect(
@@ -1946,6 +2241,7 @@ export class MiniMotorwaysRenderer {
         }
 
         // Demand Pins on Roof
+        setSub(ctx, 7);
         ctx.fillStyle = "#ffffff";
         for (let p = 0; p < ap.demandPins; p++) {
           const px = -termW * 0.34 + (p / (ap.demandPins - 1)) * (termW * 0.68);
@@ -2003,6 +2299,7 @@ export class MiniMotorwaysRenderer {
       );
       const badgeY = minY >= 36 ? minY - 15 : maxY + 20;
 
+      setSub(ctx, 8);
       ctx.fillStyle = ap.isHub ? "#e85c90" : "#36383e";
       ctx.beginPath();
       ctx.roundRect(badgeX - tw * 0.5, badgeY - 9, tw, 18, 9);
@@ -2016,19 +2313,23 @@ export class MiniMotorwaysRenderer {
   }
 
   drawAirportTower(ctx, towerX, termY, ts, accentColor) {
+    setSub(ctx, 4);
     ctx.fillStyle = PALETTE.shadowColor;
     ctx.beginPath();
     ctx.arc(towerX + 4, termY + 4, ts * 0.48, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = "#ffffff";
-    ctx.strokeStyle = "#36383e";
-    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(towerX, termY, ts * 0.48, 0, Math.PI * 2);
+    setSub(ctx, 5);
+    ctx.fillStyle = "#ffffff";
     ctx.fill();
+    setSub(ctx, 6);
+    ctx.strokeStyle = "#36383e";
+    ctx.lineWidth = 2;
     ctx.stroke();
 
+    setSub(ctx, 7);
     ctx.fillStyle = accentColor;
     ctx.beginPath();
     ctx.arc(towerX, termY, ts * 0.22, 0, Math.PI * 2);
@@ -2085,6 +2386,7 @@ export class MiniMotorwaysRenderer {
         ctx.lineJoin = "round";
 
         // 1. Soft ground shadow under active cloverleaf ramp quadrants
+        setSub(ctx, 0);
         ctx.strokeStyle = "rgba(54, 56, 62, 0.11)";
         ctx.lineWidth = ts * 0.42;
         for (const [sA, sB] of quadrants) {
@@ -2117,6 +2419,7 @@ export class MiniMotorwaysRenderer {
 
         // 2. Outer Concave Right-Turn Slip Ramps (Casing + Pink Fill)
         for (const pass of ["border", "fill"]) {
+          setSub(ctx, pass === "border" ? 1 : 2);
           ctx.strokeStyle =
             pass === "border" ? PALETTE.motorwayBorder : "#f48fb1";
           ctx.lineWidth = pass === "border" ? ts * 0.36 : ts * 0.22;
@@ -2139,6 +2442,7 @@ export class MiniMotorwaysRenderer {
 
         // 3. Inner 270° Tangent Cloverleaf Loops (Casing + Pink Fill)
         for (const pass of ["border", "fill"]) {
+          setSub(ctx, pass === "border" ? 3 : 4);
           ctx.strokeStyle =
             pass === "border" ? PALETTE.motorwayBorder : PALETTE.motorwayFill;
           ctx.lineWidth = pass === "border" ? ts * 0.38 : ts * 0.24;
@@ -2164,11 +2468,6 @@ export class MiniMotorwaysRenderer {
       } else if (ic.type === "trumpet") {
         // =================================================================
         // AUTHENTIC 3-WAY TRUMPET INTERCHANGE
-        // - Terminating highway approaches from +sy side, with ONE concave
-        //   directional slip-ramp in the (-1, +sy) quadrant.
-        // - The Spur crosses OVER the Mainline at (0, 0) into a wide, open
-        //   2-segment 270° Trumpet Bell Loop in the (+1, -sy) OPPOSITE quadrant,
-        //   which curls around and merges tangentially into the Mainline!
         // =================================================================
         const sy = ic.sideSign || 1;
         const oppSy = -sy;
@@ -2216,12 +2515,14 @@ export class MiniMotorwaysRenderer {
         };
 
         // Ground shadow
+        setSub(ctx, 0);
         ctx.strokeStyle = "rgba(54, 56, 62, 0.12)";
         ctx.lineWidth = ts * 0.42;
         drawTrumpetRamps(5, 7);
 
         // Casing + Pink Ramp Fill
         for (const pass of ["border", "fill"]) {
+          setSub(ctx, pass === "border" ? 1 : 2);
           ctx.strokeStyle =
             pass === "border" ? PALETTE.motorwayBorder : "#f48fb1";
           ctx.lineWidth = pass === "border" ? ts * 0.38 : ts * 0.24;
@@ -2232,15 +2533,15 @@ export class MiniMotorwaysRenderer {
       } else if (ic.type === "diamond-ramp") {
         // =================================================================
         // DIAMOND INTERCHANGE OVERPASS BRIDGE PARAPETS & UNDERPASS SHADOW
-        // (Slip-ramp casings & fills are drawn in `drawRoadNetwork` Passes 1 & 3
-        //  so they merge into surface roads & roundabouts without clip masks!)
         // =================================================================
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(ic.angleRad);
+        setSub(ctx, 0);
         ctx.fillStyle = "rgba(45, 42, 38, 0.16)";
         ctx.fillRect(-ts * 0.36, -ts * 0.68, ts * 0.72, ts * 1.36);
 
+        setSub(ctx, 1);
         ctx.lineCap = "butt";
         ctx.strokeStyle = "#36383e";
         ctx.lineWidth = ts * 1.04;
@@ -2256,6 +2557,7 @@ export class MiniMotorwaysRenderer {
   drawMotorways(ctx, world, ts) {
     // 1. Draw Cloverleaf Loops & One-Sided Slip-Ramps underneath the main decks
     this.drawInterchangesUnderlay(ctx, world, ts);
+    nextPass(ctx);
 
     const roundabouts = world.routingGraph?.roundabouts || [];
 
@@ -2304,26 +2606,26 @@ export class MiniMotorwaysRenderer {
         ctx.clip("evenodd");
       }
 
-      // Split `samples` into above-ground surface spans and subterranean tunnel spans (`mw.tunnels`)
-      // so tunneled motorway sections cast ZERO ground shadows and leave mountain contours/trees untouched!
+      // Use precomputed `mw.surfaceSpans` when available (with fallback for synthetic tests)
       const tunnels = mw.tunnels || [];
-      const surfaceSpans = [];
-      let curStart = 0;
-      for (const tun of tunnels) {
-        if (tun.i0 >= curStart) {
-          const seg = samples.slice(curStart, tun.i0 + 1);
-          if (seg.length >= 2) surfaceSpans.push(seg);
+      let surfaceSpans = mw.surfaceSpans;
+      if (!surfaceSpans) {
+        surfaceSpans = [];
+        let curStart = 0;
+        for (const tun of tunnels) {
+          if (tun.i0 >= curStart) {
+            const seg = samples.slice(curStart, tun.i0 + 1);
+            if (seg.length >= 2) surfaceSpans.push(seg);
+          }
+          curStart = tun.i1;
         }
-        curStart = tun.i1;
-      }
-      if (curStart < samples.length - 1) {
-        const tail = samples.slice(curStart);
-        if (tail.length >= 2) surfaceSpans.push(tail);
+        if (curStart < samples.length - 1) {
+          const tail = samples.slice(curStart);
+          if (tail.length >= 2) surfaceSpans.push(tail);
+        }
       }
 
       // 1. Soft Elevated Overpass Drop Shadow on the ground below (ONLY for above-ground surface spans!)
-      //    Tapers smoothly to (0, 0) at terminal roundabouts and tunnel portals so the shadow tucks
-      //    completely underneath the 0.88*ts expressway deck as the road descends to surface grade!
       const termPts = [];
       if (!mw.prunedStart) termPts.push({ x: mw.sx, y: mw.sy });
       if (!mw.prunedEnd) termPts.push({ x: mw.ex, y: mw.ey });
@@ -2346,6 +2648,7 @@ export class MiniMotorwaysRenderer {
         return h * h * (3 - 2 * h);
       };
 
+      setSub(ctx, 0);
       ctx.strokeStyle = "rgba(45, 42, 38, 0.10)";
       ctx.lineWidth = ts * 0.8;
       for (const seg of surfaceSpans) {
@@ -2362,6 +2665,7 @@ export class MiniMotorwaysRenderer {
 
       // 2. Subterranean Mountain Tunnel Bore (Full-width dashed charcoal bore casing + bold dashed pink deck, zero drop shadow!)
       if (tunnels.length > 0) {
+        setSub(ctx, 1);
         ctx.lineCap = "butt";
         ctx.strokeStyle = "rgba(54, 56, 62, 0.42)";
         ctx.lineWidth = ts * 0.84;
@@ -2374,6 +2678,7 @@ export class MiniMotorwaysRenderer {
           }
         }
 
+        setSub(ctx, 2);
         ctx.strokeStyle = "rgba(232, 92, 144, 0.72)";
         ctx.lineWidth = ts * 0.56;
         for (const tun of tunnels) {
@@ -2388,6 +2693,7 @@ export class MiniMotorwaysRenderer {
       }
 
       // 3. Vibrant Pink Motorway Outer Casing (above-ground spans only)
+      setSub(ctx, 3);
       ctx.strokeStyle = PALETTE.motorwayBorder;
       ctx.lineWidth = ts * 0.88;
       for (const seg of surfaceSpans) {
@@ -2396,6 +2702,7 @@ export class MiniMotorwaysRenderer {
       }
 
       // 4. Translucent Pink Motorway Deck (above-ground spans only)
+      setSub(ctx, 4);
       ctx.strokeStyle = PALETTE.motorwayFill;
       ctx.lineWidth = ts * 0.72;
       for (const seg of surfaceSpans) {
@@ -2404,6 +2711,7 @@ export class MiniMotorwaysRenderer {
       }
 
       // 5. Crisp Median Divider Line (above-ground spans only)
+      setSub(ctx, 5);
       ctx.strokeStyle = PALETTE.motorwayCore;
       ctx.lineWidth = 2.0;
       for (const seg of surfaceSpans) {
@@ -2425,13 +2733,16 @@ export class MiniMotorwaysRenderer {
             ctx.save();
             ctx.translate(px, py);
             ctx.rotate(ang);
-            ctx.fillStyle = "#36383e";
-            ctx.strokeStyle = "#f2efe9";
-            ctx.lineWidth = 1.4;
             ctx.beginPath();
             ctx.roundRect(-3.5, -ts * 0.56, 7.0, ts * 1.12, 2.5);
+            setSub(ctx, 6);
+            ctx.fillStyle = "#36383e";
             ctx.fill();
+            setSub(ctx, 7);
+            ctx.strokeStyle = "#f2efe9";
+            ctx.lineWidth = 1.4;
             ctx.stroke();
+            setSub(ctx, 8);
             ctx.fillStyle = "#1f2024";
             ctx.beginPath();
             ctx.arc(1.5, 0, ts * 0.34, -Math.PI * 0.5, Math.PI * 0.5);
@@ -2441,39 +2752,38 @@ export class MiniMotorwaysRenderer {
         }
       }
 
-      // Choose a clean Highway Shield Badge ([1], [2]) position that maximizes clearance from all interchanges & endpoints
-      let shieldPt = samples[Math.floor(samples.length * 0.5)];
-      let bestClearance = -Infinity;
-      const iMin = Math.max(2, Math.floor(samples.length * 0.16));
-      const iMax = Math.min(
-        samples.length - 3,
-        Math.ceil(samples.length * 0.84),
-      );
-      for (let i = iMin; i <= iMax; i++) {
-        const cand = samples[i];
-        let minIcDist = Math.min(
-          Math.hypot(cand.x - mw.sx, cand.y - mw.sy),
-          Math.hypot(cand.x - mw.ex, cand.y - mw.ey),
+      // Use precomputed Highway Shield Badge (`mw.shieldPt`) position
+      let shieldPt = mw.shieldPt;
+      if (!shieldPt) {
+        shieldPt = samples[Math.floor(samples.length * 0.5)];
+        let bestClearance = -Infinity;
+        const iMin = Math.max(2, Math.floor(samples.length * 0.16));
+        const iMax = Math.min(
+          samples.length - 3,
+          Math.ceil(samples.length * 0.84),
         );
-        for (const ic of world.interchanges) {
-          const dIc = Math.hypot(ic.x - cand.x, ic.y - cand.y);
-          if (dIc < minIcDist) minIcDist = dIc;
-        }
-        // Prefer central span slightly when clearance is already ample
-        const centerBias =
-          1.0 - Math.abs(i / (samples.length - 1) - 0.5) * 0.35;
-        const score = Math.min(minIcDist, 14.0) * centerBias;
-        if (score > bestClearance) {
-          bestClearance = score;
-          shieldPt = cand;
+        for (let i = iMin; i <= iMax; i++) {
+          const cand = samples[i];
+          let minIcDist = Math.min(
+            Math.hypot(cand.x - mw.sx, cand.y - mw.sy),
+            Math.hypot(cand.x - mw.ex, cand.y - mw.ey),
+          );
+          for (const ic of world.interchanges) {
+            const dIc = Math.hypot(ic.x - cand.x, ic.y - cand.y);
+            if (dIc < minIcDist) minIcDist = dIc;
+          }
+          const centerBias =
+            1.0 - Math.abs(i / (samples.length - 1) - 0.5) * 0.35;
+          const score = Math.min(minIcDist, 14.0) * centerBias;
+          if (score > bestClearance) {
+            bestClearance = score;
+            shieldPt = cand;
+          }
         }
       }
       const bx = shieldPt.x * ts + ts * 0.5;
       const by = shieldPt.y * ts + ts * 0.5;
 
-      ctx.fillStyle = "#f2efe9";
-      ctx.strokeStyle = "#36383e";
-      ctx.lineWidth = 2.2;
       ctx.beginPath();
       const sw = 11;
       const sh = 12;
@@ -2483,7 +2793,12 @@ export class MiniMotorwaysRenderer {
       ctx.quadraticCurveTo(bx, by + sh, bx, by + sh);
       ctx.quadraticCurveTo(bx, by + sh, bx - sw, by + sh * 0.15);
       ctx.closePath();
+      setSub(ctx, 9);
+      ctx.fillStyle = "#f2efe9";
       ctx.fill();
+      setSub(ctx, 10);
+      ctx.strokeStyle = "#36383e";
+      ctx.lineWidth = 2.2;
       ctx.stroke();
 
       ctx.fillStyle = "#36383e";
@@ -2493,6 +2808,8 @@ export class MiniMotorwaysRenderer {
       ctx.fillText(String(mw.number), bx, by + 0.5);
       ctx.restore();
     }
+
+    nextPass(ctx);
 
     // 3. Draw Grade-Separated Overpass Bridge Spans at Cloverleaf & Trumpet Centers
     for (const ic of world.interchanges) {
@@ -2511,6 +2828,7 @@ export class MiniMotorwaysRenderer {
         ctx.lineCap = "butt";
 
         // Upper deck shadow cast onto the lower motorway
+        setSub(ctx, 0);
         ctx.strokeStyle = "rgba(54, 56, 62, 0.22)";
         ctx.lineWidth = ts * 0.96;
         ctx.beginPath();
@@ -2519,22 +2837,26 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
 
         // Redraw the upper motorway span cleanly over the lower motorway
-        ctx.strokeStyle = PALETTE.motorwayBorder;
-        ctx.lineWidth = ts * 0.88;
         ctx.beginPath();
         ctx.moveTo(cx - ux * span, cy - uy * span);
         ctx.lineTo(cx + ux * span, cy + uy * span);
+        setSub(ctx, 1);
+        ctx.strokeStyle = PALETTE.motorwayBorder;
+        ctx.lineWidth = ts * 0.88;
         ctx.stroke();
 
+        setSub(ctx, 2);
         ctx.strokeStyle = "#ee6998";
         ctx.lineWidth = ts * 0.72;
         ctx.stroke();
 
+        setSub(ctx, 3);
         ctx.strokeStyle = PALETTE.motorwayCore;
         ctx.lineWidth = 2.0;
         ctx.stroke();
 
         // Dark charcoal bridge parapet rails along both sides of the upper overpass deck
+        setSub(ctx, 4);
         ctx.strokeStyle = "#36383e";
         ctx.lineWidth = 2.2;
         for (const side of [-1, 1]) {
@@ -2551,8 +2873,6 @@ export class MiniMotorwaysRenderer {
         }
         ctx.restore();
       } else if (ic.type === "trumpet") {
-        // In a Trumpet interchange, the terminating Spur crosses OVER the Mainline
-        // perpendicular to angleMain and transitions directly into the opposite-side (-sy) loop.
         const cx = ic.x * ts + ts * 0.5;
         const cy = ic.y * ts + ts * 0.5;
         const sy = ic.sideSign || 1;
@@ -2568,6 +2888,7 @@ export class MiniMotorwaysRenderer {
         ctx.save();
         ctx.lineCap = "round";
 
+        setSub(ctx, 0);
         ctx.strokeStyle = "rgba(54, 56, 62, 0.20)";
         ctx.lineWidth = ts * 0.78;
         ctx.beginPath();
@@ -2575,17 +2896,20 @@ export class MiniMotorwaysRenderer {
         ctx.lineTo(cx - ux * spanOut + 3, cy - uy * spanOut + 4);
         ctx.stroke();
 
-        ctx.strokeStyle = PALETTE.motorwayBorder;
-        ctx.lineWidth = ts * 0.72;
         ctx.beginPath();
         ctx.moveTo(cx + ux * spanIn, cy + uy * spanIn);
         ctx.lineTo(cx - ux * spanOut, cy - uy * spanOut);
+        setSub(ctx, 1);
+        ctx.strokeStyle = PALETTE.motorwayBorder;
+        ctx.lineWidth = ts * 0.72;
         ctx.stroke();
 
+        setSub(ctx, 2);
         ctx.strokeStyle = "#ee6998";
         ctx.lineWidth = ts * 0.56;
         ctx.stroke();
 
+        setSub(ctx, 4);
         ctx.lineCap = "butt";
         ctx.strokeStyle = "#36383e";
         ctx.lineWidth = 2.0;
@@ -3230,12 +3554,7 @@ export class MiniMotorwaysRenderer {
     const diag = this.computeRoadGraphDiagnostics(world);
 
     ctx.save();
-    const drawerEl =
-      typeof document !== "undefined"
-        ? document.getElementById("generatorDrawer")
-        : null;
-    const drawerOpen =
-      canvas.width >= 640 && drawerEl && !drawerEl.classList.contains("hidden");
+    const drawerOpen = canvas.width >= 640 && Boolean(this.drawerOpen);
     const leftSafe = drawerOpen ? 412 : 14;
     const boxW = Math.min(canvas.width - leftSafe - 14, 790);
     const boxH = 38;

@@ -307,6 +307,7 @@ export interface Destination {
   estateLoops?: [number, number][][];
   tractorTracks?: TractorTrack[];
   windbreakPts?: [number, number][];
+  estateBBox?: { minX: number; minY: number; maxX: number; maxY: number };
 }
 
 export interface TreeDot {
@@ -342,6 +343,8 @@ export interface Motorway {
   waypoints: Point2D[];
   samples: Point2D[];
   tunnels?: MotorwayTunnel[];
+  surfaceSpans?: Point2D[][];
+  shieldPt?: Point2D;
   prunedStart?: boolean;
   prunedEnd?: boolean;
   isSpur?: boolean;
@@ -650,33 +653,9 @@ export interface Stage9RampsAndCargoState {
   };
   displacedBuildingsCount: number;
   bridgeCount: number;
+  rciCounts: { com: number; raw: number; mfg: number; log: number };
   mwayLog: string;
   cargoLog: string;
-}
-
-export interface BakeHydroPayload {
-  type?: "prepareHydro";
-  hydroVersion: number;
-  W: number;
-  H: number;
-  tileSize: number;
-  seaLevel: number;
-  elevationField: Float32Array;
-  waterMask: Uint8Array;
-  rivers: RiverRibbon[];
-}
-
-export interface BakeComposePayload {
-  type?: "composeTerrain";
-  requestId?: number;
-  hydroVersion?: number;
-  urbanVersion?: number;
-  W: number;
-  H: number;
-  tileSize: number;
-  zoneColorIdx: Int8Array;
-  trees: TreeDot[];
-  hydroPayload?: BakeHydroPayload;
 }
 
 export interface CarAgent {
