@@ -1168,30 +1168,64 @@ export class ProceduralLogisticsWorld {
       edges.push(bestEdge);
     }
 
-    // Add 1 extra intra-cluster/regional chord connection for realistic valley redundancy
+    const isIslandHopper = this.config.archetype === 'island-hopper';
+    const scaleSpan = Math.max(1, this.W / 360);
+
+    // Add up to `Math.max(2, Math.floor(nodes.length * 0.45))` regional valley loop chords
+    // between nearby towns (`d <= 88 * scaleSpan`) whose current graph distance exceeds `1.65 * d`.
     if (nodes.length >= 4) {
-      let bestChord = null;
-      let bestScore = Infinity;
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const already = edges.some(e => (e[0] === i && e[1] === j) || (e[0] === j && e[1] === i));
-          if (already) continue;
-          if (Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y) > 76) continue;
-          const cost = riverAwareEdgeCost(nodes[i], nodes[j]);
-          if (cost < bestScore) {
-            bestScore = cost;
-            bestChord = [i, j];
+      const maxChords = Math.max(2, Math.floor(nodes.length * 0.45));
+      const computeGraphDist = (src, dst) => {
+        const dist = new Float64Array(nodes.length).fill(Infinity);
+        const visited = new Uint8Array(nodes.length);
+        dist[src] = 0;
+        for (let step = 0; step < nodes.length; step++) {
+          let u = -1;
+          let bestD = Infinity;
+          for (let k = 0; k < nodes.length; k++) {
+            if (!visited[k] && dist[k] < bestD) {
+              bestD = dist[k];
+              u = k;
+            }
+          }
+          if (u === -1 || u === dst) break;
+          visited[u] = 1;
+          for (const [ea, eb] of edges) {
+            const v = ea === u ? eb : (eb === u ? ea : -1);
+            if (v !== -1 && !visited[v]) {
+              const w = Math.hypot(nodes[u].x - nodes[v].x, nodes[u].y - nodes[v].y);
+              if (dist[u] + w < dist[v]) dist[v] = dist[u] + w;
+            }
           }
         }
+        return dist[dst];
+      };
+
+      for (let c = 0; c < maxChords; c++) {
+        let bestChord = null;
+        let bestScore = Infinity;
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const already = edges.some(e => (e[0] === i && e[1] === j) || (e[0] === j && e[1] === i));
+            if (already) continue;
+            const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
+            if (d > 88 * scaleSpan) continue;
+            if (computeGraphDist(i, j) <= 1.65 * d) continue;
+            const cost = riverAwareEdgeCost(nodes[i], nodes[j]);
+            if (cost < bestScore) {
+              bestScore = cost;
+              bestChord = [i, j];
+            }
+          }
+        }
+        if (!bestChord) break;
+        edges.push(bestChord);
       }
-      if (bestChord) edges.push(bestChord);
     }
 
     // Commit surface arterial roads within urban clusters or regional valley neighbors (<= 112 tiles);
     // in `island-hopper`, only connect towns on the same island or across narrow straits (<= 54 tiles)
     // so deep ocean channels between outer islands are served by the aircraft fleet!
-    const isIslandHopper = this.config.archetype === 'island-hopper';
-    const scaleSpan = Math.max(1, this.W / 360);
     const townRoadDegree = new Int8Array(nodes.length);
     const skippedEdges = [];
     for (const [i, j] of edges) {
@@ -1495,7 +1529,7 @@ export class ProceduralLogisticsWorld {
   }
 
   findRoadPathAStar(sx, sy, ex, ey, allowWaterBridge = true, blockedFn = null, stopOnExistingRoad = false, options = null) {
-    const { W } = this;
+    const { W, H } = this;
     const isInterchangeBypass = Boolean(options && options.isInterchangeBypass);
     const customTurnPenalty = options && options.turnPenalty !== undefined ? options.turnPenalty : null;
     const extraCostFn = options && options.extraCostFn ? options.extraCostFn : null;
@@ -1625,10 +1659,33 @@ export class ProceduralLogisticsWorld {
 
         let stepCost = baseStep;
         if (this.hasRoadEdge(cx, cy, nx, ny)) {
-          stepCost *= 0.10;
+          stepCost *= 0.06;
         } else if (this.roadGrid[nid] > 0) {
           stepCost *= this.roadGrid[cid] === 0 ? 0.35 : 0.65;
         } else if (isWater) {
+          // Bridge Spacing Guard (`16` tiles): add a `+240.0` surcharge when stepping onto water
+          // within 16 tiles of an existing bridge (`roadGrid === 3`) so nearby routes share the existing bridgehead.
+          if (!currIsWater) {
+            let nearExistingBridge = false;
+            const rMinY = Math.max(0, ny - 16);
+            const rMaxY = Math.min(H - 1, ny + 16);
+            const rMinX = Math.max(0, nx - 16);
+            const rMaxX = Math.min(W - 1, nx + 16);
+            for (let by = rMinY; by <= rMaxY && !nearExistingBridge; by++) {
+              const dyB = by - ny;
+              const rowOff = by * W;
+              for (let bx = rMinX; bx <= rMaxX; bx++) {
+                const dxB = bx - nx;
+                if (dxB * dxB + dyB * dyB <= 256 && this.roadGrid[rowOff + bx] === 3) {
+                  nearExistingBridge = true;
+                  break;
+                }
+              }
+            }
+            if (nearExistingBridge) {
+              stepCost += 240.0;
+            }
+          }
           // River bridges (`waterMask === 1`) must cross from bank to bank (dry land within 1..5 steps ahead along `dx, dy`),
           // NEVER walk lengthwise down the middle of a river channel!
           if (this.waterMask[nid] === 1) {
@@ -1696,33 +1753,40 @@ export class ProceduralLogisticsWorld {
             const meanderMod = (this.noise.fbm(nx * 0.048 + 1.9, ny * 0.048 + 6.2, 2) + 0.45) * 0.68;
             stepCost += Math.max(0, meanderMod);
           }
-          // Strongly prefer existing orthogonal streets inside urban zones; never carve a parallel street 1-2 tiles away!
+          // Strongly prefer existing orthogonal streets inside urban zones
           if (this.zoneColorIdx[nid] >= 0 && !isInterchangeBypass && this.buildingMask[nid] !== 4) {
             stepCost *= 4.5;
+          }
+          // Universal Parallel-Road Inhibition (rural + urban): when off-road (`roadGrid[cid] === 0 && roadGrid[nid] === 0`),
+          // penalize running parallel within 1..3 tiles of an existing road so nearby routes merge into a shared trunk.
+          if (this.roadGrid[cid] === 0 && !isInterchangeBypass && this.buildingMask[nid] !== 4) {
             const pnx = -dy;
             const pny = dx;
-            for (const s of [-2, -1, 1, 2]) {
+            let parallelPenalty = 0;
+            for (const s of [-3, -2, -1, 1, 2, 3]) {
               const sx2 = nx + pnx * s;
               const sy2 = ny + pny * s;
               if (this.inBounds(sx2, sy2, 1) && this.roadGrid[this.idx(sx2, sy2)] > 0) {
-                stepCost += 28.0;
-                break;
+                const pen = Math.abs(s) <= 2 ? 34.0 : 16.0;
+                if (pen > parallelPenalty) parallelPenalty = pen;
               }
             }
+            stepCost += parallelPenalty;
           }
           if (extraCostFn) {
             stepCost += extraCostFn(nx, ny);
           }
         }
 
-        // Penalize direction changes (`dx !== prevDx || dy !== prevDy`) with a gentle rural bend cost (0.85)
-        // plus a 2-step anti-oscillation guard (`gpid`) so roads curve around hills without 1-tile staircases!
+        // Angle-Graded Rural Turn Costs: charge `+0.85` for 45° chamfers (`dot > 0`) vs. `+7.5` for
+        // raw 90° corners (`dot === 0`) outside urban zones, plus a 2-step anti-oscillation guard (`gpid`).
         if (pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
           if (customTurnPenalty !== null) {
             stepCost += customTurnPenalty;
           } else {
             const inUrban = this.zoneColorIdx[cid] >= 0 || this.zoneColorIdx[nid] >= 0;
-            stepCost += inUrban ? 4.2 : 0.85;
+            const dot = dx * prevDx + dy * prevDy;
+            stepCost += inUrban ? 4.2 : (dot > 0 ? 0.85 : 7.5);
             if (!inUrban && gpid !== -1 && (prevDx !== gPrevDx || prevDy !== gPrevDy)) {
               stepCost += 4.5;
             }
