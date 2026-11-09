@@ -129,6 +129,52 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     expect(pageErrors).toEqual([]);
   });
 
+  test("Mouse wheel: proportional, controlled zoom sensitivity without wild jumps on discrete or continuous scroll", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/index.html");
+    await page.waitForFunction(
+      () => Boolean(window.currentWorld && window.renderer),
+      null,
+      { timeout: 20000 },
+    );
+
+    const initialZoom = await page.evaluate(() => window.renderer.camera.zoom);
+
+    // Position mouse near center of canvas
+    await page.mouse.move(640, 400);
+
+    // Scroll down (zoom out) by standard notch (~100px)
+    await page.mouse.wheel(0, 100);
+    const zoomAfterOneNotchOut = await page.evaluate(
+      () => window.renderer.camera.zoom,
+    );
+    expect(zoomAfterOneNotchOut).toBeLessThan(initialZoom);
+    // Single notch should be gentle (~6-10% decrease), not a massive jump
+    const zoomRatioOut = zoomAfterOneNotchOut / initialZoom;
+    expect(zoomRatioOut).toBeGreaterThan(0.88);
+    expect(zoomRatioOut).toBeLessThan(0.96);
+
+    // Scroll up (zoom in) by standard notch (-100px)
+    await page.mouse.wheel(0, -100);
+    const zoomRestored = await page.evaluate(() => window.renderer.camera.zoom);
+    // Should be almost back to initial zoom (within 1%)
+    expect(Math.abs(zoomRestored - initialZoom)).toBeLessThan(0.02);
+
+    // Test continuous fine scrolling (e.g. 5 fine trackpad events of deltaY: 20)
+    for (let i = 0; i < 5; i++) {
+      await page.mouse.wheel(0, 20);
+    }
+    const zoomAfterFineScroll = await page.evaluate(
+      () => window.renderer.camera.zoom,
+    );
+    // Total delta is 100, so zoom should match single notch zoom within tiny tolerance
+    expect(Math.abs(zoomAfterFineScroll - zoomAfterOneNotchOut)).toBeLessThan(
+      0.01,
+    );
+  });
+
   test("Mobile (390x844): collapses generator drawer on boot, toggles drawer, and switches solver engines", async ({
     page,
   }) => {

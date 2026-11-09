@@ -619,7 +619,22 @@ canvas.addEventListener(
   "wheel",
   (e) => {
     e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
+
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) {
+      // DOM_DELTA_LINE: lines to pixels (standard mouse wheel notch is 3 lines)
+      dy *= 28;
+    } else if (e.deltaMode === 2) {
+      // DOM_DELTA_PAGE
+      dy *= window.innerHeight;
+    }
+
+    if (!Number.isFinite(dy) || Math.abs(dy) < 0.001) return;
+
+    // Clamp per-event delta to prevent extreme leaps on fast trackpad flicks or erratic wheel drivers
+    const clampedDy = Math.max(-120, Math.min(120, dy));
+    // Proportional exponential zoom: smooth and controlled across trackpads and notched wheels alike
+    const zoomFactor = Math.exp(-clampedDy * 0.0008);
     zoomAroundPoint(zoomFactor, e.clientX, e.clientY);
   },
   { passive: false },
