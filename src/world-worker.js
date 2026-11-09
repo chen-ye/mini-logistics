@@ -14,7 +14,8 @@ workerSelf.addEventListener("message", (event) => {
     return;
   }
 
-  const { requestId, config, preserveCamera } = event.data;
+  const { requestId, config, preserveCamera, preserveUrlHydration } =
+    event.data;
 
   const tWall0 = performance.now();
   const world = runWorldPipeline(config);
@@ -22,5 +23,8 @@ workerSelf.addEventListener("message", (event) => {
 
   /** @type {Transferable[]} */
   const transferList = [...extractWorldTransferables(world)];
-  workerSelf.postMessage({ requestId, preserveCamera, world }, transferList);
+  workerSelf.postMessage(
+    { requestId, preserveCamera, preserveUrlHydration, world },
+    transferList,
+  );
 });

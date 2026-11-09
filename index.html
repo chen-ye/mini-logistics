@@ -35,6 +35,7 @@
           id="toggleDrawerBtn"
           title="Toggle Procedural Algorithm Panel"
           aria-label="Toggle Procedural Algorithm Panel"
+          aria-expanded="true"
           class="w-9 h-9 sm:w-11 sm:h-11 !p-0 shrink-0 rounded-full glass-panel flex items-center justify-center text-[#36383e] hover:bg-[#36383e] hover:text-[#f2efe9] active:scale-95 transition-all"
         >
           <svg
@@ -150,6 +151,7 @@
           <div class="grid grid-cols-2 gap-1.5">
             <button
               data-layer="aesthetic"
+              aria-pressed="true"
               class="layer-btn active text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
             >
               <span class="w-2 h-2 rounded-full bg-[#e85c90] shrink-0"></span>
@@ -157,6 +159,7 @@
             </button>
             <button
               data-layer="rci"
+              aria-pressed="false"
               class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
             >
               <span class="flex items-center gap-0.5 shrink-0"
@@ -168,6 +171,7 @@
             </button>
             <button
               data-layer="airport"
+              aria-pressed="false"
               class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
             >
               <span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
@@ -175,6 +179,7 @@
             </button>
             <button
               data-layer="hierarchy"
+              aria-pressed="false"
               class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
             >
               <span class="w-2 h-2 rounded-full bg-indigo-500 shrink-0"></span>
@@ -182,6 +187,7 @@
             </button>
             <button
               data-layer="hydrology"
+              aria-pressed="false"
               class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
             >
               <span class="w-2 h-2 rounded-full bg-cyan-500 shrink-0"></span>
@@ -189,6 +195,7 @@
             </button>
             <button
               data-layer="roadgrid"
+              aria-pressed="false"
               class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
             >
               <span class="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
@@ -549,6 +556,7 @@
       >
         <button
           data-speed="0"
+          aria-pressed="false"
           class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition"
           title="Pause Traffic & Flights"
           aria-label="Pause Traffic and Flights"
@@ -564,6 +572,7 @@
         </button>
         <button
           data-speed="1"
+          aria-pressed="true"
           class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center bg-[#36383e] text-[#f2efe9] active:scale-95 transition"
           title="Normal Speed"
           aria-label="Normal Speed"
@@ -579,6 +588,7 @@
         </button>
         <button
           data-speed="2.5"
+          aria-pressed="false"
           class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition"
           title="Fast Forward"
           aria-label="Fast Forward"
@@ -642,6 +652,7 @@
     <aside
       id="inspectorCard"
       aria-label="Selected entity inspector"
+      inert
       class="fixed bottom-2.5 left-2.5 right-2.5 sm:left-auto sm:bottom-4 sm:right-4 z-30 sm:w-[25.5rem] glass-panel rounded-2xl p-4 hidden pointer-events-auto transition-all duration-150"
     >
       <div

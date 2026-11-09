@@ -758,8 +758,15 @@ export interface RoadGraphDiagnostics {
 
 export type InspectedEntity = Destination | Airport | Town;
 
+export interface CameraTarget {
+  readonly cx: number;
+  readonly cy: number;
+  readonly zoom: number;
+}
+
 export interface InspectedSelection {
   readonly type: "airport" | "building" | "town" | null;
+  readonly id: number | null;
   readonly entity: InspectedEntity | null;
 }
 
@@ -776,6 +783,7 @@ export interface AppState {
   readonly activeLayer: ViewLayer;
   readonly simSpeed: number;
   readonly drawerOpen: boolean;
+  readonly camera: CameraTarget | null;
   readonly inspected: InspectedSelection;
 }
 

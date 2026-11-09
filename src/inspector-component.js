@@ -334,11 +334,17 @@ export class EntityInspectorElement extends BaseElement {
     const body = this.bodyEl || this.querySelector("#inspBody");
 
     if (!inspected || !inspected.entity) {
-      if (card) card.classList.add("hidden");
+      if (card) {
+        card.classList.add("hidden");
+        card.toggleAttribute("inert", true);
+      }
       return;
     }
 
-    if (card) card.classList.remove("hidden");
+    if (card) {
+      card.classList.remove("hidden");
+      card.toggleAttribute("inert", false);
+    }
 
     const entity = inspected.entity;
     const rawType = /** @type {string | null} */ (inspected.type);

@@ -213,4 +213,140 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
 
     expect(pageErrors).toEqual([]);
   });
+
+  test("Deep Linking & History: hydrates all 4 domains from URL query, commits user changes, and supports Back/Forward navigation", async ({
+    page,
+  }) => {
+    /** @type {string[]} */
+    const pageErrors = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    await page.setViewportSize({ width: 1600, height: 1000 });
+
+    const deepUrl =
+      "/?seed=VALLEY-618&size=compact&arch=island-hopper&terrain=quilez-erosion&hydro=d8-strahler&water=62&towns=16&density=180&airports=5&wind=2&ramps=0&layer=rci&speed=2.5&drawer=0&cx=120.5&cy=75.0&z=1.85&inspect=town:0";
+
+    await page.goto(deepUrl);
+
+    // Wait for world build and hydration
+    await page.waitForFunction(
+      () =>
+        Boolean(
+          window.currentWorld &&
+          window.simulator &&
+          window.renderer &&
+          window.currentWorld.towns.length > 0,
+        ),
+      null,
+      { timeout: 20000 },
+    );
+
+    expect(pageErrors).toEqual([]);
+
+    // 1. Verify Map Gen Inputs
+    await expect(page.locator("#seedInput")).toHaveValue("VALLEY-618");
+    await expect(page.locator("#worldSizeSelect")).toHaveValue("compact");
+    await expect(page.locator("#archetypeSelect")).toHaveValue("island-hopper");
+    await expect(page.locator("#terrainAlgoSelect")).toHaveValue(
+      "quilez-erosion",
+    );
+    await expect(page.locator("#hydrologyAlgoSelect")).toHaveValue(
+      "d8-strahler",
+    );
+    await expect(page.locator("#sliderWater")).toHaveValue("62");
+    await expect(page.locator("#sliderTowns")).toHaveValue("16");
+    await expect(page.locator("#sliderDensity")).toHaveValue("180");
+    await expect(page.locator("#sliderAirports")).toHaveValue("5");
+    await expect(page.locator("#sliderWind")).toHaveValue("2");
+    expect(await page.locator("#toggleInterRamps").isChecked()).toBe(false);
+
+    // 2. Verify View State & ARIA Attributes
+    const activeLayer = await page.evaluate(() => window.renderer.activeLayer);
+    expect(activeLayer).toBe("rci");
+    await expect(page.locator('.layer-btn[data-layer="rci"]')).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await expect(page.locator('.speed-btn[data-speed="2.5"]')).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    // Drawer is closed per drawer=0
+    await expect(page.locator("#generatorDrawer")).toBeHidden();
+    await expect(page.locator("#toggleDrawerBtn")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    // 3. Verify Camera Coordinates
+    const cam = await page.evaluate(() => {
+      const r = window.renderer;
+      const w = window.currentWorld;
+      if (!r || !w || !r.canvas) return null;
+      const ts = w.tileSize;
+      const cx = (r.canvas.width * 0.5 - r.camera.x) / (r.camera.zoom * ts);
+      const cy = (r.canvas.height * 0.5 - r.camera.y) / (r.camera.zoom * ts);
+      return { cx, cy, zoom: r.camera.zoom };
+    });
+    expect(cam).not.toBeNull();
+    if (cam) {
+      expect(Math.abs(cam.cx - 120.5)).toBeLessThan(0.5);
+      expect(Math.abs(cam.cy - 75.0)).toBeLessThan(0.5);
+      expect(Math.abs(cam.zoom - 1.85)).toBeLessThan(0.05);
+    }
+
+    // 4. Verify Inspected Entity Dossier
+    const inspector = page.locator("#inspectorCard");
+    await expect(inspector).toBeVisible();
+    await expect(inspector).not.toHaveAttribute("inert");
+    await expect(page.locator("#inspBadge")).toContainText("TIER");
+
+    // 5. Reactive URL Synchronization: toggle drawer removes drawer=0 (default on desktop)
+    await page.locator("#toggleDrawerBtn").click();
+    await expect(page.locator("#generatorDrawer")).toBeVisible();
+    expect(page.url()).not.toContain("drawer=0");
+
+    // Switch view layer inside open drawer commits layer=aesthetic (omitted by default)
+    await page.locator('.layer-btn[data-layer="aesthetic"]').click();
+    expect(page.url()).not.toContain("layer=rci");
+
+    // Close drawer again: commits drawer=0
+    await page.locator("#toggleDrawerBtn").click();
+    await expect(page.locator("#generatorDrawer")).toBeHidden();
+    expect(page.url()).toContain("drawer=0");
+
+    // 6. Navigation: submitting a new seed pushes a history state
+    await page.locator("#seedInput").fill("DELTA-777");
+    await page.locator("#seedInput").press("Enter");
+    await page.waitForFunction(
+      () => window.currentWorld?.config?.seed === "DELTA-777",
+      null,
+      { timeout: 15000 },
+    );
+    expect(page.url()).toContain("seed=DELTA-777");
+
+    // 7. Browser Back Navigation (popstate) restores previous world & controls
+    await page.goBack();
+    await page.waitForFunction(
+      () => window.currentWorld?.config?.seed === "VALLEY-618",
+      null,
+      { timeout: 15000 },
+    );
+    expect(page.url()).toContain("seed=VALLEY-618");
+    await expect(page.locator("#seedInput")).toHaveValue("VALLEY-618");
+
+    // 8. Browser Forward Navigation restores DELTA-777
+    await page.goForward();
+    await page.waitForFunction(
+      () => window.currentWorld?.config?.seed === "DELTA-777",
+      null,
+      { timeout: 15000 },
+    );
+    expect(page.url()).toContain("seed=DELTA-777");
+    await expect(page.locator("#seedInput")).toHaveValue("DELTA-777");
+
+    expect(pageErrors).toEqual([]);
+  });
 });
