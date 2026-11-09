@@ -707,94 +707,7 @@ export function ensureVehicleRoutingGraph(world) {
         ? spurEntry.mNodesRev
         : spurEntry.mNodesFwd;
 
-      // 1. Outer Concave Slip-Ramp in (-1, +sy) quadrant:
-      // Direction 1a: Mainline Fwd -> Spur Outbound
-      {
-        const rNodes = [];
-        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
-          const mt = 1 - t;
-          const lx = mt * mt * -2.15 + 2 * mt * t * -0.72;
-          const ly = 2 * mt * t * (sy * 0.72) + t * t * (sy * 2.15);
-          const wPt = toWorld(lx, ly);
-          rNodes.push(addNode(wPt.x, wPt.y, true, false, false, false, true));
-        }
-        const firstPt = nodes[rNodes[0]];
-        const lastPt = nodes[rNodes[rNodes.length - 1]];
-        const kMO = findSampleNear(
-          mainEntry.mw,
-          pMainOuter.x,
-          pMainOuter.y,
-          null,
-          firstPt,
-          1,
-        );
-        const kSO = findSampleNear(
-          spurEntry.mw,
-          pSpurOuter.x,
-          pSpurOuter.y,
-          lastPt,
-          null,
-          spurEndAtIc ? -1 : 1,
-        );
-        const chain = [
-          mainEntry.mNodesFwd[kMO],
-          ...rNodes,
-          spurOutboundNode[kSO],
-        ];
-        for (let c = 0; c < chain.length - 1; c++) {
-          const uN = chain[c];
-          const vN = chain[c + 1];
-          const segD =
-            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
-            0.4;
-          addEdge(uN, vN, segD * 0.55 + 0.1);
-        }
-      }
-
-      // Direction 1b: Spur Inbound -> Mainline Rev
-      {
-        const rNodes = [];
-        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
-          const mt = 1 - t;
-          const lx = 2 * mt * t * -0.72 + t * t * -2.15;
-          const ly = mt * mt * (sy * 2.15) + 2 * mt * t * (sy * 0.72);
-          const wPt = toWorld(lx, ly);
-          rNodes.push(addNode(wPt.x, wPt.y, true, false, false, false, true));
-        }
-        const firstPt = nodes[rNodes[0]];
-        const lastPt = nodes[rNodes[rNodes.length - 1]];
-        const kSO = findSampleNear(
-          spurEntry.mw,
-          pSpurOuter.x,
-          pSpurOuter.y,
-          null,
-          firstPt,
-          spurEndAtIc ? 1 : -1,
-        );
-        const kMO = findSampleNear(
-          mainEntry.mw,
-          pMainOuter.x,
-          pMainOuter.y,
-          lastPt,
-          null,
-          -1,
-        );
-        const chain = [
-          spurInboundNode[kSO],
-          ...rNodes,
-          mainEntry.mNodesRev[kMO],
-        ];
-        for (let c = 0; c < chain.length - 1; c++) {
-          const uN = chain[c];
-          const vN = chain[c + 1];
-          const segD =
-            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
-            0.4;
-          addEdge(uN, vN, segD * 0.55 + 0.1);
-        }
-      }
-
-      // 2. Inner 270° Trumpet Bell Loop in (+1, -sy) opposite quadrant
+      // Helper to evaluate cubic Bezier segment in local Trumpet coordinates
       const evalCubicSeg = (p0, p1, p2, p3, t) => {
         const mt = 1 - t;
         return {
@@ -821,7 +734,185 @@ export function ensureVehicleRoutingGraph(world) {
       const seg2_p2 = { lx: 1.92, ly: 0 };
       const seg2_p3 = { lx: 0.52, ly: 0 };
 
-      // Direction 2a: Spur Inbound -> Mainline Fwd
+      const seg2Fwd_p0 = { lx: 1.02, ly: oppSy * 1.85 };
+      const seg2Fwd_p1 = { lx: 1.85, ly: oppSy * 1.85 };
+      const seg2Fwd_p2 = { lx: 1.65, ly: 0 };
+      const seg2Fwd_p3 = { lx: 1.92, ly: 0 };
+      const pMainEast = toWorld(1.92, 0);
+
+      // 1. West Mainline (-lx) <-> Spur Movements (1a & 1b):
+      // Route each direction along whichever of the two painted Trumpet ribbons (Outer Slip-Ramp in (-1, +sy)
+      // vs. Inner Bell Loop in (+1, -sy)) sits on its right-hand carriageway side!
+      if (sy === 1) {
+        // Movement 1a (sy === 1): Mainline Fwd (ly > 0) -> Outer Slip-Ramp (-1, +1) -> Spur Outbound (lx < 0)
+        const rNodesOut = [];
+        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
+          const mt = 1 - t;
+          const lx = mt * mt * -2.15 + 2 * mt * t * -0.72;
+          const ly = 2 * mt * t * (sy * 0.72) + t * t * (sy * 2.15);
+          const wPt = toWorld(lx, ly);
+          rNodesOut.push(
+            addNode(wPt.x, wPt.y, true, false, false, false, true),
+          );
+        }
+        const kMO = findSampleNear(
+          mainEntry.mw,
+          pMainOuter.x,
+          pMainOuter.y,
+          null,
+          nodes[rNodesOut[0]],
+          1,
+        );
+        const kSO = findSampleNear(
+          spurEntry.mw,
+          pSpurOuter.x,
+          pSpurOuter.y,
+          nodes[rNodesOut[rNodesOut.length - 1]],
+          null,
+          spurEndAtIc ? -1 : 1,
+        );
+        const chainOut = [
+          mainEntry.mNodesFwd[kMO],
+          ...rNodesOut,
+          spurOutboundNode[kSO],
+        ];
+        for (let c = 0; c < chainOut.length - 1; c++) {
+          const uN = chainOut[c];
+          const vN = chainOut[c + 1];
+          const segD =
+            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
+            0.4;
+          addEdge(uN, vN, segD * 0.55 + 0.1);
+        }
+
+        // Movement 1b (sy === 1): Spur Inbound (lx > 0) -> Inner Bell Loop (+1, -1) -> Mainline Rev (ly < 0, -lx)
+        const rNodesBell = [];
+        for (const t of [0.0, 0.33, 0.67, 1.0]) {
+          const lp = evalCubicSeg(seg1_p0, seg1_p1, seg1_p2, seg1_p3, t);
+          const wp = toWorld(lp.lx, lp.ly);
+          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
+        }
+        for (const t of [0.33, 0.67, 1.0]) {
+          const lp = evalCubicSeg(seg2_p0, seg2_p1, seg2_p2, seg2_p3, t);
+          const wp = toWorld(lp.lx, lp.ly);
+          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
+        }
+        const kSI = findSampleNear(
+          spurEntry.mw,
+          pSpurInner.x,
+          pSpurInner.y,
+          null,
+          nodes[rNodesBell[0]],
+          spurEndAtIc ? 1 : -1,
+        );
+        const kMI = findSampleNear(
+          mainEntry.mw,
+          pMainInner.x,
+          pMainInner.y,
+          nodes[rNodesBell[rNodesBell.length - 1]],
+          null,
+          -1,
+        );
+        const chainBell = [
+          spurInboundNode[kSI],
+          ...rNodesBell,
+          mainEntry.mNodesRev[kMI],
+        ];
+        for (let c = 0; c < chainBell.length - 1; c++) {
+          const uN = chainBell[c];
+          const vN = chainBell[c + 1];
+          const segD =
+            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
+            0.4;
+          addEdge(uN, vN, segD * 0.55 + 0.1);
+        }
+      } else {
+        // Movement 1a (sy === -1): Mainline Fwd (ly > 0) -> Inner Bell Loop (+1, +1) -> Spur Outbound (lx > 0)
+        const rNodesBell = [];
+        for (const t of [0.0, 0.33, 0.67, 1.0]) {
+          const lp = evalCubicSeg(seg2_p3, seg2_p2, seg2_p1, seg2_p0, t);
+          const wp = toWorld(lp.lx, lp.ly);
+          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
+        }
+        for (const t of [0.33, 0.67, 1.0]) {
+          const lp = evalCubicSeg(seg1_p3, seg1_p2, seg1_p1, seg1_p0, t);
+          const wp = toWorld(lp.lx, lp.ly);
+          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
+        }
+        const kMI = findSampleNear(
+          mainEntry.mw,
+          pMainInner.x,
+          pMainInner.y,
+          null,
+          nodes[rNodesBell[0]],
+          1,
+        );
+        const kSI = findSampleNear(
+          spurEntry.mw,
+          pSpurInner.x,
+          pSpurInner.y,
+          nodes[rNodesBell[rNodesBell.length - 1]],
+          null,
+          spurEndAtIc ? -1 : 1,
+        );
+        const chainBell = [
+          mainEntry.mNodesFwd[kMI],
+          ...rNodesBell,
+          spurOutboundNode[kSI],
+        ];
+        for (let c = 0; c < chainBell.length - 1; c++) {
+          const uN = chainBell[c];
+          const vN = chainBell[c + 1];
+          const segD =
+            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
+            0.4;
+          addEdge(uN, vN, segD * 0.55 + 0.1);
+        }
+
+        // Movement 1b (sy === -1): Spur Inbound (lx < 0) -> Outer Slip-Ramp (-1, -1) -> Mainline Rev (ly < 0, -lx)
+        const rNodesOut = [];
+        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
+          const mt = 1 - t;
+          const lx = 2 * mt * t * -0.72 + t * t * -2.15;
+          const ly = mt * mt * (sy * 2.15) + 2 * mt * t * (sy * 0.72);
+          const wPt = toWorld(lx, ly);
+          rNodesOut.push(
+            addNode(wPt.x, wPt.y, true, false, false, false, true),
+          );
+        }
+        const kSO = findSampleNear(
+          spurEntry.mw,
+          pSpurOuter.x,
+          pSpurOuter.y,
+          null,
+          nodes[rNodesOut[0]],
+          spurEndAtIc ? 1 : -1,
+        );
+        const kMO = findSampleNear(
+          mainEntry.mw,
+          pMainOuter.x,
+          pMainOuter.y,
+          nodes[rNodesOut[rNodesOut.length - 1]],
+          null,
+          -1,
+        );
+        const chainOut = [
+          spurInboundNode[kSO],
+          ...rNodesOut,
+          mainEntry.mNodesRev[kMO],
+        ];
+        for (let c = 0; c < chainOut.length - 1; c++) {
+          const uN = chainOut[c];
+          const vN = chainOut[c + 1];
+          const segD =
+            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
+            0.4;
+          addEdge(uN, vN, segD * 0.55 + 0.1);
+        }
+      }
+
+      // 2. Inner 270° Trumpet Bell Loop in (+1, -sy) opposite quadrant:
+      // Direction 2a: Spur Inbound -> Mainline Fwd (+lx)
       {
         const rNodes = [];
         for (const t of [0.0, 0.33, 0.67, 1.0]) {
@@ -830,7 +921,13 @@ export function ensureVehicleRoutingGraph(world) {
           rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
         }
         for (const t of [0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg2_p0, seg2_p1, seg2_p2, seg2_p3, t);
+          const lp = evalCubicSeg(
+            seg2Fwd_p0,
+            seg2Fwd_p1,
+            seg2Fwd_p2,
+            seg2Fwd_p3,
+            t,
+          );
           const wp = toWorld(lp.lx, lp.ly);
           rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
         }
@@ -844,10 +941,10 @@ export function ensureVehicleRoutingGraph(world) {
           firstPt,
           spurEndAtIc ? 1 : -1,
         );
-        const kMI = findSampleNear(
+        const kME = findSampleNear(
           mainEntry.mw,
-          pMainInner.x,
-          pMainInner.y,
+          pMainEast.x,
+          pMainEast.y,
           lastPt,
           null,
           1,
@@ -855,7 +952,7 @@ export function ensureVehicleRoutingGraph(world) {
         const chain = [
           spurInboundNode[kSI],
           ...rNodes,
-          mainEntry.mNodesFwd[kMI],
+          mainEntry.mNodesFwd[kME],
         ];
         for (let c = 0; c < chain.length - 1; c++) {
           const uN = chain[c];
@@ -867,7 +964,7 @@ export function ensureVehicleRoutingGraph(world) {
         }
       }
 
-      // Direction 2b: Mainline Rev -> Spur Outbound
+      // Direction 2b: Mainline Rev (-lx) -> Spur Outbound
       {
         const rNodes = [];
         for (const t of [0.0, 0.33, 0.67, 1.0]) {
@@ -972,6 +1069,45 @@ export function ensureVehicleRoutingGraph(world) {
     });
   }
 
+  /** @type {import('./types.js').RampGraphEdge[]} */
+  const rampEdges = [];
+  /** @type {import('./types.js').RampGraphNode[]} */
+  const rampNodes = [];
+  for (let u = 0; u < nodes.length; u++) {
+    const nu = nodes[u];
+    if (nu.isSlipRamp || nu.isRoundabout) {
+      rampNodes.push({
+        x: nu.x,
+        y: nu.y,
+        isPortal: Boolean(nu.isRoundabout && !nu.isSlipRamp),
+      });
+    }
+    const edges = adj[u];
+    if (!edges) continue;
+    for (let eIdx = 0; eIdx < edges.length; eIdx++) {
+      const v = edges[eIdx].to;
+      const nv = nodes[v];
+      if (
+        nu.isSlipRamp ||
+        nv.isSlipRamp ||
+        nu.isRoundabout ||
+        nv.isRoundabout
+      ) {
+        rampEdges.push({
+          x0: nu.x,
+          y0: nu.y,
+          x1: nv.x,
+          y1: nv.y,
+          isPortal: Boolean(
+            (nu.isRoundabout || nv.isRoundabout) &&
+            !nu.isSlipRamp &&
+            !nv.isSlipRamp,
+          ),
+        });
+      }
+    }
+  }
+
   const totalNodes = nodes.length;
   world._vehicleGraph = {
     nodes,
@@ -980,6 +1116,8 @@ export function ensureVehicleRoutingGraph(world) {
     numSurfaceNodes,
     roundabouts,
     driveways,
+    rampEdges,
+    rampNodes,
     gScore: new Float64Array(totalNodes),
     parent: new Int32Array(totalNodes),
     seenGen: new Int32Array(totalNodes),
@@ -1262,9 +1400,18 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
     /** @type {number} */
     let laneOff = SIM_CONFIG.VEHICLE_ROUTING.laneOffsetRoad;
     if (p.isRoundaboutArc) laneOff = 0.0;
-    else if (p.isSlipRamp)
-      laneOff = SIM_CONFIG.VEHICLE_ROUTING.laneOffsetSlipRamp;
-    else if (p.isDriveway)
+    else if (p.isSlipRamp) {
+      const prevMotorwayMainline =
+        i > 0 && spine[i - 1].onMotorway && !spine[i - 1].isSlipRamp;
+      const nextMotorwayMainline =
+        i + 1 < spine.length &&
+        spine[i + 1].onMotorway &&
+        !spine[i + 1].isSlipRamp;
+      laneOff =
+        prevMotorwayMainline || nextMotorwayMainline
+          ? SIM_CONFIG.VEHICLE_ROUTING.laneOffsetMotorway
+          : SIM_CONFIG.VEHICLE_ROUTING.laneOffsetSlipRamp;
+    } else if (p.isDriveway)
       laneOff = SIM_CONFIG.VEHICLE_ROUTING.laneOffsetDriveway;
     else if (p.onMotorway)
       laneOff = SIM_CONFIG.VEHICLE_ROUTING.laneOffsetMotorway;

@@ -286,7 +286,7 @@ export class ProceduralLogisticsWorld {
     this.wallTimeMs = 0;
     /** @type {RoadTopology | undefined} */
     this.roadTopology = undefined;
-    /** @type {{ roundabouts: import('./types.js').RoundaboutSpec[], driveways?: import('./types.js').DrivewaySpec[] } | undefined} */
+    /** @type {{ roundabouts: import('./types.js').RoundaboutSpec[], driveways?: import('./types.js').DrivewaySpec[], rampEdges?: import('./types.js').RampGraphEdge[], rampNodes?: import('./types.js').RampGraphNode[] } | undefined} */
     this.routingGraph = undefined;
     /** @type {{ com: number, raw: number, mfg: number, log: number } | undefined} */
     this.rciCounts = undefined;
@@ -1970,6 +1970,8 @@ export function createWorldPipeline({
         routingGraph: {
           roundabouts: graph.roundabouts,
           driveways: graph.driveways,
+          rampEdges: graph.rampEdges,
+          rampNodes: graph.rampNodes,
         },
         displacedBuildingsCount: w.displacedBuildingsCount,
         bridgeCount: w.bridgeCount,
@@ -2147,6 +2149,8 @@ export function extractWorldTransferables(world) {
   world.routingGraph = {
     roundabouts: world.routingGraph?.roundabouts || [],
     driveways: world.routingGraph?.driveways || [],
+    rampEdges: world.routingGraph?.rampEdges || [],
+    rampNodes: world.routingGraph?.rampNodes || [],
   };
   if (world.roadTopology) {
     world.roadTopology = {

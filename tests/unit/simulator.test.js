@@ -419,6 +419,93 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
             }
           }
         }
+
+        // 3. Zero Cross-Carriageway Ramp Exits/Merges: ramp transitions never cross onto the opposing motorway lane
+        for (let i = 2; i < pts.length - 2; i++) {
+          const isHwyExit =
+            pts[i - 1].onMotorway &&
+            !pts[i - 1].isSlipRamp &&
+            pts[i].isSlipRamp;
+          const isHwyMerge =
+            pts[i - 1].isSlipRamp && pts[i].onMotorway && !pts[i].isSlipRamp;
+          if (!isHwyExit && !isHwyMerge) continue;
+
+          const mwPt = isHwyExit ? pts[i - 1] : pts[i];
+          const mwOther = isHwyExit ? pts[i - 2] : pts[i + 1];
+          const vx = isHwyExit ? mwPt.x - mwOther.x : mwOther.x - mwPt.x;
+          const vy = isHwyExit ? mwPt.y - mwOther.y : mwOther.y - mwPt.y;
+          const vLen = Math.hypot(vx, vy) || 1;
+
+          /** @type {import("../../src/types.js").Motorway | null} */
+          let bestMw = null;
+          let bestMwD = Infinity;
+          let isFwd = true;
+          for (const mw of world.motorways) {
+            for (let k = 0; k < mw.samples.length - 1; k++) {
+              const ax = mw.samples[k].x;
+              const ay = mw.samples[k].y;
+              const bx = mw.samples[k + 1].x;
+              const by = mw.samples[k + 1].y;
+              const sdx = bx - ax;
+              const sdy = by - ay;
+              const sLen = Math.hypot(sdx, sdy) || 1;
+              if (Math.abs((vx * sdx + vy * sdy) / (vLen * sLen)) < 0.7)
+                continue;
+              const t = Math.max(
+                0,
+                Math.min(
+                  1,
+                  ((mwPt.x - ax) * sdx + (mwPt.y - ay) * sdy) / (sLen * sLen),
+                ),
+              );
+              const d = Math.hypot(
+                mwPt.x - (ax + t * sdx),
+                mwPt.y - (ay + t * sdy),
+              );
+              if (d < bestMwD) {
+                bestMwD = d;
+                bestMw = mw;
+                isFwd = vx * sdx + vy * sdy >= 0;
+              }
+            }
+          }
+          if (!bestMw) continue;
+
+          const rampIdx = isHwyExit ? i : i - 1;
+          const rPt = pts[rampIdx];
+          let minSegD = Infinity;
+          let signedRight = 0;
+          let atEnd = false;
+          const s = bestMw.samples;
+          for (let k = 0; k < s.length - 1; k++) {
+            const ax = s[k].x;
+            const ay = s[k].y;
+            const bx = s[k + 1].x;
+            const by = s[k + 1].y;
+            const dx = bx - ax;
+            const dy = by - ay;
+            const l2 = dx * dx + dy * dy || 1;
+            const t = Math.max(
+              0,
+              Math.min(1, ((rPt.x - ax) * dx + (rPt.y - ay) * dy) / l2),
+            );
+            const cx = ax + t * dx;
+            const cy = ay + t * dy;
+            const d = Math.hypot(rPt.x - cx, rPt.y - cy);
+            if (d < minSegD) {
+              minSegD = d;
+              atEnd = (k === 0 && t === 0) || (k === s.length - 2 && t === 1);
+              const len = Math.sqrt(l2) || 1;
+              const dir = isFwd ? 1 : -1;
+              const nRx = (-dy / len) * dir;
+              const nRy = (dx / len) * dir;
+              signedRight = (rPt.x - cx) * nRx + (rPt.y - cy) * nRy;
+            }
+          }
+          if (!atEnd) {
+            expect(signedRight).toBeGreaterThanOrEqual(-0.02);
+          }
+        }
       }
     }
   });

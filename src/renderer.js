@@ -3644,6 +3644,11 @@ export class MiniMotorwaysRenderer {
     const topo =
       world.roadTopology ||
       deriveRoadTopology(world.W, world.H, world.roads, world.buildingMask);
+    const rampEdges =
+      world.routingGraph?.rampEdges || world._vehicleGraph?.rampEdges || [];
+    const laneTrackCount =
+      (world.cargoLinks?.length || 0) * 2 +
+      (world.commuterRoutes?.length || 0) * 2;
     return {
       deg: topo.vertexDeg,
       edgeCount: topo.edgeCount,
@@ -3651,6 +3656,8 @@ export class MiniMotorwaysRenderer {
       arterialTiles: topo.arterialTiles,
       bridgeTiles: topo.bridgeTiles,
       junctionCount: topo.junctionCount,
+      rampEdgeCount: rampEdges.length,
+      laneTrackCount,
       anomalies: topo.anomalies,
     };
   }
@@ -3704,6 +3711,10 @@ export class MiniMotorwaysRenderer {
     const oy = ts * 0.5;
     const diag = this.computeRoadGraphDiagnostics(world);
     const driveways = world.routingGraph?.driveways || [];
+    const rampEdges =
+      world.routingGraph?.rampEdges || world._vehicleGraph?.rampEdges || [];
+    const rampNodes =
+      world.routingGraph?.rampNodes || world._vehicleGraph?.rampNodes || [];
 
     // 1. Driveway Frontage Links (`lotX, lotY -> roadX, roadY`)
     ctx.strokeStyle = "rgba(22, 163, 74, 0.65)";
@@ -3735,6 +3746,141 @@ export class MiniMotorwaysRenderer {
         ctx.lineTo(r.points[i].x * ts + ox, r.points[i].y * ts + oy);
       }
       ctx.stroke();
+    }
+
+    // 2B. Directed Lane Trajectories (`outboundTrack` in emerald #10b981, `inboundTrack` in indigo #6366f1)
+    const outboundTracks = [];
+    const inboundTracks = [];
+    for (const link of world.cargoLinks || []) {
+      if (link.outboundTrack?.pts?.length >= 2)
+        outboundTracks.push(link.outboundTrack);
+      if (link.inboundTrack?.pts?.length >= 2)
+        inboundTracks.push(link.inboundTrack);
+    }
+    const commuterList = world.commuterRoutes || [];
+    const commuterStep = Math.max(1, Math.floor(commuterList.length / 45));
+    for (let i = 0; i < commuterList.length; i += commuterStep) {
+      const rt = commuterList[i];
+      if (rt.outboundTrack?.pts?.length >= 2)
+        outboundTracks.push(rt.outboundTrack);
+      if (rt.inboundTrack?.pts?.length >= 2)
+        inboundTracks.push(rt.inboundTrack);
+    }
+
+    for (const [trackGroup, strokeCol, fillCol] of /** @type {const} */ ([
+      [outboundTracks, "rgba(16, 185, 129, 0.55)", "#059669"],
+      [inboundTracks, "rgba(99, 102, 241, 0.50)", "#4f46e5"],
+    ])) {
+      if (trackGroup.length === 0) continue;
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = 1.15;
+      ctx.beginPath();
+      for (const tr of trackGroup) {
+        const pts = tr.pts;
+        ctx.moveTo(pts[0].x * ts + ox, pts[0].y * ts + oy);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i].x * ts + ox, pts[i].y * ts + oy);
+        }
+      }
+      ctx.stroke();
+
+      // Directional flow chevrons along directed lane trajectories
+      ctx.fillStyle = fillCol;
+      ctx.beginPath();
+      for (const tr of trackGroup) {
+        const pts = tr.pts;
+        let accum = 0;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p0 = pts[i];
+          const p1 = pts[i + 1];
+          const dx = p1.x - p0.x;
+          const dy = p1.y - p0.y;
+          const segLen = Math.hypot(dx, dy);
+          accum += segLen;
+          if (accum >= 7.5 && segLen > 0.12) {
+            accum = 0;
+            const mx = (p0.x + p1.x) * 0.5 * ts + ox;
+            const my = (p0.y + p1.y) * 0.5 * ts + oy;
+            const ux = dx / segLen;
+            const uy = dy / segLen;
+            const nx = -uy;
+            const ny = ux;
+            const tipLen = 3.2;
+            const wingW = 2.1;
+            ctx.moveTo(mx + ux * tipLen, my + uy * tipLen);
+            ctx.lineTo(
+              mx - ux * tipLen * 0.65 + nx * wingW,
+              my - uy * tipLen * 0.65 + ny * wingW,
+            );
+            ctx.lineTo(
+              mx - ux * tipLen * 0.65 - nx * wingW,
+              my - uy * tipLen * 0.65 - ny * wingW,
+            );
+            ctx.closePath();
+          }
+        }
+      }
+      ctx.fill();
+    }
+
+    // 2C. Directed Interchange Ramp & Roundabout Portal Graph (`rampEdges` & `rampNodes`)
+    if (rampEdges.length > 0) {
+      for (const [isPortalFlag, edgeCol, arrowCol] of /** @type {const} */ ([
+        [true, "rgba(13, 148, 136, 0.82)", "#0f766e"],
+        [false, "rgba(219, 39, 119, 0.90)", "#be185d"],
+      ])) {
+        ctx.strokeStyle = edgeCol;
+        ctx.lineWidth = isPortalFlag ? 1.6 : 2.1;
+        ctx.beginPath();
+        for (const e of rampEdges) {
+          if (Boolean(e.isPortal) !== isPortalFlag) continue;
+          ctx.moveTo(e.x0 * ts + ox, e.y0 * ts + oy);
+          ctx.lineTo(e.x1 * ts + ox, e.y1 * ts + oy);
+        }
+        ctx.stroke();
+
+        // Directed arrowheads on interchange ramp graph edges
+        ctx.fillStyle = arrowCol;
+        ctx.beginPath();
+        for (const e of rampEdges) {
+          if (Boolean(e.isPortal) !== isPortalFlag) continue;
+          const dx = (e.x1 - e.x0) * ts;
+          const dy = (e.y1 - e.y0) * ts;
+          const len = Math.hypot(dx, dy);
+          if (len < 3.5) continue;
+          const ux = dx / len;
+          const uy = dy / len;
+          const nx = -uy;
+          const ny = ux;
+          const mx = e.x0 * ts + ox + dx * 0.58;
+          const my = e.y0 * ts + oy + dy * 0.58;
+          const tip = 3.6;
+          const wing = 2.4;
+          ctx.moveTo(mx + ux * tip, my + uy * tip);
+          ctx.lineTo(
+            mx - ux * tip * 0.6 + nx * wing,
+            my - uy * tip * 0.6 + ny * wing,
+          );
+          ctx.lineTo(
+            mx - ux * tip * 0.6 - nx * wing,
+            my - uy * tip * 0.6 - ny * wing,
+          );
+          ctx.closePath();
+        }
+        ctx.fill();
+      }
+
+      for (const rn of rampNodes) {
+        const px = rn.x * ts + ox;
+        const py = rn.y * ts + oy;
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = rn.isPortal ? "#0f766e" : "#be185d";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(px, py, rn.isPortal ? 2.6 : 2.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
     }
 
     // 3. Vertex Degree Nodes (`deg 1` terminal, `deg 2` through-node, `deg >= 3` junction)
@@ -3787,7 +3933,7 @@ export class MiniMotorwaysRenderer {
     ctx.save();
     const drawerOpen = canvas.width >= 640 && this.drawerOpen;
     const leftSafe = drawerOpen ? 412 : 14;
-    const boxW = Math.min(canvas.width - leftSafe - 14, 790);
+    const boxW = Math.min(canvas.width - leftSafe - 14, 1020);
     const boxH = 38;
     const bx = leftSafe;
     const by = canvas.height - boxH - 14;
@@ -3807,6 +3953,8 @@ export class MiniMotorwaysRenderer {
       { col: "#0891b2", label: `Bridge Tiles (${diag.bridgeTiles})` },
       { col: "#334155", label: `Vector Edges (${diag.edgeCount})` },
       { col: "#dc2626", label: `Junctions deg≥3 (${diag.junctionCount})` },
+      { col: "#db2777", label: `Ramp Edges (${diag.rampEdgeCount})` },
+      { col: "#10b981", label: `Lane Tracks (${diag.laneTrackCount})` },
       {
         col: anomCount === 0 ? "#16a34a" : "#e11d48",
         label: `Anomalies (${anomCount})`,
@@ -3824,8 +3972,8 @@ export class MiniMotorwaysRenderer {
       ctx.arc(curX + 4, midY, 4.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#36383e";
-      ctx.fillText(it.label, curX + 13, midY + 0.5);
-      curX += ctx.measureText(it.label).width + 28;
+      ctx.fillText(it.label, curX + 12, midY + 0.5);
+      curX += ctx.measureText(it.label).width + 22;
     }
     ctx.restore();
   }

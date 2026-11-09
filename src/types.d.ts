@@ -478,6 +478,20 @@ export interface DrivewaySpec {
   y1: number;
 }
 
+export interface RampGraphEdge {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  isPortal?: boolean;
+}
+
+export interface RampGraphNode {
+  x: number;
+  y: number;
+  isPortal?: boolean;
+}
+
 export interface RoadTopology {
   roadGrid?: Uint8Array;
   roadEdges?: Set<number>;
@@ -498,6 +512,8 @@ export interface VehicleRoutingGraph {
   numSurfaceNodes: number;
   roundabouts: RoundaboutSpec[];
   driveways?: DrivewaySpec[];
+  rampEdges?: RampGraphEdge[];
+  rampNodes?: RampGraphNode[];
   gScore: Float64Array;
   parent: Int32Array;
   seenGen: Int32Array;
@@ -653,6 +669,8 @@ export interface Stage9RampsAndCargoState {
   routingGraph: {
     roundabouts: RoundaboutSpec[];
     driveways?: DrivewaySpec[];
+    rampEdges?: RampGraphEdge[];
+    rampNodes?: RampGraphNode[];
   };
   displacedBuildingsCount: number;
   bridgeCount: number;
@@ -753,6 +771,8 @@ export interface RoadGraphDiagnostics {
   arterialTiles: number;
   bridgeTiles: number;
   junctionCount: number;
+  rampEdgeCount: number;
+  laneTrackCount: number;
   anomalies: RoadGraphAnomaly[];
 }
 
