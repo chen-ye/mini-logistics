@@ -6654,7 +6654,7 @@ export class ProceduralLogisticsWorld {
       }
 
       for (const sxSign of [-1, 1]) {
-        let kRamp = kProj;
+        let kRamp = sxSign > 0 ? Math.max(kCenter, kProj) : Math.min(kCenter, kProj);
         let walked = 0;
         while (kRamp + sxSign >= 1 && kRamp + sxSign < samples.length - 1 && walked < 3.15) {
           const nextK = kRamp + sxSign;
@@ -6701,15 +6701,10 @@ export class ProceduralLogisticsWorld {
             y: p3.y - uAxisY * (u3 * 0.44)
           };
         } else {
-          // Merge tangentially into the octilinear surface road along the surface road vector `uRoad`
-          const rdx = rawT.x - crossPt.x;
-          const rdy = rawT.y - crossPt.y;
-          const rDist = Math.hypot(rdx, rdy) || 1;
-          const uRoadX = rdx / rDist;
-          const uRoadY = rdy / rDist;
+          // Approach the octilinear surface road smoothly without overshooting outward past `p3`
           p2 = {
-            x: p3.x - uRoadX * (v3 * 0.48) - uAxisX * (u3 * 0.18),
-            y: p3.y - uRoadY * (v3 * 0.48) - uAxisY * (u3 * 0.18)
+            x: p3.x - vAxisX * (v3 * 0.54) - uAxisX * (u3 * 0.20),
+            y: p3.y - vAxisY * (v3 * 0.54) - uAxisY * (u3 * 0.20)
           };
         }
 
