@@ -1009,6 +1009,14 @@ export class MiniMotorwaysRenderer {
           rIsland: ts * 0.33,
           accentColor: town ? town.palette.roof : '#8fa989'
         });
+      } else if (ic.type === 'diamond-ramp' && !ic.isThroughDiamond && ic.oppTermX !== undefined && ic.oppTermY !== undefined) {
+        roundabouts.push({
+          x: ic.oppTermX * ts + ts * 0.5,
+          y: ic.oppTermY * ts + ts * 0.5,
+          rRing: ts * 0.56,
+          rIsland: ts * 0.30,
+          accentColor: '#8fa989'
+        });
       }
     }
 
@@ -1035,10 +1043,7 @@ export class MiniMotorwaysRenderer {
       if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadCasing;
       ctx.lineWidth = r.type === 'street' ? ts * 0.58 : ts * 0.74;
-      const drawPts = r.isUnderpassStem
-        ? [{ x: r.points[0].x + (r.points[1].x - r.points[0].x) * 0.26, y: r.points[0].y + (r.points[1].y - r.points[0].y) * 0.26 }, ...r.points.slice(1)]
-        : r.points;
-      this.traceSmoothPath(ctx, drawPts, ts);
+      this.traceSmoothPath(ctx, r.points, ts);
       ctx.stroke();
     }
 
@@ -1163,10 +1168,7 @@ export class MiniMotorwaysRenderer {
       if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadAsphalt;
       ctx.lineWidth = r.type === 'street' ? ts * 0.42 : ts * 0.56;
-      const drawPts = r.isUnderpassStem
-        ? [{ x: r.points[0].x + (r.points[1].x - r.points[0].x) * 0.26, y: r.points[0].y + (r.points[1].y - r.points[0].y) * 0.26 }, ...r.points.slice(1)]
-        : r.points;
-      this.traceSmoothPath(ctx, drawPts, ts);
+      this.traceSmoothPath(ctx, r.points, ts);
       ctx.stroke();
     }
 
@@ -2147,6 +2149,19 @@ export class MiniMotorwaysRenderer {
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
 
+        // If this is a Diamond-T (`!ic.isThroughDiamond`), clip out the far-side roundabout's asphalt ring
+        // (`rRing + ts * 0.24`) so the two far-side pink ramps terminate cleanly at the left & right flanks of the roundabout!
+        if (!ic.isThroughDiamond && ic.oppTermX !== undefined && ic.oppTermY !== undefined) {
+          const rbx = ic.oppTermX * ts + ox;
+          const rby = ic.oppTermY * ts + oy;
+          const clipR = ts * 0.56 + ts * 0.24;
+          ctx.beginPath();
+          ctx.rect(-ts * 50, -ts * 50, (world.W + 100) * ts, (world.H + 100) * ts);
+          ctx.moveTo(rbx + clipR, rby);
+          ctx.arc(rbx, rby, clipR, 0, Math.PI * 2);
+          ctx.clip('evenodd');
+        }
+
         // 1. Draw all 4 Flexible World-Space Bezier Slip-Ramps (`ic.ramps`)
         for (const pass of ['border', 'fill']) {
           ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : '#f48fb1';
@@ -2165,27 +2180,13 @@ export class MiniMotorwaysRenderer {
         }
 
         // 2. Re-stroke the octilinear white surface underpass road fill (`posTerm <-> negTerm`)
-        //    over the slip-ramp tips at `p3` so the pink ramps tuck cleanly under the surface road edge
+        //    over the through-side slip-ramp tips at `p3` so the pink ramps tuck cleanly under the surface road edge
         if (ic.posTerm && ic.negTerm) {
-          const pPos = { ...ic.posTerm };
-          const pNeg = { ...ic.negTerm };
-          if (!ic.isThroughDiamond) {
-            const dx = pPos.x - pNeg.x;
-            const dy = pPos.y - pNeg.y;
-            const len = Math.hypot(dx, dy) || 1;
-            if (ic.connSide === 1) {
-              pNeg.x += (dx / len) * 0.26;
-              pNeg.y += (dy / len) * 0.26;
-            } else {
-              pPos.x -= (dx / len) * 0.26;
-              pPos.y -= (dy / len) * 0.26;
-            }
-          }
           ctx.strokeStyle = PALETTE.roadAsphalt;
           ctx.lineWidth = ts * 0.54;
           ctx.beginPath();
-          ctx.moveTo(pPos.x * ts + ox, pPos.y * ts + oy);
-          ctx.lineTo(pNeg.x * ts + ox, pNeg.y * ts + oy);
+          ctx.moveTo(ic.posTerm.x * ts + ox, ic.posTerm.y * ts + oy);
+          ctx.lineTo(ic.negTerm.x * ts + ox, ic.negTerm.y * ts + oy);
           ctx.stroke();
         }
 

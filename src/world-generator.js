@@ -4294,6 +4294,8 @@ export class ProceduralLogisticsWorld {
     for (const ic of this.interchanges || []) {
       if (ic.type === 'terminal-stub' && !ic.isAirportStub) {
         roundabouts.push({ x: ic.x, y: ic.y, rTiles: 0.64 });
+      } else if (ic.type === 'diamond-ramp' && !ic.isThroughDiamond && ic.oppTermX !== undefined && ic.oppTermY !== undefined) {
+        roundabouts.push({ x: ic.oppTermX, y: ic.oppTermY, rTiles: 0.56 });
       }
     }
 
@@ -6669,29 +6671,47 @@ export class ProceduralLogisticsWorld {
         const rNormX = -rTanY;
         const rNormY = rTanX;
 
+        // Start `p0` inside the expressway carriageway (`0.18` tiles off-center) with `p1` purely
+        // tangential to the expressway (`v1 = 0`) so the ramp feathers out with zero border bulge!
         const p0 = {
-          x: rPt.x + rNormX * sySign * 0.36,
-          y: rPt.y + rNormY * sySign * 0.36
+          x: rPt.x + rNormX * sySign * 0.18,
+          y: rPt.y + rNormY * sySign * 0.18
         };
 
-        // Express `p3 - p0` in the ramp's monotonic local `(uAlong, vAcross)` frame
         const dx = p3.x - p0.x;
         const dy = p3.y - p0.y;
         const uAxisX = -sxSign * rTanX;
         const uAxisY = -sxSign * rTanY;
         const vAxisX = sySign * rNormX;
         const vAxisY = sySign * rNormY;
-        const u3 = Math.max(1.6, dx * uAxisX + dy * uAxisY);
-        const v3 = Math.max(1.2, dx * vAxisX + dy * vAxisY);
+        const u3 = Math.max(1.8, dx * uAxisX + dy * uAxisY);
+        const v3 = Math.max(1.4, dx * vAxisX + dy * vAxisY);
 
         const p1 = {
-          x: p0.x + uAxisX * (u3 * 0.48) + vAxisX * (v3 * 0.12),
-          y: p0.y + uAxisY * (u3 * 0.48) + vAxisY * (v3 * 0.12)
+          x: p0.x + uAxisX * (u3 * 0.52),
+          y: p0.y + uAxisY * (u3 * 0.52)
         };
-        const p2 = {
-          x: p0.x + uAxisX * (u3 * 0.84) + vAxisX * (v3 * 0.62),
-          y: p0.y + uAxisY * (u3 * 0.84) + vAxisY * (v3 * 0.62)
-        };
+
+        const isFarRoundaboutT = !isThroughDiamond && sySign !== connSide;
+        let p2;
+        if (isFarRoundaboutT) {
+          // Join into the far-side roundabout from left and right along `uAxis`, perpendicular to the underpass stem (as a T!)
+          p2 = {
+            x: p3.x - uAxisX * (u3 * 0.44),
+            y: p3.y - uAxisY * (u3 * 0.44)
+          };
+        } else {
+          // Merge tangentially into the octilinear surface road along the surface road vector `uRoad`
+          const rdx = rawT.x - crossPt.x;
+          const rdy = rawT.y - crossPt.y;
+          const rDist = Math.hypot(rdx, rdy) || 1;
+          const uRoadX = rdx / rDist;
+          const uRoadY = rdy / rDist;
+          p2 = {
+            x: p3.x - uRoadX * (v3 * 0.48) - uAxisX * (u3 * 0.18),
+            y: p3.y - uRoadY * (v3 * 0.48) - uAxisY * (u3 * 0.18)
+          };
+        }
 
         ramps.push({
           sySign,
