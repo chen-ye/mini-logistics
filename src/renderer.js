@@ -1009,14 +1009,6 @@ export class MiniMotorwaysRenderer {
           rIsland: ts * 0.33,
           accentColor: town ? town.palette.roof : '#8fa989'
         });
-      } else if (ic.type === 'diamond-ramp') {
-        roundabouts.push({
-          x: ic.termX * ts + ts * 0.5,
-          y: ic.termY * ts + ts * 0.5,
-          rRing: ts * 0.56,
-          rIsland: ts * 0.30,
-          accentColor: '#8fa989'
-        });
       }
     }
 
@@ -1043,7 +1035,10 @@ export class MiniMotorwaysRenderer {
       if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadCasing;
       ctx.lineWidth = r.type === 'street' ? ts * 0.58 : ts * 0.74;
-      this.traceSmoothPath(ctx, r.points, ts);
+      const drawPts = r.isUnderpassStem
+        ? [{ x: r.points[0].x + (r.points[1].x - r.points[0].x) * 0.26, y: r.points[0].y + (r.points[1].y - r.points[0].y) * 0.26 }, ...r.points.slice(1)]
+        : r.points;
+      this.traceSmoothPath(ctx, drawPts, ts);
       ctx.stroke();
     }
 
@@ -1065,12 +1060,6 @@ export class MiniMotorwaysRenderer {
       ctx.strokeStyle = PALETTE.roadCasing;
       ctx.lineWidth = ts * 0.68;
       ctx.beginPath();
-      for (const ic of world.interchanges) {
-        if (ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
-          ctx.moveTo(ic.termX * ts + ts * 0.5, ic.termY * ts + ts * 0.5);
-          ctx.lineTo(ic.connectX * ts + ts * 0.5, ic.connectY * ts + ts * 0.5);
-        }
-      }
       for (const rb of roundabouts) {
         ctx.moveTo(rb.x + rb.rRing, rb.y);
         ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
@@ -1174,7 +1163,10 @@ export class MiniMotorwaysRenderer {
       if (r.points.length < 2 || r.type === 'airport-loop' || r.type === 'airport-spine') continue;
       ctx.strokeStyle = PALETTE.roadAsphalt;
       ctx.lineWidth = r.type === 'street' ? ts * 0.42 : ts * 0.56;
-      this.traceSmoothPath(ctx, r.points, ts);
+      const drawPts = r.isUnderpassStem
+        ? [{ x: r.points[0].x + (r.points[1].x - r.points[0].x) * 0.26, y: r.points[0].y + (r.points[1].y - r.points[0].y) * 0.26 }, ...r.points.slice(1)]
+        : r.points;
+      this.traceSmoothPath(ctx, drawPts, ts);
       ctx.stroke();
     }
 
@@ -1196,12 +1188,6 @@ export class MiniMotorwaysRenderer {
       ctx.strokeStyle = PALETTE.roadAsphalt;
       ctx.lineWidth = ts * 0.50;
       ctx.beginPath();
-      for (const ic of world.interchanges) {
-        if (ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
-          ctx.moveTo(ic.termX * ts + ts * 0.5, ic.termY * ts + ts * 0.5);
-          ctx.lineTo(ic.connectX * ts + ts * 0.5, ic.connectY * ts + ts * 0.5);
-        }
-      }
       for (const rb of roundabouts) {
         ctx.moveTo(rb.x + rb.rRing, rb.y);
         ctx.arc(rb.x, rb.y, rb.rRing, 0, Math.PI * 2);
@@ -2153,47 +2139,70 @@ export class MiniMotorwaysRenderer {
         ctx.restore();
       } else if (ic.type === 'diamond-ramp') {
         // =================================================================
-        // ONE-SIDED HALF-DIAMOND SLIP-RAMP TO SURFACE STUB
-        // (Underpass pruned, stub-end ramps elided, peels from deck edge)
+        // 4 FLEXIBLE SLIP-RAMPS BRIDGING ORGANIC EXPRESSWAY & OCTILINEAR SURFACE ROAD
         // =================================================================
-        const sySign = ic.connSide !== undefined ? ic.connSide : 1;
-
+        const ox = ts * 0.5;
+        const oy = ts * 0.5;
         ctx.save();
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.translate(cx, cy);
-        ctx.rotate(ic.angleRad);
 
-        const along = ts * 2.85;
-        const across = ts * 2.65;
-        const deckEdge = ts * 0.36;
-        const rbY = sySign * across;
-        const rbR = ts * 0.56;
-
-        // Clip out the roundabout's asphalt ring (`rbR + ts * 0.24`) so the slip-ramps terminate
-        // cleanly at the outer edge of the roundabout without needing a second-pass roundabout redraw!
-        ctx.beginPath();
-        ctx.rect(-ts * 12, -ts * 12, ts * 24, ts * 24);
-        ctx.moveTo(rbR + ts * 0.24, rbY);
-        ctx.arc(0, rbY, rbR + ts * 0.24, 0, Math.PI * 2);
-        ctx.clip('evenodd');
-
-        // Two Smooth Curved Bezier Slip-Ramps Peeling Tangentially Off the Outer Deck Edge
+        // 1. Draw all 4 Flexible World-Space Bezier Slip-Ramps (`ic.ramps`)
         for (const pass of ['border', 'fill']) {
           ctx.strokeStyle = pass === 'border' ? PALETTE.motorwayBorder : '#f48fb1';
           ctx.lineWidth = pass === 'border' ? ts * 0.36 : ts * 0.22;
 
-          for (const sxSign of [-1, 1]) {
+          for (const ramp of ic.ramps || []) {
             ctx.beginPath();
-            ctx.moveTo(sxSign * along, sySign * deckEdge);
+            ctx.moveTo(ramp.p0.x * ts + ox, ramp.p0.y * ts + oy);
             ctx.bezierCurveTo(
-              sxSign * along * 0.46, sySign * deckEdge,
-              sxSign * along * 0.16, sySign * across * 0.82,
-              0, sySign * across
+              ramp.p1.x * ts + ox, ramp.p1.y * ts + oy,
+              ramp.p2.x * ts + ox, ramp.p2.y * ts + oy,
+              ramp.p3.x * ts + ox, ramp.p3.y * ts + oy
             );
             ctx.stroke();
           }
         }
+
+        // 2. Re-stroke the octilinear white surface underpass road fill (`posTerm <-> negTerm`)
+        //    over the slip-ramp tips at `p3` so the pink ramps tuck cleanly under the surface road edge
+        if (ic.posTerm && ic.negTerm) {
+          const pPos = { ...ic.posTerm };
+          const pNeg = { ...ic.negTerm };
+          if (!ic.isThroughDiamond) {
+            const dx = pPos.x - pNeg.x;
+            const dy = pPos.y - pNeg.y;
+            const len = Math.hypot(dx, dy) || 1;
+            if (ic.connSide === 1) {
+              pNeg.x += (dx / len) * 0.26;
+              pNeg.y += (dy / len) * 0.26;
+            } else {
+              pPos.x -= (dx / len) * 0.26;
+              pPos.y -= (dy / len) * 0.26;
+            }
+          }
+          ctx.strokeStyle = PALETTE.roadAsphalt;
+          ctx.lineWidth = ts * 0.54;
+          ctx.beginPath();
+          ctx.moveTo(pPos.x * ts + ox, pPos.y * ts + oy);
+          ctx.lineTo(pNeg.x * ts + ox, pNeg.y * ts + oy);
+          ctx.stroke();
+        }
+
+        // 3. Draw underpass drop shadow & charcoal overpass bridge parapet rails (`#36383e`) along the expressway
+        ctx.translate(cx, cy);
+        ctx.rotate(ic.angleRad);
+        ctx.fillStyle = 'rgba(45, 42, 38, 0.16)';
+        ctx.fillRect(-ts * 0.36, -ts * 0.68, ts * 0.72, ts * 1.36);
+
+        ctx.lineCap = 'butt';
+        ctx.strokeStyle = '#36383e';
+        ctx.lineWidth = ts * 1.04;
+        ctx.beginPath();
+        ctx.moveTo(-ts * 0.72, 0);
+        ctx.lineTo(ts * 0.72, 0);
+        ctx.stroke();
+
         ctx.restore();
       }
     }

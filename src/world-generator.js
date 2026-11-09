@@ -3483,9 +3483,13 @@ export class ProceduralLogisticsWorld {
       if (ic.type === 'terminal-stub') {
         const gx = Math.round(ic.x), gy = Math.round(ic.y);
         if (this.inBounds(gx, gy, 1)) arterialTouch[this.idx(gx, gy)] = 1;
-      } else if (ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
-        const gx = Math.round(ic.connectX), gy = Math.round(ic.connectY);
-        if (this.inBounds(gx, gy, 1)) arterialTouch[this.idx(gx, gy)] = 1;
+      } else if (ic.type === 'diamond-ramp') {
+        for (const term of [ic.posTerm, ic.negTerm, { x: ic.connectX, y: ic.connectY }]) {
+          if (term && term.x !== undefined && term.y !== undefined) {
+            const gx = Math.round(term.x), gy = Math.round(term.y);
+            if (this.inBounds(gx, gy, 1)) arterialTouch[this.idx(gx, gy)] = 1;
+          }
+        }
       }
     }
     for (const r of this.roads) {
@@ -4177,31 +4181,36 @@ export class ProceduralLogisticsWorld {
       }
     };
 
-    // 2. Add expressway spline sample nodes (`onMotorway = true`, `0.38x` travel cost per tile)
+    // 2. Add expressway spline sample nodes as two separate one-way carriageways (`mNodesFwd` for +k, `mNodesRev` for -k)
     const mwNodeLists = new Map();
     for (const mw of this.motorways || []) {
       const samples = mw.samples;
       if (!samples || samples.length < 2) continue;
-      const mNodes = new Int32Array(samples.length);
+      const mNodesFwd = new Int32Array(samples.length);
+      const mNodesRev = new Int32Array(samples.length);
       for (let k = 0; k < samples.length; k++) {
         const pt = samples[k];
         const inTunnel = Boolean(mw.tunnels && mw.tunnels.some(tun => k >= tun.i0 && k <= tun.i1));
-        mNodes[k] = addNode(pt.x, pt.y, true, inTunnel, false, false);
+        mNodesFwd[k] = addNode(pt.x, pt.y, true, inTunnel, false, false);
+        mNodesRev[k] = addNode(pt.x, pt.y, true, inTunnel, false, false);
         if (k > 0) {
           const prevPt = samples[k - 1];
           const segDist = Math.hypot(pt.x - prevPt.x, pt.y - prevPt.y) || 0.5;
-          addBiEdge(mNodes[k - 1], mNodes[k], segDist * 0.38);
+          addEdge(mNodesFwd[k - 1], mNodesFwd[k], segDist * 0.38);
+          addEdge(mNodesRev[k], mNodesRev[k - 1], segDist * 0.38);
         }
       }
-      mwNodeLists.set(mw.number, { mw, mNodes });
+      mwNodeLists.set(mw.number, { mw, mNodesFwd, mNodesRev });
 
       // Connect terminal roundabout endpoints (`k = 0` and `k = last`) to surface roads
       const startPortal = addNode(mw.sx, mw.sy, false, false, false, true);
-      addBiEdge(startPortal, mNodes[0], 0.65);
+      addEdge(startPortal, mNodesFwd[0], 0.65);
+      addEdge(mNodesRev[0], startPortal, 0.65);
       connectToNearbySurfaceNodes(startPortal, mw.sx, mw.sy, 2.4, 0.75);
 
       const endPortal = addNode(mw.ex, mw.ey, false, false, false, true);
-      addBiEdge(endPortal, mNodes[samples.length - 1], 0.65);
+      addEdge(mNodesFwd[samples.length - 1], endPortal, 0.65);
+      addEdge(endPortal, mNodesRev[samples.length - 1], 0.65);
       connectToNearbySurfaceNodes(endPortal, mw.ex, mw.ey, 2.4, 0.75);
     }
 
@@ -4210,76 +4219,56 @@ export class ProceduralLogisticsWorld {
       if (ic.type === 'diamond-ramp') {
         const entry = mwNodeLists.get(ic.mwayNumber);
         if (!entry) continue;
-        const { mw, mNodes } = entry;
-        const samples = mw.samples;
-        let bestK = 0;
-        let bestD = Infinity;
-        for (let k = 0; k < samples.length; k++) {
-          const d = Math.hypot(samples[k].x - ic.x, samples[k].y - ic.y);
-          if (d < bestD) {
-            bestD = d;
-            bestK = k;
-          }
-        }
-        const rbNode = addNode(ic.termX, ic.termY, false, false, false, true);
-        if (ic.connectX !== undefined && ic.connectY !== undefined) {
-          connectToNearbySurfaceNodes(rbNode, ic.connectX, ic.connectY, 1.8, 0.6);
-        }
-        connectToNearbySurfaceNodes(rbNode, ic.termX, ic.termY, 2.2, 0.6);
+        const { mNodesFwd, mNodesRev } = entry;
+        const posX = Math.round(ic.posTerm?.x ?? ic.termX);
+        const posY = Math.round(ic.posTerm?.y ?? ic.termY);
+        const negX = Math.round(ic.negTerm?.x ?? ic.oppTermX);
+        const negY = Math.round(ic.negTerm?.y ?? ic.oppTermY);
 
-        const cosA = Math.cos(ic.angleRad || 0);
-        const sinA = Math.sin(ic.angleRad || 0);
-        const nx = -sinA;
-        const ny = cosA;
-        const sySign = ic.connSide !== undefined ? ic.connSide : 1;
+        const posNode = ensureSurfaceNode(posX, posY);
+        const negNode = ensureSurfaceNode(negX, negY);
+        const underpassMidNode = addNode(ic.x, ic.y, false, false, false, false);
+        addBiEdge(posNode, underpassMidNode, Math.hypot(posX - ic.x, posY - ic.y) * 0.92);
+        addBiEdge(underpassMidNode, negNode, Math.hypot(negX - ic.x, negY - ic.y) * 0.92);
+        connectToNearbySurfaceNodes(posNode, posX, posY, 1.6, 0.25);
+        connectToNearbySurfaceNodes(negNode, negX, negY, 1.6, 0.25);
 
-        for (const sxSign of [-1, 1]) {
-          const deckAttachX = ic.x + cosA * (sxSign * 2.85);
-          const deckAttachY = ic.y + sinA * (sxSign * 2.85);
-          let kRamp = bestK;
-          let bestAttachD = Infinity;
-          for (let k = 0; k < samples.length; k++) {
-            const d = Math.hypot(samples[k].x - deckAttachX, samples[k].y - deckAttachY);
-            if (d < bestAttachD) {
-              bestAttachD = d;
-              kRamp = k;
-            }
-          }
-
-          const along = 2.85;
-          const across = 2.65;
-          const deckEdge = 0.36;
-          const evalRampBezier = (t) => {
+        for (const ramp of ic.ramps || []) {
+          const termNode = ramp.sySign === 1 ? posNode : negNode;
+          const mCarriageway = ramp.sySign === 1 ? mNodesFwd : mNodesRev;
+          const evalRamp = (t) => {
             const mt = 1 - t;
-            const u =
-              mt * mt * mt * (sxSign * along) +
-              3 * mt * mt * t * (sxSign * along * 0.46) +
-              3 * mt * t * t * (sxSign * along * 0.16);
-            const v =
-              mt * mt * mt * (sySign * deckEdge) +
-              3 * mt * mt * t * (sySign * deckEdge) +
-              3 * mt * t * t * (sySign * across * 0.82) +
-              t * t * t * (sySign * across);
             return {
-              x: ic.x + cosA * u + nx * v,
-              y: ic.y + sinA * u + ny * v
+              x:
+                mt * mt * mt * ramp.p0.x +
+                3 * mt * mt * t * ramp.p1.x +
+                3 * mt * t * t * ramp.p2.x +
+                t * t * t * ramp.p3.x,
+              y:
+                mt * mt * mt * ramp.p0.y +
+                3 * mt * mt * t * ramp.p1.y +
+                3 * mt * t * t * ramp.p2.y +
+                t * t * t * ramp.p3.y
             };
           };
 
-          let prevRampNode = mNodes[kRamp];
+          const bNodes = [];
           for (const t of [0.22, 0.50, 0.76]) {
-            const rPt = evalRampBezier(t);
-            const rNode = addNode(rPt.x, rPt.y, true, false, false, false, true);
-            const segD = Math.hypot(rPt.x - nodes[prevRampNode].x, rPt.y - nodes[prevRampNode].y) || 0.4;
-            addBiEdge(prevRampNode, rNode, segD * 0.55 + 0.12);
-            prevRampNode = rNode;
+            const rPt = evalRamp(t);
+            bNodes.push(addNode(rPt.x, rPt.y, true, false, false, false, true));
           }
-          const lastD = Math.hypot(ic.termX - nodes[prevRampNode].x, ic.termY - nodes[prevRampNode].y) || 0.4;
-          addBiEdge(prevRampNode, rbNode, lastD * 0.55 + 0.15);
+          const chain = [mCarriageway[ramp.kRamp], bNodes[0], bNodes[1], bNodes[2], termNode];
+          if (!ramp.isOffRamp) chain.reverse();
+          for (let c = 0; c < chain.length - 1; c++) {
+            const uN = chain[c];
+            const vN = chain[c + 1];
+            const segD = Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) || 0.4;
+            addEdge(uN, vN, segD * 0.55 + 0.10);
+          }
         }
       } else if (ic.type === 'cloverleaf' || ic.type === 'trumpet') {
         const xferNode = addNode(ic.x, ic.y, true, false, false, false);
-        for (const { mw, mNodes } of mwNodeLists.values()) {
+        for (const { mw, mNodesFwd, mNodesRev } of mwNodeLists.values()) {
           let bestK = -1;
           let bestD = Infinity;
           for (let k = 0; k < mw.samples.length; k++) {
@@ -4290,7 +4279,8 @@ export class ProceduralLogisticsWorld {
             }
           }
           if (bestK !== -1 && bestD <= 6.5) {
-            addBiEdge(xferNode, mNodes[bestK], bestD * 0.55 + 0.8);
+            addBiEdge(xferNode, mNodesFwd[bestK], bestD * 0.55 + 0.8);
+            addBiEdge(xferNode, mNodesRev[bestK], bestD * 0.55 + 0.8);
           }
         }
       }
@@ -4304,8 +4294,6 @@ export class ProceduralLogisticsWorld {
     for (const ic of this.interchanges || []) {
       if (ic.type === 'terminal-stub' && !ic.isAirportStub) {
         roundabouts.push({ x: ic.x, y: ic.y, rTiles: 0.64 });
-      } else if (ic.type === 'diamond-ramp') {
-        roundabouts.push({ x: ic.termX, y: ic.termY, rTiles: 0.56 });
       }
     }
 
@@ -6313,11 +6301,12 @@ export class ProceduralLogisticsWorld {
         const gx = Math.round(px);
         const gy = Math.round(py);
         if (gx === ic.connectX && gy === ic.connectY) return false;
+        if (ic.oppConnectX !== undefined && gx === ic.oppConnectX && gy === ic.oppConnectY) return false;
         const dx = px - ic.x;
         const dy = py - ic.y;
         const u = dx * cosA + dy * sinA;
         const v = dx * nx + dy * ny;
-        return Math.abs(u) <= 3.5 && v >= -0.4 && v < 2.55;
+        return Math.abs(u) <= 3.5 && Math.abs(v) < 2.55;
       };
     } else {
       return true;
@@ -6542,7 +6531,33 @@ export class ProceduralLogisticsWorld {
       const rType = group.isArterial ? 'arterial' : 'street';
       const extraProps = group.isMainBoulevard ? { isMainBoulevard: true } : null;
 
-      if (pts.length >= 2) {
+      if (ic.type === 'diamond-ramp') {
+        const cosA = Math.cos(ic.angleRad || 0);
+        const sinA = Math.sin(ic.angleRad || 0);
+        const nx = -sinA;
+        const ny = cosA;
+        const oppCx = Math.round(ic.oppTermX ?? (ic.x - nx * ic.connSide * 2.65));
+        const oppCy = Math.round(ic.oppTermY ?? (ic.y - ny * ic.connSide * 2.65));
+
+        for (const pA of pts) {
+          const sideV = ((pA.x - ic.x) * nx + (pA.y - ic.y) * ny) * ic.connSide;
+          const targetX = sideV >= 0 ? ic.connectX : oppCx;
+          const targetY = sideV >= 0 ? ic.connectY : oppCy;
+          if (targetX === undefined || targetY === undefined) continue;
+          const detour = this.findRoadPathAStar(pA.x, pA.y, targetX, targetY, true, isInsideCore, false, {
+            isInterchangeBypass: true,
+            turnPenalty: 6.5
+          });
+          if (detour && detour.length >= 2) {
+            this.commitRoadPath(detour, rType, extraProps);
+            if (sideV < 0) {
+              ic.oppConnectX = oppCx;
+              ic.oppConnectY = oppCy;
+              ic.isThroughDiamond = true;
+            }
+          }
+        }
+      } else if (pts.length >= 2) {
         // Order portals by angle around `(ic.x, ic.y)` starting after the widest angular gap
         const withAng = pts
           .map(p => ({ ...p, ang: Math.atan2(p.y - ic.y, p.x - ic.x) }))
@@ -6578,15 +6593,6 @@ export class ProceduralLogisticsWorld {
             return false;
           }
         }
-      } else if (pts.length === 1 && ic.type === 'diamond-ramp' && ic.connectX !== undefined) {
-        const pA = pts[0];
-        const detour = this.findRoadPathAStar(pA.x, pA.y, ic.connectX, ic.connectY, true, isInsideCore, false, {
-          isInterchangeBypass: true,
-          turnPenalty: 6.5
-        });
-        if (detour && detour.length >= 2) {
-          this.commitRoadPath(detour, rType, extraProps);
-        }
       }
     }
 
@@ -6595,8 +6601,192 @@ export class ProceduralLogisticsWorld {
     return true;
   }
 
+  intersectUnderpassWithMotorway(samples, kHint, A, B) {
+    const rdx = B.x - A.x;
+    const rdy = B.y - A.y;
+    const kMin = Math.max(0, kHint - 6);
+    const kMax = Math.min(samples.length - 2, kHint + 6);
+    let bestPt = samples[kHint];
+    let bestAngle = 0;
+    let bestDist = Infinity;
+
+    for (let k = kMin; k <= kMax; k++) {
+      const s0 = samples[k];
+      const s1 = samples[k + 1];
+      const sdx = s1.x - s0.x;
+      const sdy = s1.y - s0.y;
+      const denom = sdx * rdy - sdy * rdx;
+      if (Math.abs(denom) > 1e-5) {
+        const t = ((A.x - s0.x) * rdy - (A.y - s0.y) * rdx) / denom;
+        const clampedT = Math.max(0, Math.min(1, t));
+        const ix = s0.x + sdx * clampedT;
+        const iy = s0.y + sdy * clampedT;
+        const err = Math.abs(t - clampedT);
+        if (err < bestDist) {
+          bestDist = err;
+          bestPt = { x: ix, y: iy, k };
+          bestAngle = Math.atan2(sdy, sdx);
+        }
+      }
+    }
+    return { x: bestPt.x, y: bestPt.y, k: bestPt.k ?? kHint, angleRad: bestAngle };
+  }
+
+  buildFlexibleDiamondRamps(mw, kCenter, crossPt, posTerm, negTerm, connSide, isThroughDiamond) {
+    const samples = mw.samples;
+    const ramps = [];
+    for (const sySign of [-1, 1]) {
+      const rawT = sySign === 1 ? posTerm : negTerm;
+      const p3 = { x: rawT.x, y: rawT.y };
+
+      let kProj = kCenter;
+      let bestProjD = Infinity;
+      const kMin = Math.max(2, kCenter - 5);
+      const kMax = Math.min(samples.length - 3, kCenter + 5);
+      for (let k = kMin; k <= kMax; k++) {
+        const d = Math.hypot(samples[k].x - p3.x, samples[k].y - p3.y);
+        if (d < bestProjD) {
+          bestProjD = d;
+          kProj = k;
+        }
+      }
+
+      for (const sxSign of [-1, 1]) {
+        let kRamp = kProj;
+        let walked = 0;
+        while (kRamp + sxSign >= 1 && kRamp + sxSign < samples.length - 1 && walked < 3.15) {
+          const nextK = kRamp + sxSign;
+          walked += Math.hypot(samples[nextK].x - samples[kRamp].x, samples[nextK].y - samples[kRamp].y);
+          kRamp = nextK;
+        }
+
+        const rPt = samples[kRamp];
+        const rPrev = samples[Math.max(0, kRamp - 1)];
+        const rNext = samples[Math.min(samples.length - 1, kRamp + 1)];
+        const rLen = Math.hypot(rNext.x - rPrev.x, rNext.y - rPrev.y) || 1;
+        const rTanX = (rNext.x - rPrev.x) / rLen;
+        const rTanY = (rNext.y - rPrev.y) / rLen;
+        const rNormX = -rTanY;
+        const rNormY = rTanX;
+
+        const p0 = {
+          x: rPt.x + rNormX * sySign * 0.36,
+          y: rPt.y + rNormY * sySign * 0.36
+        };
+
+        // Express `p3 - p0` in the ramp's monotonic local `(uAlong, vAcross)` frame
+        const dx = p3.x - p0.x;
+        const dy = p3.y - p0.y;
+        const uAxisX = -sxSign * rTanX;
+        const uAxisY = -sxSign * rTanY;
+        const vAxisX = sySign * rNormX;
+        const vAxisY = sySign * rNormY;
+        const u3 = Math.max(1.6, dx * uAxisX + dy * uAxisY);
+        const v3 = Math.max(1.2, dx * vAxisX + dy * vAxisY);
+
+        const p1 = {
+          x: p0.x + uAxisX * (u3 * 0.48) + vAxisX * (v3 * 0.12),
+          y: p0.y + uAxisY * (u3 * 0.48) + vAxisY * (v3 * 0.12)
+        };
+        const p2 = {
+          x: p0.x + uAxisX * (u3 * 0.84) + vAxisX * (v3 * 0.62),
+          y: p0.y + uAxisY * (u3 * 0.84) + vAxisY * (v3 * 0.62)
+        };
+
+        ramps.push({
+          sySign,
+          sxSign,
+          isOffRamp: (sxSign * sySign) < 0,
+          kRamp,
+          p0,
+          p1,
+          p2,
+          p3,
+          gridX: rawT.x,
+          gridY: rawT.y
+        });
+      }
+    }
+    return ramps;
+  }
+
+  /**
+   * Checks if `mw` at sample `pt` (`cosA, sinA`, normal `nx, ny`) crosses over an existing
+   * octilinear surface road (`this.roads`). If so, returns the unaltered road's integer
+   * terminal vertices `{ posTerm, negTerm, crossX, crossY }` on both sides of the expressway.
+   */
+  findExistingOctilinearUnderpass(pt, cosA, sinA, nx, ny) {
+    for (const r of this.roads) {
+      if (r.type === 'airport-loop' || r.type === 'airport-spine') continue;
+      const pts = r.points;
+      if (!pts || pts.length < 4) continue;
+      for (let idx = 1; idx < pts.length - 1; idx++) {
+        const rp = pts[idx];
+        const rx0 = Math.round(rp.x);
+        const ry0 = Math.round(rp.y);
+        if (Math.hypot(rx0 - pt.x, ry0 - pt.y) > 1.55) continue;
+        if (this.waterMask[this.idx(rx0, ry0)] > 0) continue;
+
+        const ux = Math.sign(Math.round(pts[idx + 1].x) - rx0);
+        const uy = Math.sign(Math.round(pts[idx + 1].y) - ry0);
+        if (ux === 0 && uy === 0) continue;
+        const uLen = Math.hypot(ux, uy);
+        const alignNormal = Math.abs((ux / uLen) * nx + (uy / uLen) * ny);
+        if (alignNormal < 0.68) continue;
+
+        let posTerm = null;
+        let bestPosErr = Infinity;
+        let negTerm = null;
+        let bestNegErr = Infinity;
+
+        for (const stepDir of [-1, 1]) {
+          let cx = rx0;
+          let cy = ry0;
+          for (let s = 1; s <= 5; s++) {
+            const nx2 = cx + ux * stepDir;
+            const ny2 = cy + uy * stepDir;
+            if (!this.inBounds(nx2, ny2, 4) || !this.hasRoadEdge(cx, cy, nx2, ny2)) break;
+            if (this.waterMask[this.idx(nx2, ny2)] > 0) break;
+            cx = nx2;
+            cy = ny2;
+            const v = (cx - pt.x) * nx + (cy - pt.y) * ny;
+            if (v >= 2.55 && v <= 4.1) {
+              const err = Math.abs(v - 3.0);
+              if (err < bestPosErr) {
+                bestPosErr = err;
+                posTerm = { x: cx, y: cy };
+              }
+            } else if (v <= -2.55 && v >= -4.1) {
+              const err = Math.abs(Math.abs(v) - 3.0);
+              if (err < bestNegErr) {
+                bestNegErr = err;
+                negTerm = { x: cx, y: cy };
+              }
+            }
+          }
+        }
+        if (posTerm && negTerm) {
+          return {
+            posTerm,
+            negTerm,
+            crossX: rx0,
+            crossY: ry0
+          };
+        }
+      }
+    }
+    return null;
+  }
+
   buildIntermediateExpresswayRamps() {
     if (!this.config.includeIntermediateRamps) return;
+
+    const octDirs = [
+      { dx: 1, dy: 0, len: 1, weight: 1.08 },
+      { dx: 0, dy: 1, len: 1, weight: 1.08 },
+      { dx: 1, dy: 1, len: Math.SQRT2, weight: 1.0 },
+      { dx: 1, dy: -1, len: Math.SQRT2, weight: 1.0 }
+    ];
 
     for (const mw of this.motorways) {
       const samples = mw.samples;
@@ -6610,16 +6800,15 @@ export class ProceduralLogisticsWorld {
       );
       if (hasMajorIc && arcLen < 48) continue;
 
-      // Long cross-state interstates (>= 88 tiles) can host up to 2 intermediate slip-ramps
       const maxRampsForMw = arcLen >= 88 ? 2 : 1;
       for (let rPass = 0; rPass < maxRampsForMw; rPass++) {
         let bestCandidate = null;
         let bestScore = -Infinity;
 
-        const iStart = Math.floor(samples.length * 0.22);
-        const iEnd = Math.ceil(samples.length * 0.78);
+        const iStart = Math.floor(samples.length * 0.20);
+        const iEnd = Math.ceil(samples.length * 0.80);
 
-        for (let i = iStart; i <= iEnd; i += 2) {
+        for (let i = iStart; i <= iEnd; i++) {
           const pt = samples[i];
           const gx = Math.round(pt.x);
           const gy = Math.round(pt.y);
@@ -6644,13 +6833,6 @@ export class ProceduralLogisticsWorld {
             }
           }
           if (!nearestTown || minTownDist > 42) continue;
-          // Never place an intermediate diamond slip-ramp for a town that ALREADY has a motorway endpoint or slip-ramp!
-          const townAlreadyServed = this.interchanges.some(
-            ic => ic.townId === nearestTown.id ||
-                  ic.townName === nearestTown.name ||
-                  (ic.isAirportStub && this.airports[ic.airportId]?.hostTownId === nearestTown.id)
-          );
-          if (townAlreadyServed) continue;
 
           const pPrev = samples[Math.max(0, i - 1)];
           const pNext = samples[Math.min(samples.length - 1, i + 1)];
@@ -6659,95 +6841,213 @@ export class ProceduralLogisticsWorld {
           const sinA = Math.sin(angleRad);
           const nx = -sinA;
           const ny = cosA;
-          const crossHalf = 2.65;
 
-          const c1x = pt.x + nx * crossHalf;
-          const c1y = pt.y + ny * crossHalf;
-          const c2x = pt.x - nx * crossHalf;
-          const c2y = pt.y - ny * crossHalf;
-          const d1 = Math.hypot(c1x - nearestTown.x, c1y - nearestTown.y);
-          const d2 = Math.hypot(c2x - nearestTown.x, c2y - nearestTown.y);
-          const connSide = d1 <= d2 ? 1 : -1;
-          const termX = connSide > 0 ? c1x : c2x;
-          const termY = connSide > 0 ? c1y : c2y;
-          const startX = Math.max(5, Math.min(this.W - 6, Math.round(termX)));
-          const startY = Math.max(5, Math.min(this.H - 6, Math.round(termY)));
-          const startId = this.idx(startX, startY);
+          // Case A1: Does `mw` cross directly over an existing octilinear surface road here?
+          const existingUnderpass = this.findExistingOctilinearUnderpass(pt, cosA, sinA, nx, ny);
+          if (existingUnderpass) {
+            const { posTerm, negTerm } = existingUnderpass;
+            const dPos = Math.hypot(posTerm.x - nearestTown.x, posTerm.y - nearestTown.y);
+            const dNeg = Math.hypot(negTerm.x - nearestTown.x, negTerm.y - nearestTown.y);
+            const connSide = dPos <= dNeg ? 1 : -1;
+            const score = 95 - minTownDist;
+            if (score > bestScore) {
+              bestScore = score;
+              bestCandidate = {
+                kCenter: i,
+                x: pt.x,
+                y: pt.y,
+                angleRad,
+                connSide,
+                posTerm,
+                negTerm,
+                existingUnderpass: true,
+                nearestTown
+              };
+            }
+            continue;
+          }
 
-          if (this.waterMask[startId] > 0 || this.distToWater[startId] < 2.5) continue;
-          if (this.buildingMask[startId] >= 1 && this.buildingMask[startId] <= 3) continue;
-          if (this.isPointInAirportPad(termX, termY, 2.5)) continue;
+          // Case T1: New octilinear surface underpass stem (`0°/45°/90°` integer grid) for an unserved town
+          const townAlreadyServed = this.interchanges.some(
+            ic => ic.townId === nearestTown.id ||
+                  ic.townName === nearestTown.name ||
+                  (ic.isAirportStub && this.airports[ic.airportId]?.hostTownId === nearestTown.id)
+          );
+          if (townAlreadyServed) continue;
+
+          // Pick the octilinear step `(sdx, sdy)` closest to the expressway normal `(nx, ny)`
+          let bestDir = octDirs[0];
+          let bestAlign = -1;
+          let dirSign = 1;
+          for (const od of octDirs) {
+            const dot = (od.dx * nx + od.dy * ny) / od.len;
+            const scoreAlign = Math.abs(dot) * od.weight;
+            if (scoreAlign > bestAlign) {
+              bestAlign = scoreAlign;
+              bestDir = od;
+              dirSign = dot >= 0 ? 1 : -1;
+            }
+          }
+          const sdx = bestDir.dx * dirSign;
+          const sdy = bestDir.dy * dirSign;
+          const alignCos = Math.max(0.65, Math.abs((sdx * nx + sdy * ny) / bestDir.len));
+          const stepReach = (sdx !== 0 && sdy !== 0)
+            ? Math.max(2, Math.round(2.85 / (bestDir.len * alignCos)))
+            : Math.max(3, Math.round(2.85 / alignCos));
+
+          const posTerm = { x: gx + sdx * stepReach, y: gy + sdy * stepReach };
+          const negTerm = { x: gx - sdx * stepReach, y: gy - sdy * stepReach };
+          if (!this.inBounds(posTerm.x, posTerm.y, 5) || !this.inBounds(negTerm.x, negTerm.y, 5)) continue;
+
+          let stemDry = true;
+          for (let s = -stepReach; s <= stepReach; s++) {
+            const sx2 = gx + sdx * s;
+            const sy2 = gy + sdy * s;
+            const sid = this.idx(sx2, sy2);
+            if (this.waterMask[sid] > 0 || this.distToWater[sid] < 2.2 || this.buildingMask[sid] === 3 || this.isPointInAirportPad(sx2, sy2, 2.5)) {
+              stemDry = false;
+              break;
+            }
+          }
+          if (!stemDry) continue;
+
+          const dPos = Math.hypot(posTerm.x - nearestTown.x, posTerm.y - nearestTown.y);
+          const dNeg = Math.hypot(negTerm.x - nearestTown.x, negTerm.y - nearestTown.y);
+          const connSide = dPos <= dNeg ? 1 : -1;
 
           const wingClear = !this.roads.some(r =>
-            r.points.some(rp => {
-              const rdx = rp.x - pt.x;
-              const rdy = rp.y - pt.y;
-              const ru = rdx * cosA + rdy * sinA;
-              const rv = (rdx * nx + rdy * ny) * connSide;
-              return Math.abs(ru) <= 3.6 && rv >= 0.2 && rv < 2.55;
-            })
+            r.points.some(rp => Math.hypot(rp.x - pt.x, rp.y - pt.y) < 3.6)
           );
+          if (!wingClear) continue;
 
-          const score = 50 - minTownDist + (wingClear ? 25 : 0);
+          const score = 50 - minTownDist;
           if (score > bestScore) {
             bestScore = score;
             bestCandidate = {
-              x: pt.x,
-              y: pt.y,
+              kCenter: i,
+              x: gx,
+              y: gy,
               angleRad,
               connSide,
-              termX,
-              termY,
-              startX,
-              startY,
+              posTerm,
+              negTerm,
+              sdx,
+              sdy,
+              stepReach,
+              existingUnderpass: false,
               nearestTown
             };
           }
         }
 
         if (bestCandidate) {
-          const { x, y, angleRad, connSide, termX, termY, startX, startY, nearestTown } = bestCandidate;
+          const {
+            kCenter, x, y, angleRad, connSide, posTerm, negTerm,
+            sdx, sdy, stepReach, existingUnderpass, nearestTown
+          } = bestCandidate;
           const cosA = Math.cos(angleRad);
           const sinA = Math.sin(angleRad);
           const nx = -sinA;
           const ny = cosA;
 
-          const blockUnderpassFn = (tx, ty) => {
-            const dx = tx - x;
-            const dy = ty - y;
-            const u = dx * cosA + dy * sinA;
-            const v = (dx * nx + dy * ny) * connSide;
-            if (Math.abs(u) < 16 && v < 1.6) return true;
-            for (let s = 0; s < samples.length; s += 2) {
-              if (Math.hypot(tx - samples[s].x, ty - samples[s].y) < 1.6) return true;
+          const nearTerm = connSide === 1 ? posTerm : negTerm;
+          const farTerm = connSide === 1 ? negTerm : posTerm;
+
+          let isThroughDiamond = Boolean(existingUnderpass);
+
+          if (!existingUnderpass) {
+            const makeSideBlockFn = (sideSign) => (tx, ty) => {
+              const dx = tx - x;
+              const dy = ty - y;
+              const u = dx * cosA + dy * sinA;
+              const v = (dx * nx + dy * ny) * sideSign;
+              if (Math.abs(u) < 16 && v < 1.6) return true;
+              for (let s = 0; s < samples.length; s += 2) {
+                if (Math.hypot(tx - samples[s].x, ty - samples[s].y) < 1.6) return true;
+              }
+              return false;
+            };
+
+            const connectorPath = this.findRoadPathAStar(
+              nearTerm.x,
+              nearTerm.y,
+              nearestTown.x,
+              nearestTown.y,
+              false,
+              makeSideBlockFn(connSide),
+              true
+            );
+            if (!connectorPath || connectorPath.length < 2) continue;
+
+            this.displaceBuildingsInRadius(x, y, 4.2);
+            this.displaceBuildingsInRadius(posTerm.x, posTerm.y, 2.5);
+            this.displaceBuildingsInRadius(negTerm.x, negTerm.y, 2.5);
+
+            // Commit the straight octilinear underpass stem from `farTerm` through `(x, y)` to `nearTerm`
+            const stemPts = [];
+            for (let s = -stepReach; s <= stepReach; s++) {
+              const stepSign = connSide * s;
+              let px = x + sdx * stepSign;
+              let py = y + sdy * stepSign;
+              if (s === -stepReach) {
+                px += (x - px) * 0.19;
+                py += (y - py) * 0.19;
+              }
+              stemPts.push({
+                x: px,
+                y: py,
+                isBridge: false
+              });
             }
-            return false;
-          };
+            this.commitRoadPath(stemPts, 'arterial', { isUnderpassStem: true });
+            this.commitRoadPath(connectorPath, 'arterial');
+          } else {
+            // Existing octilinear surface road underpass (`A1`): keep the road course 100% unaltered,
+            // only clearing buildings/trees underneath the 4 flexible slip-ramps!
+            this.displaceBuildingsInRadius(x, y, 3.8);
+          }
 
-          const connectorPath = this.findRoadPathAStar(startX, startY, nearestTown.x, nearestTown.y, false, blockUnderpassFn, true);
-          if (!connectorPath || connectorPath.length < 2) continue;
+          this.trees = this.trees.filter(tr => {
+            const dx = tr.x - x;
+            const dy = tr.y - y;
+            const u = Math.abs(dx * cosA + dy * sinA);
+            const v = Math.abs(dx * nx + dy * ny);
+            return !(u <= 4.1 && v <= 3.7);
+          });
 
-          this.displaceBuildingsInRadius(x, y, 4.4);
-          this.displaceBuildingsInRadius(termX, termY, 2.8);
+          const crossPt = this.intersectUnderpassWithMotorway(samples, kCenter, negTerm, posTerm);
+          const ramps = this.buildFlexibleDiamondRamps(
+            mw,
+            crossPt.k,
+            crossPt,
+            posTerm,
+            negTerm,
+            connSide,
+            isThroughDiamond
+          );
 
           const diamondIc = {
             type: 'diamond-ramp',
-            x,
-            y,
+            x: crossPt.x,
+            y: crossPt.y,
             connSide,
-            termX,
-            termY,
-            connectX: startX,
-            connectY: startY,
-            angleRad,
+            posTerm,
+            negTerm,
+            termX: nearTerm.x,
+            termY: nearTerm.y,
+            oppTermX: farTerm.x,
+            oppTermY: farTerm.y,
+            connectX: nearTerm.x,
+            connectY: nearTerm.y,
+            isThroughDiamond,
+            ramps,
+            angleRad: crossPt.angleRad,
             mwayNumber: mw.number,
             townName: nearestTown.name,
-            label: `M-${mw.number} / ${nearestTown.name} Slip-Ramp`
+            label: isThroughDiamond
+              ? `M-${mw.number} / ${nearestTown.name} Diamond Interchange`
+              : `M-${mw.number} / ${nearestTown.name} Diamond-T Interchange`
           };
-          this.displaceAndRerouteRoadsAtInterchange(diamondIc, false);
-
-          this.commitRoadPath(connectorPath, 'arterial');
-          this.roadGrid[this.idx(startX, startY)] = 2;
 
           this.interchanges.push(diamondIc);
         }
