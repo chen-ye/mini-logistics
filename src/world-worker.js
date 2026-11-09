@@ -1,10 +1,20 @@
-import { createWorldPipeline, extractWorldTransferables } from './world-generator.js';
-import { TerrainBitmapBaker } from './terrain-bake-worker.js';
+import {
+  createWorldPipeline,
+  extractWorldTransferables,
+} from "./world-generator.js";
+import { TerrainBitmapBaker } from "./terrain-bake-worker.js";
 
+const workerSelf = /** @type {DedicatedWorkerGlobalScope} */ (
+  /** @type {unknown} */ (self)
+);
+
+/** @type {MessagePort | null} */
 let bakePort = null;
 let hasSentBitmap = false;
 let currentRequestId = 0;
+/** @type {Promise<{ bitmap: ImageBitmap | OffscreenCanvas | HTMLCanvasElement, bakeTimeMs: number }> | null} */
 let currentBakePromise = null;
+/** @type {Map<number, (val: { bitmap: ImageBitmap | OffscreenCanvas | HTMLCanvasElement, bakeTimeMs: number }) => void>} */
 const pendingBakeResolvers = new Map();
 const localBakerFallback = new TerrainBitmapBaker();
 
@@ -17,7 +27,7 @@ const runWorldPipeline = createWorldPipeline({
       const waterCopy = new Uint8Array(s2bState.waterMask);
       bakePort.postMessage(
         {
-          type: 'prepareHydro',
+          type: "prepareHydro",
           hydroVersion: s2bState.hydroVersion,
           W: s2bState.W,
           H: s2bState.H,
@@ -25,9 +35,9 @@ const runWorldPipeline = createWorldPipeline({
           seaLevel: s2bState.seaLevel,
           elevationField: elevCopy,
           waterMask: waterCopy,
-          rivers: s2bState.rivers
+          rivers: s2bState.rivers,
         },
-        [elevCopy.buffer, waterCopy.buffer]
+        [elevCopy.buffer, waterCopy.buffer],
       );
     }
   },
@@ -46,7 +56,7 @@ const runWorldPipeline = createWorldPipeline({
     });
     bakePort.postMessage(
       {
-        type: 'composeTerrain',
+        type: "composeTerrain",
         requestId: reqId,
         hydroVersion: s2bState.hydroVersion,
         urbanVersion: s67State.urbanVersion,
@@ -54,18 +64,19 @@ const runWorldPipeline = createWorldPipeline({
         H: s2bState.H,
         tileSize: s2bState.tileSize,
         zoneColorIdx: zoneCopy,
-        trees: s67State.trees
+        trees: s67State.trees,
       },
-      [zoneCopy.buffer]
+      [zoneCopy.buffer],
     );
-  }
+  },
 });
 
+/** @param {MessagePort} port */
 function attachBakePort(port) {
   bakePort = port;
   bakePort.onmessage = (ev) => {
     const msg = ev.data;
-    if (msg?.type === 'terrainReady') {
+    if (msg?.type === "terrainReady") {
       const resolve = pendingBakeResolvers.get(msg.requestId);
       if (resolve) {
         pendingBakeResolvers.delete(msg.requestId);
@@ -75,8 +86,8 @@ function attachBakePort(port) {
   };
 }
 
-self.addEventListener('message', async (event) => {
-  if (event.data?.type === 'connectPort' && event.ports?.[0]) {
+workerSelf.addEventListener("message", async (event) => {
+  if (event.data?.type === "connectPort" && event.ports?.[0]) {
     attachBakePort(event.ports[0]);
     return;
   }
@@ -110,7 +121,7 @@ self.addEventListener('message', async (event) => {
       seaLevel: world.seaLevel,
       elevationField: world.elevationField,
       waterMask: world.waterMask,
-      rivers: world.rivers
+      rivers: world.rivers,
     });
     const res = localBakerFallback.composeTerrainBitmap({
       hydroVersion: world.hydroVersion,
@@ -119,7 +130,7 @@ self.addEventListener('message', async (event) => {
       H: world.H,
       tileSize: world.tileSize,
       zoneColorIdx: world.zoneColorIdx,
-      trees: world.trees
+      trees: world.trees,
     });
     terrainBitmap = res.bitmap;
     bakeTimeMs = res.bakeTimeMs;
@@ -131,9 +142,14 @@ self.addEventListener('message', async (event) => {
   world.waitAfterGenMs = waitAfterGenMs;
   world.wallTimeMs = Math.round(performance.now() - tWall0);
 
-  const transferList = extractWorldTransferables(world);
-  if (terrainBitmap && typeof ImageBitmap !== 'undefined' && terrainBitmap instanceof ImageBitmap) {
+  /** @type {Transferable[]} */
+  const transferList = [...extractWorldTransferables(world)];
+  if (
+    terrainBitmap &&
+    typeof ImageBitmap !== "undefined" &&
+    terrainBitmap instanceof ImageBitmap
+  ) {
     transferList.push(terrainBitmap);
   }
-  self.postMessage({ requestId, preserveCamera, world }, transferList);
+  workerSelf.postMessage({ requestId, preserveCamera, world }, transferList);
 });

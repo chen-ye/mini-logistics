@@ -1,0 +1,701 @@
+/**
+ * Shared Hourglass domain type schema for Mini Logistics.
+ * Consumed strictly via comment-only JSDoc `@import { ... } from './types.js'`
+ * so the browser makes zero runtime HTTP requests for `.d.ts` files.
+ */
+
+export type WorldSizeKey = "compact" | "standard" | "large" | "huge";
+export type ArchetypeKey =
+  "confluence" | "estuary" | "archipelago" | "inland" | "island-hopper";
+export type TerrainAlgoKey =
+  "tectonic-fbm" | "quilez-erosion" | "voronoi-plates";
+export type HydrologyAlgoKey =
+  "thalweg-astar" | "d8-strahler" | "meandering-plain";
+export type AirportMixKey = "hub-regional" | "hub-reg-cargo" | "dual-hub";
+export type ViewLayer =
+  "aesthetic" | "rci" | "airport" | "hierarchy" | "hydrology" | "roadgrid";
+
+export interface WorldSizePreset {
+  readonly W: number;
+  readonly H: number;
+  readonly tileSize: number;
+  readonly label: string;
+}
+
+export interface GeneratorConfig {
+  seed?: string;
+  worldSize?: WorldSizeKey | string;
+  archetype?: ArchetypeKey | string;
+  terrainAlgo?: TerrainAlgoKey | string;
+  hydrologyAlgo?: HydrologyAlgoKey | string;
+  airportMix?: AirportMixKey | string;
+  includeIntermediateRamps?: boolean;
+  waterCoverage?: number;
+  townCount?: number;
+  buildingDensity?: number;
+  airportCount?: number;
+  windAxis?: number;
+}
+
+export interface Point2D {
+  x: number;
+  y: number;
+}
+
+export interface WindVector {
+  x: number;
+  y: number;
+  angleDeg: number;
+  rad?: number;
+  label: string;
+}
+
+export interface DistrictColor {
+  name: string;
+  roof: string;
+  base: string;
+  pin: string;
+  zone: string;
+}
+
+export interface Palette {
+  bgPaper: string;
+  gridLine: string;
+  waterCyan: string;
+  waterDeep: string;
+  waterBankCream: string;
+  urbanBlushPink: string;
+  urbanLavenderZone: string;
+  parkSageGreen: string;
+  treeDots: string[];
+  roadAsphalt: string;
+  roadCasing: string;
+  bridgeRail: string;
+  motorwayFill: string;
+  motorwayBorder: string;
+  motorwayCore: string;
+  shadowColor: string;
+  districtColors: DistrictColor[];
+}
+
+export interface WaterBasin {
+  id: number;
+  size: number;
+  cx: number;
+  cy: number;
+  deepX: number;
+  deepY: number;
+  minElev: number;
+  touchesBorder: boolean;
+}
+
+export interface PrimarySink {
+  id?: number;
+  size?: number;
+  cx?: number;
+  cy?: number;
+  deepX: number;
+  deepY: number;
+  minElev?: number;
+  touchesBorder?: boolean;
+}
+
+export interface HydroFeature {
+  x: number;
+  y: number;
+  type: "bay" | "lake" | "confluence";
+}
+
+export interface RiverPoint {
+  x: number;
+  y: number;
+  width?: number;
+}
+
+export interface RiverRibbon {
+  points: RiverPoint[];
+  isMainOutflow: boolean;
+  headwaterPt?: Point2D | null;
+}
+
+export interface Landmass {
+  id: number;
+  size: number;
+  cx: number;
+  cy: number;
+}
+
+export interface Borough {
+  x: number;
+  y: number;
+  r?: number;
+  radius?: number;
+  strideX?: number;
+  strideY?: number;
+  phaseX?: number;
+  phaseY?: number;
+  isCore?: boolean;
+  isMainCBD?: boolean;
+}
+
+export interface Town {
+  id: number;
+  clusterId?: number;
+  name: string;
+  iata: string;
+  x: number;
+  y: number;
+  tier: number;
+  tierTitle: string;
+  urbanRadius: number;
+  effectiveR?: number;
+  colorIdx: number;
+  palette: DistrictColor;
+  landmassId: number;
+  suitabilityScore: number;
+  parentId?: number | null;
+  airportId: number | null;
+  housesCount: number;
+  destinationsCount: number;
+  commercialCount?: number;
+  industrialCount?: number;
+  boroughs: Borough[];
+  _seededInPhase1?: boolean;
+}
+
+export interface AirportDemandSchedule {
+  arrivalRate: number;
+  cargoShare: number;
+  peakHour: number;
+}
+
+export interface Airport {
+  id: number;
+  name: string;
+  iata: string;
+  x: number;
+  y: number;
+  gx?: number;
+  gy?: number;
+  angleRad: number;
+  runwayLabel: string;
+  runwayCount: number;
+  halfLen: number;
+  halfWid: number;
+  approachLen?: number;
+  apronSide?: number;
+  stubDist?: number;
+  isHub: boolean;
+  airportClass: "HUB" | "REG" | "CRG" | string;
+  classLabel: string;
+  hostTownId: number;
+  hostTownName: string;
+  landmassId?: number;
+  colorIdx: number;
+  palette: DistrictColor;
+  gateX: number;
+  gateY: number;
+  curbX: number;
+  curbY: number;
+  landNx: number;
+  landNy: number;
+  approachClearance: number;
+  suitabilityScore: number;
+  distToCBD: number;
+  demandPins?: number;
+  motorwayId?: number | null;
+  landsideLoopPts?: Point2D[];
+  accessStubPts?: Point2D[];
+  demandSchedule?: AirportDemandSchedule;
+}
+
+export interface RoadPoint {
+  x: number;
+  y: number;
+  isBridge?: boolean;
+}
+
+export interface RoadSegment {
+  points: RoadPoint[];
+  type: "street" | "arterial" | "airport-loop" | "airport-spine" | string;
+  isMainBoulevard?: boolean;
+  isUnderpassStem?: boolean;
+  stubOriginX?: number;
+  stubOriginY?: number;
+  airportId?: number;
+}
+
+export interface House {
+  id?: number;
+  x: number;
+  y: number;
+  gx?: number;
+  gy?: number;
+  wScale?: number;
+  hScale?: number;
+  offX?: number;
+  offY?: number;
+  roadX: number;
+  roadY: number;
+  dirX?: number;
+  dirY?: number;
+  colorIdx: number;
+  palette: DistrictColor;
+  townId: number;
+}
+
+export interface FarmParcel {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  crop?: string;
+  cropIdx?: number;
+  furrowDir?: number;
+  furrowAngle?: number;
+  slotIdx?: number;
+  spineAxis?: string;
+  spineCoord?: number;
+  tiles: [number, number][];
+  poly?: [number, number][];
+}
+
+export interface TractorTrack {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface Destination {
+  id: number;
+  x: number;
+  y: number;
+  gx: number;
+  gy: number;
+  lotX?: number;
+  lotY?: number;
+  wTiles: number;
+  hTiles: number;
+  roadX: number;
+  roadY: number;
+  dirX?: number;
+  dirY?: number;
+  colorIdx: number;
+  palette: DistrictColor;
+  townId: number;
+  isCircular: boolean;
+  hasUrgentPin?: boolean;
+  pinsCount: number;
+  demandPins?: number[];
+  zoneType: "commercial" | "industrial";
+  subType: "CBD" | "RET" | "RAW" | "MFG" | "LOG" | string;
+  resourceType?: "MINE" | "TIMBER" | "FARM" | null;
+  isRuralNiche?: boolean;
+  bspParcels?: FarmParcel[];
+  estateLoops?: [number, number][][];
+  tractorTracks?: TractorTrack[];
+  windbreakPts?: [number, number][];
+}
+
+export interface TreeDot {
+  x: number;
+  y: number;
+  r: number;
+  color: string;
+}
+
+export interface MotorwayTunnel {
+  i0: number;
+  i1: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  ang0: number;
+  ang1: number;
+}
+
+export interface Motorway {
+  id?: number;
+  number: number;
+  name?: string;
+  fromTownId?: number | null;
+  toTownId?: number | null;
+  townId?: number | null;
+  airportId?: number | null;
+  sx: number;
+  sy: number;
+  ex: number;
+  ey: number;
+  waypoints: Point2D[];
+  samples: Point2D[];
+  tunnels?: MotorwayTunnel[];
+  prunedStart?: boolean;
+  prunedEnd?: boolean;
+  isSpur?: boolean;
+}
+
+export interface DiamondSlipRamp {
+  sySign: -1 | 1;
+  sxSign: -1 | 1;
+  isOffRamp: boolean;
+  kRamp: number;
+  p0: Point2D;
+  p1: Point2D;
+  p2: Point2D;
+  p3: Point2D;
+  gridX: number;
+  gridY: number;
+}
+
+export interface CloverleafInterchange {
+  type: "cloverleaf";
+  x: number;
+  y: number;
+  angleA: number;
+  angleB: number;
+  activeSignsA: number[];
+  activeSignsB: number[];
+  prunedBridgeB: boolean;
+  mwayA: number;
+  mwayB: number;
+  mwayMain?: number;
+  mwaySpur?: number;
+  townId?: number;
+  townName?: string;
+  isAirportStub?: boolean;
+  airportId?: number;
+  label?: string;
+}
+
+export interface TrumpetInterchange {
+  type: "trumpet";
+  x: number;
+  y: number;
+  angleMain: number;
+  sideSign: number;
+  mwayMain: number;
+  mwaySpur: number;
+  mwayA?: number;
+  mwayB?: number;
+  townId?: number;
+  townName?: string;
+  isAirportStub?: boolean;
+  airportId?: number;
+  label?: string;
+}
+
+export interface DiamondRampInterchange {
+  type: "diamond-ramp";
+  x: number;
+  y: number;
+  connSide: number;
+  posTerm: Point2D;
+  negTerm: Point2D;
+  termX: number;
+  termY: number;
+  oppTermX: number;
+  oppTermY: number;
+  connectX: number;
+  connectY: number;
+  oppConnectX?: number;
+  oppConnectY?: number;
+  isThroughDiamond: boolean;
+  ramps: DiamondSlipRamp[];
+  angleRad: number;
+  mwayNumber: number;
+  townId?: number;
+  townName: string;
+  isAirportStub?: boolean;
+  airportId?: number;
+  label?: string;
+}
+
+export interface TerminalStubInterchange {
+  type: "terminal-stub";
+  isAirportStub: boolean;
+  x: number;
+  y: number;
+  stubEndX: number;
+  stubEndY: number;
+  angleRad: number;
+  airportId?: number;
+  townId?: number;
+  townName?: string;
+  label?: string;
+}
+
+export type Interchange =
+  | CloverleafInterchange
+  | TrumpetInterchange
+  | DiamondRampInterchange
+  | TerminalStubInterchange;
+
+export interface VehicleGraphEdge {
+  to: number;
+  cost: number;
+}
+
+export interface VehicleGraphNode {
+  x: number;
+  y: number;
+  onMotorway: boolean;
+  inTunnel: boolean;
+  isStreet: boolean;
+  isRoundabout: boolean;
+  isSlipRamp?: boolean;
+}
+
+export interface VehicleRoutingGraph {
+  nodes: VehicleGraphNode[];
+  adj: VehicleGraphEdge[][];
+  tileToNode: Int32Array;
+  numSurfaceNodes: number;
+  roundabouts: Array<{ x: number; y: number; rTiles: number }>;
+  gScore: Float64Array;
+  parent: Int32Array;
+  seenGen: Int32Array;
+  closedGen: Int32Array;
+  gen: number;
+}
+
+export interface DirectedLanePoint {
+  x: number;
+  y: number;
+  onMotorway?: boolean;
+  inTunnel?: boolean;
+  isBridge?: boolean;
+  isStreet?: boolean;
+  isDriveway?: boolean;
+}
+
+export interface DirectedLaneTrack {
+  pts: DirectedLanePoint[];
+  cumLen: Float32Array;
+  totalLength: number;
+}
+
+export interface CargoLink {
+  from: Destination;
+  to: Destination;
+  stage:
+    "RAW->MFG" | "MFG->LOG" | "MFG->COM" | "LOG->COM" | "RAW->LOG" | string;
+  label: string;
+  color: string;
+  points: DirectedLanePoint[];
+  usesMotorway: boolean;
+  outboundTrack: DirectedLaneTrack;
+  inboundTrack: DirectedLaneTrack;
+}
+
+export interface CommuterRoute {
+  color: string;
+  usesMotorway: boolean;
+  outboundTrack: DirectedLaneTrack;
+  inboundTrack: DirectedLaneTrack;
+}
+
+export interface Stage1WindState {
+  windAngleIndex: number;
+  windVector: Readonly<WindVector>;
+  windLog: string;
+}
+
+export interface Stage2ATerrainState {
+  worldSize: string;
+  W: number;
+  H: number;
+  tileSize: number;
+  elevationField: Float32Array;
+  waterMask: Uint8Array;
+  seaLevel: number;
+  basins: WaterBasin[];
+  primarySink: PrimarySink | null;
+  hydroFeatures: HydroFeature[];
+}
+
+export interface Stage2BHydrologyState {
+  hydroVersion: number;
+  W: number;
+  H: number;
+  tileSize: number;
+  elevationField: Float32Array;
+  waterMask: Uint8Array;
+  drainageField: Float32Array;
+  rivers: RiverRibbon[];
+  hydroFeatures: HydroFeature[];
+  confluencePoint: Point2D | HydroFeature | null;
+  seaLevel: number;
+  hydroLog: string;
+}
+
+export interface Stage3SpatialState {
+  slopeField: Float32Array;
+  fertilityField: Float32Array;
+  distToWater: Float32Array;
+  urbanSuitability: Float32Array;
+  landmassId: Int16Array;
+  landmasses: Landmass[];
+}
+
+export interface Stage4SettlementsState {
+  towns: Town[];
+  clusters: Town[];
+  settlementLog: string;
+}
+
+export interface Stage5AirportsState {
+  airports: Airport[];
+  towns: Town[];
+  airportHeatmap: Float32Array;
+  roadGrid: Uint8Array;
+  buildingMask: Uint8Array;
+  roads: RoadSegment[];
+  airportLog: string;
+}
+
+export interface Stage67UrbanState {
+  urbanVersion: number;
+  towns: Town[];
+  roadGrid: Uint8Array;
+  buildingMask: Uint8Array;
+  zoneColorIdx: Int8Array;
+  roads: RoadSegment[];
+  houses: House[];
+  destinations: Destination[];
+  trees: TreeDot[];
+  bridgeCount: number;
+  roadLog: string;
+}
+
+export interface Stage8MotorwaysState {
+  towns: Town[];
+  airports: Airport[];
+  roadGrid: Uint8Array;
+  buildingMask: Uint8Array;
+  roads: RoadSegment[];
+  houses: House[];
+  destinations: Destination[];
+  trees: TreeDot[];
+  motorways: Motorway[];
+  interchanges: Interchange[];
+  displacedBuildingsCount: number;
+}
+
+export interface Stage9RampsAndCargoState {
+  towns: Town[];
+  airports: Airport[];
+  roadGrid: Uint8Array;
+  buildingMask: Uint8Array;
+  roads: RoadSegment[];
+  houses: House[];
+  destinations: Destination[];
+  trees: TreeDot[];
+  motorways: Motorway[];
+  interchanges: Interchange[];
+  cargoLinks: CargoLink[];
+  commuterRoutes: CommuterRoute[];
+  displacedBuildingsCount: number;
+  bridgeCount: number;
+  mwayLog: string;
+  cargoLog: string;
+}
+
+export interface BakeHydroPayload {
+  type?: "prepareHydro";
+  hydroVersion: number;
+  W: number;
+  H: number;
+  tileSize: number;
+  seaLevel: number;
+  elevationField: Float32Array;
+  waterMask: Uint8Array;
+  rivers: RiverRibbon[];
+}
+
+export interface BakeComposePayload {
+  type?: "composeTerrain";
+  requestId?: number;
+  hydroVersion?: number;
+  urbanVersion?: number;
+  W: number;
+  H: number;
+  tileSize: number;
+  zoneColorIdx: Int8Array;
+  trees: TreeDot[];
+  hydroPayload?: BakeHydroPayload;
+}
+
+export interface CarAgent {
+  isFreightTruck: boolean;
+  isCargoLink: boolean;
+  cargoStage?: string;
+  outboundTrack: DirectedLaneTrack;
+  inboundTrack: DirectedLaneTrack;
+  returning: boolean;
+  dist: number;
+  segIdx: number;
+  speed: number;
+  color: string;
+}
+
+export interface PlaneEndpoint {
+  id?: number;
+  x: number;
+  y: number;
+  angleRad: number;
+  halfLen: number;
+  halfWid?: number;
+  isHub?: boolean;
+  palette?: DistrictColor;
+}
+
+export interface PlaneAgent {
+  origin: Airport | PlaneEndpoint;
+  dest: Airport | PlaneEndpoint;
+  progress: number;
+  speed: number;
+  color: string;
+}
+
+export interface RoadGraphAnomaly {
+  x: number;
+  y: number;
+  kind:
+    "road-building-overlap" | "non-octilinear-edge" | "orphan-roadgrid-tile";
+}
+
+export interface RoadGraphDiagnostics {
+  deg: Uint8Array;
+  edgeCount: number;
+  streetTiles: number;
+  arterialTiles: number;
+  bridgeTiles: number;
+  junctionCount: number;
+  anomalies: RoadGraphAnomaly[];
+}
+
+export type InspectedEntity = Destination | Airport | Town;
+
+declare global {
+  interface Window {
+    renderer: import("./renderer.js").MiniMotorwaysRenderer;
+    currentWorld:
+      import("./world-generator.js").ProceduralLogisticsWorld | null;
+    simulator: import("./simulator.js").LogisticsSimulator | null;
+    rebuildWorld: (
+      preserveCamera?: boolean,
+    ) => Promise<
+      import("./world-generator.js").ProceduralLogisticsWorld | void
+    >;
+    openEntityInspector: (
+      type: string,
+      entity: InspectedEntity,
+      shouldFocus?: boolean,
+    ) => void;
+    scheduler?: {
+      yield: () => Promise<void>;
+    };
+  }
+}

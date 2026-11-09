@@ -3,15 +3,27 @@
   "version": "1.0.0",
   "description": "2D procedural world generator and multi-modal transportation logistics simulator inspired by OpenTTD and Mini Motorways",
   "private": true,
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "https://github.com/chen-ye/mini-logistics.git"
   },
   "scripts": {
     "dev": "bunx serve . -p 8788",
-    "start": "bunx serve . -p 8788"
+    "start": "bunx serve . -p 8788",
+    "lint": "bunx oxlint --deny-warnings src/ tests/",
+    "lint:fix": "bunx oxlint --fix src/ tests/",
+    "typecheck": "bun check --no-script",
+    "test:unit": "bun test tests/unit",
+    "test:e2e": "bunx playwright test",
+    "test": "bun test tests/unit && bunx playwright test",
+    "fmt": "bun fmt --no-script src/ tests/ playwright.config.js index.html",
+    "fmt:check": "bun fmt --no-script --check src/ tests/ playwright.config.js index.html",
+    "check": "bun fmt --no-script --check src/ tests/ playwright.config.js index.html && bunx oxlint --deny-warnings src/ tests/ && bun check --no-script && bun test --check tests/unit && bunx playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "oxlint": "^1.0.0",
     "serve": "^14.2.4"
   }
 }

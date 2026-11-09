@@ -1,312 +1,721 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>Mini Logistics — Procedural World & Airport Generator</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..800;1,9..40,400..800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./src/styles.css" />
-</head>
-<body class="relative w-dvw h-dvh overflow-hidden">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Mini Logistics — Procedural World & Airport Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..800;1,9..40,400..800&family=JetBrains+Mono:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body class="relative w-dvw h-dvh overflow-hidden">
+    <!-- MAIN WORLD CANVAS -->
+    <canvas
+      id="worldCanvas"
+      tabindex="0"
+      role="region"
+      aria-label="Interactive procedural logistics map"
+    ></canvas>
 
-  <!-- MAIN WORLD CANVAS -->
-  <canvas id="worldCanvas" tabindex="0" role="region" aria-label="Interactive procedural logistics map"></canvas>
-
-  <!-- TOP-LEFT BUTTON & GENERATOR LAB DRAWER -->
-  <div class="fixed top-2.5 left-2.5 sm:top-4 sm:left-4 z-30 flex flex-col gap-2 max-h-[calc(100dvh-1.25rem)] sm:max-h-[calc(100dvh-2rem)] pointer-events-none">
-    <!-- Top Bar Toggle & Quick Seed -->
-    <div class="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
-      <button id="toggleDrawerBtn" title="Toggle Procedural Algorithm Panel" aria-label="Toggle Procedural Algorithm Panel"
-        class="w-9 h-9 sm:w-11 sm:h-11 !p-0 shrink-0 rounded-full glass-panel flex items-center justify-center text-[#36383e] hover:bg-[#36383e] hover:text-[#f2efe9] active:scale-95 transition-all">
-        <svg id="drawerIconOpen" class="w-4 h-4 sm:w-5 sm:h-5" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
-        </svg>
-      </button>
-
-      <div class="glass-panel rounded-full !px-3 !py-1.5 flex items-center gap-1.5 sm:gap-2.5">
-        <label for="seedInput" class="hidden sm:inline text-[11px] font-bold uppercase tracking-wider text-stone-500">Seed</label>
-        <input id="seedInput" type="text" value="OTTD-METRO-84" aria-label="World Generation Seed"
-          class="mono text-[11px] sm:text-xs font-bold bg-stone-200/75 text-[#36383e] px-2.5 py-1 rounded-full w-24 sm:w-32 focus:outline-none focus:ring-2 focus:ring-stone-700" />
-        <button id="randomSeedBtn" title="Generate New Random World"
-          class="bg-[#e85c90] hover:bg-[#d6487c] active:scale-95 text-white text-[11px] sm:text-xs font-bold px-2.5 sm:px-3 py-1 rounded-full transition flex items-center gap-1 shrink-0">
-          <svg class="w-3.5 h-3.5" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+    <!-- TOP-LEFT BUTTON & GENERATOR LAB DRAWER -->
+    <div
+      class="fixed top-2.5 left-2.5 sm:top-4 sm:left-4 z-30 flex flex-col gap-2 max-h-[calc(100dvh-1.25rem)] sm:max-h-[calc(100dvh-2rem)] pointer-events-none"
+    >
+      <!-- Top Bar Toggle & Quick Seed -->
+      <div class="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
+        <button
+          id="toggleDrawerBtn"
+          title="Toggle Procedural Algorithm Panel"
+          aria-label="Toggle Procedural Algorithm Panel"
+          class="w-9 h-9 sm:w-11 sm:h-11 !p-0 shrink-0 rounded-full glass-panel flex items-center justify-center text-[#36383e] hover:bg-[#36383e] hover:text-[#f2efe9] active:scale-95 transition-all"
+        >
+          <svg
+            id="drawerIconOpen"
+            class="w-4 h-4 sm:w-5 sm:h-5"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75"
+            />
           </svg>
-          <span class="hidden sm:inline">New World</span>
-          <span class="sm:hidden">New</span>
+        </button>
+
+        <div
+          class="glass-panel rounded-full !px-3 !py-1.5 flex items-center gap-1.5 sm:gap-2.5"
+        >
+          <label
+            for="seedInput"
+            class="hidden sm:inline text-[11px] font-bold uppercase tracking-wider text-stone-500"
+            >Seed</label
+          >
+          <input
+            id="seedInput"
+            type="text"
+            value="OTTD-METRO-84"
+            aria-label="World Generation Seed"
+            class="mono text-[11px] sm:text-xs font-bold bg-stone-200/75 text-[#36383e] px-2.5 py-1 rounded-full w-24 sm:w-32 focus:outline-none focus:ring-2 focus:ring-stone-700"
+          />
+          <button
+            id="randomSeedBtn"
+            title="Generate New Random World"
+            class="bg-[#e85c90] hover:bg-[#d6487c] active:scale-95 text-white text-[11px] sm:text-xs font-bold px-2.5 sm:px-3 py-1 rounded-full transition flex items-center gap-1 shrink-0"
+          >
+            <svg
+              class="w-3.5 h-3.5"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.3"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"
+              />
+            </svg>
+            <span class="hidden sm:inline">New World</span>
+            <span class="sm:hidden">New</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Collapsible Procedural Generation Controls Drawer -->
+      <aside
+        id="generatorDrawer"
+        aria-label="World generator controls"
+        class="drawer-scroll glass-panel rounded-2xl w-[calc(100dvw-1.25rem)] sm:w-[24.5rem] p-4 flex flex-col divide-y divide-stone-300/60 overflow-y-auto pointer-events-auto transition-all duration-200 max-h-[calc(100dvh-4.5rem)] sm:max-h-[calc(100dvh-5.5rem)]"
+      >
+        <!-- Drawer Header -->
+        <div class="flex items-start justify-between pb-3 gap-2">
+          <div>
+            <h1
+              class="text-[17px] font-extrabold tracking-tight text-[#36383e]"
+            >
+              Procedural World Engine
+            </h1>
+            <p class="text-[11px] text-stone-500 font-medium mt-0.5">
+              Hydrology, Central Place Theory &amp; Airport Solver
+            </p>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              id="resetViewBtn"
+              class="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-stone-200/85 hover:bg-stone-300 active:scale-95 text-stone-700 transition"
+            >
+              Fit Map
+            </button>
+            <button
+              id="closeDrawerMobileBtn"
+              aria-label="Close settings panel"
+              class="sm:hidden w-7 h-7 rounded-lg bg-stone-200/85 hover:bg-stone-300 flex items-center justify-center text-stone-700"
+            >
+              <svg
+                class="w-4 h-4"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Map Inspection Layer Switcher -->
+        <div class="py-3">
+          <div class="text-[11px] font-bold text-stone-600 mb-2">
+            View Layer
+          </div>
+          <div class="grid grid-cols-2 gap-1.5">
+            <button
+              data-layer="aesthetic"
+              class="layer-btn active text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
+            >
+              <span class="w-2 h-2 rounded-full bg-[#e85c90] shrink-0"></span>
+              <span class="truncate">Mini Motorways</span>
+            </button>
+            <button
+              data-layer="rci"
+              class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
+            >
+              <span class="flex items-center gap-0.5 shrink-0"
+                ><span class="w-1.5 h-2 rounded-xs bg-emerald-500"></span
+                ><span class="w-1.5 h-2 rounded-xs bg-blue-500"></span
+                ><span class="w-1.5 h-2 rounded-xs bg-amber-500"></span
+              ></span>
+              <span class="truncate">RCI &amp; Cargo Chain</span>
+            </button>
+            <button
+              data-layer="airport"
+              class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
+            >
+              <span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
+              <span class="truncate">Airport Cones</span>
+            </button>
+            <button
+              data-layer="hierarchy"
+              class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
+            >
+              <span class="w-2 h-2 rounded-full bg-indigo-500 shrink-0"></span>
+              <span class="truncate">Central Place Graph</span>
+            </button>
+            <button
+              data-layer="hydrology"
+              class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
+            >
+              <span class="w-2 h-2 rounded-full bg-cyan-500 shrink-0"></span>
+              <span class="truncate">Topography &amp; Hydro</span>
+            </button>
+            <button
+              data-layer="roadgrid"
+              class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition"
+            >
+              <span class="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
+              <span class="truncate">Road Grid &amp; Graph</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Coupled Geography, Scale & Pluggable Solver Matrix (2-Column Grid) -->
+        <div class="py-3 space-y-2.5">
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label
+                for="archetypeSelect"
+                class="block text-[11px] font-bold text-stone-600 mb-1"
+                >Geography Archetype</label
+              >
+              <select
+                id="archetypeSelect"
+                class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700"
+              >
+                <option value="confluence">Confluence Basin</option>
+                <option value="estuary">Coastal Estuary</option>
+                <option value="archipelago">Twin-Channel Delta</option>
+                <option value="inland">Inland Valley Lakes</option>
+                <option value="island-hopper">Island Hopper Chain</option>
+              </select>
+            </div>
+            <div>
+              <label
+                for="worldSizeSelect"
+                class="block text-[11px] font-bold text-stone-600 mb-1"
+                >World Map Scale</label
+              >
+              <select
+                id="worldSizeSelect"
+                class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700"
+              >
+                <option value="compact">Compact (240×150)</option>
+                <option value="standard" selected>Standard (360×224)</option>
+                <option value="large">Large (540×336)</option>
+                <option value="huge">Huge (720×448)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label
+                for="terrainAlgoSelect"
+                class="block text-[11px] font-bold text-stone-600 mb-1"
+                >Terrain Engine (2A)</label
+              >
+              <select
+                id="terrainAlgoSelect"
+                class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700"
+              >
+                <option value="tectonic-fbm">Anisotropic Strike fBm</option>
+                <option value="quilez-erosion">Quilez Gradient Erosion</option>
+                <option value="voronoi-plates">Voronoi Tectonic Plates</option>
+              </select>
+            </div>
+            <div>
+              <label
+                for="hydrologyAlgoSelect"
+                class="block text-[11px] font-bold text-stone-600 mb-1"
+                >Hydrology Engine (2B)</label
+              >
+              <select
+                id="hydrologyAlgoSelect"
+                class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700"
+              >
+                <option value="thalweg-astar">Downhill A* Thalwegs</option>
+                <option value="d8-strahler">D8 Strahler Tributaries</option>
+                <option value="meandering-plain">Ikeda Floodplain Bends</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label
+              for="airportMixSelect"
+              class="block text-[11px] font-bold text-stone-600 mb-1"
+              >Airport Hierarchy Mix</label
+            >
+            <select
+              id="airportMixSelect"
+              class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700"
+            >
+              <option value="hub-regional">
+                Intl Dual-Runway Hub + Regional Spokes
+              </option>
+              <option value="hub-reg-cargo">
+                Intl Hub + Regional + Dedicated Air Cargo Hub
+              </option>
+              <option value="dual-hub">Dual Intl Hubs + Regional Spokes</option>
+            </select>
+          </div>
+
+          <label class="flex items-center justify-between cursor-pointer pt-1">
+            <div>
+              <div class="text-xs font-bold text-[#36383e]">
+                Intermediate Expressway Ramps
+              </div>
+              <div class="text-[11px] text-stone-500">
+                Mid-corridor diamond slip-ramps &amp; surface stubs
+              </div>
+            </div>
+            <input
+              id="toggleInterRamps"
+              type="checkbox"
+              checked
+              class="w-4 h-4 accent-[#e85c90] rounded cursor-pointer"
+            />
+          </label>
+        </div>
+
+        <!-- Sliders for Generation Parameters -->
+        <div class="py-3 space-y-2.5">
+          <div>
+            <div class="flex justify-between text-xs font-semibold mb-1">
+              <span>Water &amp; River Coverage</span>
+              <span
+                id="valWater"
+                class="mono text-[11px] font-bold text-stone-600 tabular-nums"
+                >48%</span
+              >
+            </div>
+            <input
+              id="sliderWater"
+              type="range"
+              min="20"
+              max="80"
+              value="48"
+              class="w-full"
+            />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs font-semibold mb-1">
+              <span>Town &amp; Settlement Count</span>
+              <span
+                id="valTowns"
+                class="mono text-[11px] font-bold text-stone-600 tabular-nums"
+                >20 Towns</span
+              >
+            </div>
+            <input
+              id="sliderTowns"
+              type="range"
+              min="8"
+              max="44"
+              value="20"
+              class="w-full"
+            />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs font-semibold mb-1">
+              <span>Building &amp; Urban Density</span>
+              <span
+                id="valDensity"
+                class="mono text-[11px] font-bold text-stone-600 tabular-nums"
+                >250%</span
+              >
+            </div>
+            <input
+              id="sliderDensity"
+              type="range"
+              min="50"
+              max="350"
+              value="250"
+              step="10"
+              class="w-full"
+            />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs font-semibold mb-1">
+              <span>Target Airports (Hubs + Regional)</span>
+              <span
+                id="valAirports"
+                class="mono text-[11px] font-bold text-stone-600 tabular-nums"
+                >3 (1 Hub, 2 Reg)</span
+              >
+            </div>
+            <input
+              id="sliderAirports"
+              type="range"
+              min="1"
+              max="8"
+              value="3"
+              class="w-full"
+            />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs font-semibold mb-1">
+              <span>Prevailing Wind Runway Axis</span>
+              <span
+                id="valWind"
+                class="mono text-[11px] font-bold text-stone-600 tabular-nums"
+                >Auto (Seed)</span
+              >
+            </div>
+            <input
+              id="sliderWind"
+              type="range"
+              min="-1"
+              max="3"
+              value="-1"
+              step="1"
+              class="w-full"
+            />
+          </div>
+        </div>
+
+        <!-- Flat Tabular Pipeline Telemetry & Collapsible Diagnostics / Legend -->
+        <div class="pt-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span
+              id="telemetryGridLabel"
+              class="text-[11px] font-bold text-stone-600"
+              >State Telemetry (360×224 Grid)</span
+            >
+            <span
+              id="genTimeBadge"
+              class="mono text-[11px] font-bold text-stone-600 tabular-nums"
+              >42 ms</span
+            >
+          </div>
+
+          <div
+            class="grid grid-cols-3 gap-2 py-1.5 border-y border-stone-300/60 text-xs tabular-nums"
+          >
+            <div>
+              <div class="text-[10px] font-semibold text-stone-500">
+                Buildings
+              </div>
+              <div
+                id="statPop"
+                class="mono font-extrabold text-[#36383e] mt-0.5"
+              >
+                0
+              </div>
+            </div>
+            <div>
+              <div class="text-[10px] font-semibold text-stone-500">
+                Airports
+              </div>
+              <div
+                id="statAirports"
+                class="mono font-extrabold text-[#e85c90] mt-0.5"
+              >
+                0
+              </div>
+            </div>
+            <div>
+              <div class="text-[10px] font-semibold text-stone-500">
+                Interchanges
+              </div>
+              <div
+                id="statBridges"
+                class="mono font-extrabold text-[#526fa3] mt-0.5"
+              >
+                0
+              </div>
+            </div>
+          </div>
+
+          <details class="group">
+            <summary
+              class="flex items-center justify-between cursor-pointer text-[11px] font-bold text-stone-600 hover:text-[#36383e] py-1 list-none"
+            >
+              <span>Pipeline Stage Log</span>
+              <svg
+                class="w-3.5 h-3.5 text-stone-500 transition-transform group-open:rotate-180"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </summary>
+            <div class="pt-1.5 text-[11px] text-stone-600">
+              <div
+                id="pipelineLog"
+                class="leading-relaxed max-h-32 overflow-y-auto space-y-1 pr-1 drawer-scroll"
+              ></div>
+            </div>
+          </details>
+        </div>
+      </aside>
+    </div>
+
+    <!-- TOP-RIGHT MINI MOTORWAYS HUD (Trip Counter, Clock, Simulation Speed & Zoom Controls) -->
+    <div
+      class="fixed top-2.5 right-2.5 sm:top-4 sm:right-4 z-20 flex flex-col items-end gap-1.5 sm:gap-2 pointer-events-none"
+    >
+      <div
+        class="flex items-center gap-1.5 sm:gap-3 glass-panel !px-3 !py-1.5 sm:!px-4 sm:!py-2 rounded-full pointer-events-auto"
+      >
+        <!-- Delivered Passengers / Cargo Counter -->
+        <div
+          class="flex items-center gap-1 sm:gap-1.5 pr-1.5 sm:pr-2 border-r border-stone-300/70"
+        >
+          <span
+            id="tripCounter"
+            class="mono text-xs sm:text-lg font-extrabold text-[#36383e] tracking-tight"
+            >1,372</span
+          >
+          <svg
+            class="w-3.5 h-3.5 sm:w-5 sm:h-5 text-[#36383e]"
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path
+              fill-rule="evenodd"
+              d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z"
+              clip-rule="evenodd"
+            />
+          </svg>
+        </div>
+
+        <!-- Day & Minimalist Analog Clock -->
+        <div class="flex items-center gap-1.5 sm:gap-2">
+          <span
+            id="dayLabel"
+            class="hidden min-[420px]:inline text-[10px] sm:text-xs font-extrabold tracking-widest uppercase text-[#36383e]"
+            >TUE</span
+          >
+          <div
+            class="relative w-5 h-5 sm:w-7 sm:h-7 rounded-full bg-[#36383e] flex items-center justify-center shadow-inner"
+          >
+            <!-- Clock tick marks -->
+            <div
+              class="w-3.5 h-3.5 sm:w-5 sm:h-5 rounded-full border border-dashed border-stone-400/50"
+            ></div>
+            <div
+              id="clockHand"
+              class="absolute w-0.5 h-1.5 sm:h-2.5 bg-[#f2efe9] rounded-full origin-bottom"
+              style="bottom: 50%; transform: rotate(45deg)"
+            ></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Simulation Speed Controls (Pause, Play, Fast Forward) -->
+      <div
+        class="flex flex-col gap-1 sm:gap-1.5 glass-panel !p-1 sm:!p-1.5 rounded-2xl pointer-events-auto"
+      >
+        <button
+          data-speed="0"
+          class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition"
+          title="Pause Traffic & Flights"
+          aria-label="Pause Traffic and Flights"
+        >
+          <svg
+            class="w-4 h-4"
+            aria-hidden="true"
+            fill="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z" />
+          </svg>
+        </button>
+        <button
+          data-speed="1"
+          class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center bg-[#36383e] text-[#f2efe9] active:scale-95 transition"
+          title="Normal Speed"
+          aria-label="Normal Speed"
+        >
+          <svg
+            class="w-4 h-4"
+            aria-hidden="true"
+            fill="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </button>
+        <button
+          data-speed="2.5"
+          class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition"
+          title="Fast Forward"
+          aria-label="Fast Forward"
+        >
+          <svg
+            class="w-4 h-4"
+            aria-hidden="true"
+            fill="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Touch & Thumb Camera Zoom Controls (+, −, Fit) -->
+      <div
+        class="flex flex-col gap-1 sm:gap-1.5 glass-panel !p-1 sm:!p-1.5 rounded-2xl pointer-events-auto"
+      >
+        <button
+          id="zoomInBtn"
+          class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition font-bold text-base"
+          title="Zoom In"
+          aria-label="Zoom In"
+        >
+          +
+        </button>
+        <button
+          id="zoomOutBtn"
+          class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition font-bold text-base"
+          title="Zoom Out"
+          aria-label="Zoom Out"
+        >
+          &minus;
+        </button>
+        <button
+          id="hudFitBtn"
+          class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition"
+          title="Fit World to Screen"
+          aria-label="Fit World to Screen"
+        >
+          <svg
+            class="w-4 h-4"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15"
+            />
+          </svg>
         </button>
       </div>
     </div>
 
-    <!-- Collapsible Procedural Generation Controls Drawer -->
-    <aside id="generatorDrawer" aria-label="World generator controls" class="drawer-scroll glass-panel rounded-2xl w-[calc(100dvw-1.25rem)] sm:w-[24.5rem] p-4 flex flex-col divide-y divide-stone-300/60 overflow-y-auto pointer-events-auto transition-all duration-200 max-h-[calc(100dvh-4.5rem)] sm:max-h-[calc(100dvh-5.5rem)]">
-      <!-- Drawer Header -->
-      <div class="flex items-start justify-between pb-3 gap-2">
-        <div>
-          <h1 class="text-[17px] font-extrabold tracking-tight text-[#36383e]">Procedural World Engine</h1>
-          <p class="text-[11px] text-stone-500 font-medium mt-0.5">Hydrology, Central Place Theory &amp; Airport Solver</p>
+    <!-- BOTTOM ENTITY INSPECTOR DOSSIER (Responsive Bottom Sheet on Mobile, Floating Card on Desktop) -->
+    <aside
+      id="inspectorCard"
+      aria-label="Selected entity inspector"
+      class="fixed bottom-2.5 left-2.5 right-2.5 sm:left-auto sm:bottom-4 sm:right-4 z-30 sm:w-[25.5rem] glass-panel rounded-2xl p-4 hidden pointer-events-auto transition-all duration-150"
+    >
+      <div
+        class="flex items-start justify-between gap-2 pb-2.5 mb-2.5 border-b border-stone-300/70"
+      >
+        <div class="min-w-0">
+          <h2
+            id="inspTitle"
+            class="text-[17px] sm:text-lg font-extrabold text-[#36383e] leading-tight tracking-tight truncate"
+          >
+            Metro International Airport
+          </h2>
+          <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
+            <span
+              id="inspBadge"
+              class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-pink-600 text-white tracking-wide"
+              >AIRPORT</span
+            >
+            <span
+              id="inspCode"
+              class="mono text-[11px] font-bold text-stone-600"
+              >IATA: KMT</span
+            >
+          </div>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
-          <button id="resetViewBtn" class="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-stone-200/85 hover:bg-stone-300 active:scale-95 text-stone-700 transition">
-            Fit Map
+        <div class="flex items-center gap-1 shrink-0">
+          <button
+            id="focusInspectorBtn"
+            title="Center & Zoom on Map"
+            aria-label="Center and zoom on selected entity"
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/80 active:scale-95 transition"
+          >
+            <svg
+              class="w-4 h-4"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.1"
+              viewBox="0 0 24 24"
+            >
+              <circle cx="12" cy="12" r="7" />
+              <circle cx="12" cy="12" r="2" fill="currentColor" />
+              <path stroke-linecap="round" d="M12 2v3m0 14v3M2 12h3m14 0h3" />
+            </svg>
           </button>
-          <button id="closeDrawerMobileBtn" aria-label="Close settings panel" class="sm:hidden w-7 h-7 rounded-lg bg-stone-200/85 hover:bg-stone-300 flex items-center justify-center text-stone-700">
-            <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          <button
+            id="closeInspectorBtn"
+            title="Close Inspector (Esc)"
+            aria-label="Close inspector"
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/80 active:scale-95 transition"
+          >
+            <svg
+              class="w-4 h-4"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.3"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>
       </div>
-
-      <!-- Map Inspection Layer Switcher -->
-      <div class="py-3">
-        <div class="text-[11px] font-bold text-stone-600 mb-2">View Layer</div>
-        <div class="grid grid-cols-2 gap-1.5">
-          <button data-layer="aesthetic" class="layer-btn active text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
-            <span class="w-2 h-2 rounded-full bg-[#e85c90] shrink-0"></span>
-            <span class="truncate">Mini Motorways</span>
-          </button>
-          <button data-layer="rci" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
-            <span class="flex items-center gap-0.5 shrink-0"><span class="w-1.5 h-2 rounded-xs bg-emerald-500"></span><span class="w-1.5 h-2 rounded-xs bg-blue-500"></span><span class="w-1.5 h-2 rounded-xs bg-amber-500"></span></span>
-            <span class="truncate">RCI &amp; Cargo Chain</span>
-          </button>
-          <button data-layer="airport" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
-            <span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
-            <span class="truncate">Airport Cones</span>
-          </button>
-          <button data-layer="hierarchy" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
-            <span class="w-2 h-2 rounded-full bg-indigo-500 shrink-0"></span>
-            <span class="truncate">Central Place Graph</span>
-          </button>
-          <button data-layer="hydrology" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
-            <span class="w-2 h-2 rounded-full bg-cyan-500 shrink-0"></span>
-            <span class="truncate">Topography &amp; Hydro</span>
-          </button>
-          <button data-layer="roadgrid" class="layer-btn text-xs font-semibold py-1.5 px-2.5 rounded-xl border border-stone-300/80 text-left flex items-center gap-1.5 transition">
-            <span class="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
-            <span class="truncate">Road Grid &amp; Graph</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Coupled Geography, Scale & Pluggable Solver Matrix (2-Column Grid) -->
-      <div class="py-3 space-y-2.5">
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <label for="archetypeSelect" class="block text-[11px] font-bold text-stone-600 mb-1">Geography Archetype</label>
-            <select id="archetypeSelect" class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
-              <option value="confluence">Confluence Basin</option>
-              <option value="estuary">Coastal Estuary</option>
-              <option value="archipelago">Twin-Channel Delta</option>
-              <option value="inland">Inland Valley Lakes</option>
-              <option value="island-hopper">Island Hopper Chain</option>
-            </select>
-          </div>
-          <div>
-            <label for="worldSizeSelect" class="block text-[11px] font-bold text-stone-600 mb-1">World Map Scale</label>
-            <select id="worldSizeSelect" class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
-              <option value="compact">Compact (240×150)</option>
-              <option value="standard" selected>Standard (360×224)</option>
-              <option value="large">Large (540×336)</option>
-              <option value="huge">Huge (720×448)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <label for="terrainAlgoSelect" class="block text-[11px] font-bold text-stone-600 mb-1">Terrain Engine (2A)</label>
-            <select id="terrainAlgoSelect" class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
-              <option value="tectonic-fbm">Anisotropic Strike fBm</option>
-              <option value="quilez-erosion">Quilez Gradient Erosion</option>
-              <option value="voronoi-plates">Voronoi Tectonic Plates</option>
-            </select>
-          </div>
-          <div>
-            <label for="hydrologyAlgoSelect" class="block text-[11px] font-bold text-stone-600 mb-1">Hydrology Engine (2B)</label>
-            <select id="hydrologyAlgoSelect" class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
-              <option value="thalweg-astar">Downhill A* Thalwegs</option>
-              <option value="d8-strahler">D8 Strahler Tributaries</option>
-              <option value="meandering-plain">Ikeda Floodplain Bends</option>
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <label for="airportMixSelect" class="block text-[11px] font-bold text-stone-600 mb-1">Airport Hierarchy Mix</label>
-          <select id="airportMixSelect" class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700">
-            <option value="hub-regional">Intl Dual-Runway Hub + Regional Spokes</option>
-            <option value="hub-reg-cargo">Intl Hub + Regional + Dedicated Air Cargo Hub</option>
-            <option value="dual-hub">Dual Intl Hubs + Regional Spokes</option>
-          </select>
-        </div>
-
-        <label class="flex items-center justify-between cursor-pointer pt-1">
-          <div>
-            <div class="text-xs font-bold text-[#36383e]">Intermediate Expressway Ramps</div>
-            <div class="text-[11px] text-stone-500">Mid-corridor diamond slip-ramps &amp; surface stubs</div>
-          </div>
-          <input id="toggleInterRamps" type="checkbox" checked class="w-4 h-4 accent-[#e85c90] rounded cursor-pointer" />
-        </label>
-      </div>
-
-      <!-- Sliders for Generation Parameters -->
-      <div class="py-3 space-y-2.5">
-        <div>
-          <div class="flex justify-between text-xs font-semibold mb-1">
-            <span>Water &amp; River Coverage</span>
-            <span id="valWater" class="mono text-[11px] font-bold text-stone-600 tabular-nums">48%</span>
-          </div>
-          <input id="sliderWater" type="range" min="20" max="80" value="48" class="w-full" />
-        </div>
-
-        <div>
-          <div class="flex justify-between text-xs font-semibold mb-1">
-            <span>Town &amp; Settlement Count</span>
-            <span id="valTowns" class="mono text-[11px] font-bold text-stone-600 tabular-nums">20 Towns</span>
-          </div>
-          <input id="sliderTowns" type="range" min="8" max="44" value="20" class="w-full" />
-        </div>
-
-        <div>
-          <div class="flex justify-between text-xs font-semibold mb-1">
-            <span>Building &amp; Urban Density</span>
-            <span id="valDensity" class="mono text-[11px] font-bold text-stone-600 tabular-nums">250%</span>
-          </div>
-          <input id="sliderDensity" type="range" min="50" max="350" value="250" step="10" class="w-full" />
-        </div>
-
-        <div>
-          <div class="flex justify-between text-xs font-semibold mb-1">
-            <span>Target Airports (Hubs + Regional)</span>
-            <span id="valAirports" class="mono text-[11px] font-bold text-stone-600 tabular-nums">3 (1 Hub, 2 Reg)</span>
-          </div>
-          <input id="sliderAirports" type="range" min="1" max="8" value="3" class="w-full" />
-        </div>
-
-        <div>
-          <div class="flex justify-between text-xs font-semibold mb-1">
-            <span>Prevailing Wind Runway Axis</span>
-            <span id="valWind" class="mono text-[11px] font-bold text-stone-600 tabular-nums">Auto (Seed)</span>
-          </div>
-          <input id="sliderWind" type="range" min="-1" max="3" value="-1" step="1" class="w-full" />
-        </div>
-      </div>
-
-      <!-- Flat Tabular Pipeline Telemetry & Collapsible Diagnostics / Legend -->
-      <div class="pt-3 space-y-2">
-        <div class="flex items-center justify-between">
-          <span id="telemetryGridLabel" class="text-[11px] font-bold text-stone-600">State Telemetry (360×224 Grid)</span>
-          <span id="genTimeBadge" class="mono text-[11px] font-bold text-stone-600 tabular-nums">42 ms</span>
-        </div>
-
-        <div class="grid grid-cols-3 gap-2 py-1.5 border-y border-stone-300/60 text-xs tabular-nums">
-          <div>
-            <div class="text-[10px] font-semibold text-stone-500">Buildings</div>
-            <div id="statPop" class="mono font-extrabold text-[#36383e] mt-0.5">0</div>
-          </div>
-          <div>
-            <div class="text-[10px] font-semibold text-stone-500">Airports</div>
-            <div id="statAirports" class="mono font-extrabold text-[#e85c90] mt-0.5">0</div>
-          </div>
-          <div>
-            <div class="text-[10px] font-semibold text-stone-500">Interchanges</div>
-            <div id="statBridges" class="mono font-extrabold text-[#526fa3] mt-0.5">0</div>
-          </div>
-        </div>
-
-        <details class="group">
-          <summary class="flex items-center justify-between cursor-pointer text-[11px] font-bold text-stone-600 hover:text-[#36383e] py-1 list-none">
-            <span>Pipeline Stage Log</span>
-            <svg class="w-3.5 h-3.5 text-stone-500 transition-transform group-open:rotate-180" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
-          </summary>
-          <div class="pt-1.5 text-[11px] text-stone-600">
-            <div id="pipelineLog" class="leading-relaxed max-h-32 overflow-y-auto space-y-1 pr-1 drawer-scroll"></div>
-          </div>
-        </details>
-      </div>
+      <div
+        id="inspBody"
+        class="drawer-scroll text-xs text-stone-700 space-y-3 max-h-[54dvh] sm:max-h-[62dvh] overflow-y-auto pr-0.5"
+      ></div>
     </aside>
-  </div>
 
-  <!-- TOP-RIGHT MINI MOTORWAYS HUD (Trip Counter, Clock, Simulation Speed & Zoom Controls) -->
-  <div class="fixed top-2.5 right-2.5 sm:top-4 sm:right-4 z-20 flex flex-col items-end gap-1.5 sm:gap-2 pointer-events-none">
-    <div class="flex items-center gap-1.5 sm:gap-3 glass-panel !px-3 !py-1.5 sm:!px-4 sm:!py-2 rounded-full pointer-events-auto">
-      <!-- Delivered Passengers / Cargo Counter -->
-      <div class="flex items-center gap-1 sm:gap-1.5 pr-1.5 sm:pr-2 border-r border-stone-300/70">
-        <span id="tripCounter" class="mono text-xs sm:text-lg font-extrabold text-[#36383e] tracking-tight">1,372</span>
-        <svg class="w-3.5 h-3.5 sm:w-5 sm:h-5 text-[#36383e]" aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
-          <path fill-rule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
-        </svg>
-      </div>
-
-      <!-- Day & Minimalist Analog Clock -->
-      <div class="flex items-center gap-1.5 sm:gap-2">
-        <span id="dayLabel" class="hidden min-[420px]:inline text-[10px] sm:text-xs font-extrabold tracking-widest uppercase text-[#36383e]">TUE</span>
-        <div class="relative w-5 h-5 sm:w-7 sm:h-7 rounded-full bg-[#36383e] flex items-center justify-center shadow-inner">
-          <!-- Clock tick marks -->
-          <div class="w-3.5 h-3.5 sm:w-5 sm:h-5 rounded-full border border-dashed border-stone-400/50"></div>
-          <div id="clockHand" class="absolute w-0.5 h-1.5 sm:h-2.5 bg-[#f2efe9] rounded-full origin-bottom" style="bottom: 50%; transform: rotate(45deg);"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Simulation Speed Controls (Pause, Play, Fast Forward) -->
-    <div class="flex flex-col gap-1 sm:gap-1.5 glass-panel !p-1 sm:!p-1.5 rounded-2xl pointer-events-auto">
-      <button data-speed="0" class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition" title="Pause Traffic & Flights" aria-label="Pause Traffic and Flights">
-        <svg class="w-4 h-4" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
-      </button>
-      <button data-speed="1" class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center bg-[#36383e] text-[#f2efe9] active:scale-95 transition" title="Normal Speed" aria-label="Normal Speed">
-        <svg class="w-4 h-4" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-      </button>
-      <button data-speed="2.5" class="speed-btn w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-500 hover:text-[#36383e] active:scale-95 transition" title="Fast Forward" aria-label="Fast Forward">
-        <svg class="w-4 h-4" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
-      </button>
-    </div>
-
-    <!-- Touch & Thumb Camera Zoom Controls (+, −, Fit) -->
-    <div class="flex flex-col gap-1 sm:gap-1.5 glass-panel !p-1 sm:!p-1.5 rounded-2xl pointer-events-auto">
-      <button id="zoomInBtn" class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition font-bold text-base" title="Zoom In" aria-label="Zoom In">+</button>
-      <button id="zoomOutBtn" class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition font-bold text-base" title="Zoom Out" aria-label="Zoom Out">&minus;</button>
-      <button id="hudFitBtn" class="w-9 h-9 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/70 active:scale-95 transition" title="Fit World to Screen" aria-label="Fit World to Screen">
-        <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-        </svg>
-      </button>
-    </div>
-  </div>
-
-  <!-- BOTTOM ENTITY INSPECTOR DOSSIER (Responsive Bottom Sheet on Mobile, Floating Card on Desktop) -->
-  <aside id="inspectorCard" aria-label="Selected entity inspector" class="fixed bottom-2.5 left-2.5 right-2.5 sm:left-auto sm:bottom-4 sm:right-4 z-30 sm:w-[25.5rem] glass-panel rounded-2xl p-4 hidden pointer-events-auto transition-all duration-150">
-    <div class="flex items-start justify-between gap-2 pb-2.5 mb-2.5 border-b border-stone-300/70">
-      <div class="min-w-0">
-        <h2 id="inspTitle" class="text-[17px] sm:text-lg font-extrabold text-[#36383e] leading-tight tracking-tight truncate">Metro International Airport</h2>
-        <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
-          <span id="inspBadge" class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-pink-600 text-white tracking-wide">AIRPORT</span>
-          <span id="inspCode" class="mono text-[11px] font-bold text-stone-600">IATA: KMT</span>
-        </div>
-      </div>
-      <div class="flex items-center gap-1 shrink-0">
-        <button id="focusInspectorBtn" title="Center & Zoom on Map" aria-label="Center and zoom on selected entity" class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/80 active:scale-95 transition">
-          <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.1" viewBox="0 0 24 24">
-            <circle cx="12" cy="12" r="7" />
-            <circle cx="12" cy="12" r="2" fill="currentColor" />
-            <path stroke-linecap="round" d="M12 2v3m0 14v3M2 12h3m14 0h3" />
-          </svg>
-        </button>
-        <button id="closeInspectorBtn" title="Close Inspector (Esc)" aria-label="Close inspector" class="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600 hover:text-[#36383e] hover:bg-stone-200/80 active:scale-95 transition">
-          <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-    </div>
-    <div id="inspBody" class="drawer-scroll text-xs text-stone-700 space-y-3 max-h-[54dvh] sm:max-h-[62dvh] overflow-y-auto pr-0.5"></div>
-  </aside>
-
-
-  <script type="module" src="./src/main.js"></script>
-</body>
+    <script type="module" src="./src/main.js"></script>
+  </body>
 </html>

@@ -1,10 +1,16 @@
-import { PALETTE } from './palette.js';
+/** @import { BakeHydroPayload, BakeComposePayload } from './types.js' */
+import { PALETTE } from "./palette.js";
 
+/**
+ * @param {number} width
+ * @param {number} height
+ * @returns {OffscreenCanvas | HTMLCanvasElement}
+ */
 function createSurface(width, height) {
-  if (typeof OffscreenCanvas !== 'undefined') {
+  if (typeof OffscreenCanvas !== "undefined") {
     return new OffscreenCanvas(width, height);
   }
-  const c = document.createElement('canvas');
+  const c = document.createElement("canvas");
   c.width = width;
   c.height = height;
   return c;
@@ -12,12 +18,33 @@ function createSurface(width, height) {
 
 export class TerrainBitmapBaker {
   constructor() {
+    /** @type {number} */
     this._cachedHydroVersion = -1;
+    /** @type {ImageBitmap | OffscreenCanvas | HTMLCanvasElement | null} */
     this._hydroBaseBitmap = null;
+    /** @type {ImageBitmap | OffscreenCanvas | HTMLCanvasElement | null} */
     this._waterOverlayBitmap = null;
   }
 
-  buildVignelliWaterPath(W, H, waterMask, elevationField, ts, thresh = null, outStrokePath = null) {
+  /**
+   * @param {number} W
+   * @param {number} H
+   * @param {Uint8Array} waterMask
+   * @param {Float32Array} elevationField
+   * @param {number} ts
+   * @param {number | null} [thresh]
+   * @param {Path2D | null} [outStrokePath]
+   * @returns {Path2D}
+   */
+  buildVignelliWaterPath(
+    W,
+    H,
+    waterMask,
+    elevationField,
+    ts,
+    thresh = null,
+    outStrokePath = null,
+  ) {
     const path = new Path2D();
     const gw = W + 2;
     const gh = H + 2;
@@ -31,7 +58,8 @@ export class TerrainBitmapBaker {
         for (let gx = 0; gx < gw; gx++) {
           const cx = Math.max(0, Math.min(W - 1, gx - 1));
           const id = wRowOff + cx;
-          flags[rowOff + gx] = waterMask[id] === 0 && elevationField[id] >= thresh ? 1 : 0;
+          flags[rowOff + gx] =
+            waterMask[id] === 0 && elevationField[id] >= thresh ? 1 : 0;
         }
       } else {
         for (let gx = 0; gx < gw; gx++) {
@@ -83,20 +111,138 @@ export class TerrainBitmapBaker {
         const xm = (x + 1.0) * ts;
 
         switch (mask) {
-          case 1:  poly([[x0, ym], [xm, y1], [x0, y1]]); seg(x0, ym, xm, y1); break;
-          case 2:  poly([[xm, y1], [x1, ym], [x1, y1]]); seg(xm, y1, x1, ym); break;
-          case 4:  poly([[xm, y0], [x1, y0], [x1, ym]]); seg(xm, y0, x1, ym); break;
-          case 8:  poly([[x0, y0], [xm, y0], [x0, ym]]); seg(x0, ym, xm, y0); break;
-          case 3:  poly([[x0, ym], [x1, ym], [x1, y1], [x0, y1]]); seg(x0, ym, x1, ym); break;
-          case 6:  poly([[xm, y0], [x1, y0], [x1, y1], [xm, y1]]); seg(xm, y0, xm, y1); break;
-          case 9:  poly([[x0, y0], [xm, y0], [xm, y1], [x0, y1]]); seg(xm, y0, xm, y1); break;
-          case 12: poly([[x0, y0], [x1, y0], [x1, ym], [x0, ym]]); seg(x0, ym, x1, ym); break;
-          case 5:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); seg(x0, ym, xm, y0); seg(xm, y1, x1, ym); break;
-          case 10: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [xm, y1], [x0, ym]]); seg(xm, y0, x1, ym); seg(x0, ym, xm, y1); break;
-          case 7:  poly([[x0, ym], [xm, y0], [x1, y0], [x1, y1], [x0, y1]]); seg(x0, ym, xm, y0); break;
-          case 11: poly([[x0, y0], [xm, y0], [x1, ym], [x1, y1], [x0, y1]]); seg(xm, y0, x1, ym); break;
-          case 13: poly([[x0, y0], [x1, y0], [x1, ym], [xm, y1], [x0, y1]]); seg(xm, y1, x1, ym); break;
-          case 14: poly([[x0, y0], [x1, y0], [x1, y1], [xm, y1], [x0, ym]]); seg(x0, ym, xm, y1); break;
+          case 1:
+            poly([
+              [x0, ym],
+              [xm, y1],
+              [x0, y1],
+            ]);
+            seg(x0, ym, xm, y1);
+            break;
+          case 2:
+            poly([
+              [xm, y1],
+              [x1, ym],
+              [x1, y1],
+            ]);
+            seg(xm, y1, x1, ym);
+            break;
+          case 4:
+            poly([
+              [xm, y0],
+              [x1, y0],
+              [x1, ym],
+            ]);
+            seg(xm, y0, x1, ym);
+            break;
+          case 8:
+            poly([
+              [x0, y0],
+              [xm, y0],
+              [x0, ym],
+            ]);
+            seg(x0, ym, xm, y0);
+            break;
+          case 3:
+            poly([
+              [x0, ym],
+              [x1, ym],
+              [x1, y1],
+              [x0, y1],
+            ]);
+            seg(x0, ym, x1, ym);
+            break;
+          case 6:
+            poly([
+              [xm, y0],
+              [x1, y0],
+              [x1, y1],
+              [xm, y1],
+            ]);
+            seg(xm, y0, xm, y1);
+            break;
+          case 9:
+            poly([
+              [x0, y0],
+              [xm, y0],
+              [xm, y1],
+              [x0, y1],
+            ]);
+            seg(xm, y0, xm, y1);
+            break;
+          case 12:
+            poly([
+              [x0, y0],
+              [x1, y0],
+              [x1, ym],
+              [x0, ym],
+            ]);
+            seg(x0, ym, x1, ym);
+            break;
+          case 5:
+            poly([
+              [x0, ym],
+              [xm, y0],
+              [x1, y0],
+              [x1, ym],
+              [xm, y1],
+              [x0, y1],
+            ]);
+            seg(x0, ym, xm, y0);
+            seg(xm, y1, x1, ym);
+            break;
+          case 10:
+            poly([
+              [x0, y0],
+              [xm, y0],
+              [x1, ym],
+              [x1, y1],
+              [xm, y1],
+              [x0, ym],
+            ]);
+            seg(xm, y0, x1, ym);
+            seg(x0, ym, xm, y1);
+            break;
+          case 7:
+            poly([
+              [x0, ym],
+              [xm, y0],
+              [x1, y0],
+              [x1, y1],
+              [x0, y1],
+            ]);
+            seg(x0, ym, xm, y0);
+            break;
+          case 11:
+            poly([
+              [x0, y0],
+              [xm, y0],
+              [x1, ym],
+              [x1, y1],
+              [x0, y1],
+            ]);
+            seg(xm, y0, x1, ym);
+            break;
+          case 13:
+            poly([
+              [x0, y0],
+              [x1, y0],
+              [x1, ym],
+              [xm, y1],
+              [x0, y1],
+            ]);
+            seg(xm, y1, x1, ym);
+            break;
+          case 14:
+            poly([
+              [x0, y0],
+              [x1, y0],
+              [x1, y1],
+              [xm, y1],
+              [x0, ym],
+            ]);
+            seg(x0, ym, xm, y1);
+            break;
         }
       }
       if (runStart !== null) {
@@ -110,9 +256,23 @@ export class TerrainBitmapBaker {
    * Runs on Core 2 immediately after Stage 2B (~65ms into build) while `world-worker.js`
    * computes Stages 3–9 on Core 1. Eagerly flushes `_hydroBaseBitmap` and `_waterOverlayBitmap`
    * via `transferToImageBitmap()` so Skia rasterizes both layers in parallel on Core 2!
+   * @param {BakeHydroPayload} payload
    */
-  prepareHydroLayers({ hydroVersion, W, H, tileSize, seaLevel, elevationField, waterMask, rivers }) {
-    if (this._cachedHydroVersion === hydroVersion && this._hydroBaseBitmap && this._waterOverlayBitmap) {
+  prepareHydroLayers({
+    hydroVersion,
+    W,
+    H,
+    tileSize,
+    seaLevel,
+    elevationField,
+    waterMask,
+    rivers,
+  }) {
+    if (
+      this._cachedHydroVersion === hydroVersion &&
+      this._hydroBaseBitmap &&
+      this._waterOverlayBitmap
+    ) {
       return;
     }
     const ts = tileSize;
@@ -121,7 +281,7 @@ export class TerrainBitmapBaker {
 
     // 1. Base Hypsometric Paper & Contour Layer (`_hydroBaseBitmap`)
     const baseCanvas = createSurface(pw, ph);
-    const bCtx = baseCanvas.getContext('2d');
+    const bCtx = baseCanvas.getContext("2d");
     bCtx.fillStyle = PALETTE.bgPaper;
     bCtx.fillRect(0, 0, pw, ph);
 
@@ -140,17 +300,25 @@ export class TerrainBitmapBaker {
     bCtx.stroke();
 
     const contourTerraces = [
-      { dh: 0.13, fill: '#ebe7de', stroke: '#dfdace' },
-      { dh: 0.24, fill: '#e3ded2', stroke: '#d5cfc0' },
-      { dh: 0.36, fill: '#dad4c5', stroke: '#cac3b2' }
+      { dh: 0.13, fill: "#ebe7de", stroke: "#dfdace" },
+      { dh: 0.24, fill: "#e3ded2", stroke: "#d5cfc0" },
+      { dh: 0.36, fill: "#dad4c5", stroke: "#cac3b2" },
     ];
     bCtx.save();
-    bCtx.lineJoin = 'bevel';
+    bCtx.lineJoin = "bevel";
     bCtx.lineWidth = 1.2;
     for (const { dh, fill, stroke } of contourTerraces) {
       const thresh = seaLevel + dh;
       const cEdgePath = new Path2D();
-      const cPath = this.buildVignelliWaterPath(W, H, waterMask, elevationField, ts, thresh, cEdgePath);
+      const cPath = this.buildVignelliWaterPath(
+        W,
+        H,
+        waterMask,
+        elevationField,
+        ts,
+        thresh,
+        cEdgePath,
+      );
       bCtx.fillStyle = fill;
       bCtx.fill(cPath);
       bCtx.strokeStyle = stroke;
@@ -160,25 +328,33 @@ export class TerrainBitmapBaker {
 
     // 2. Open-Water Basin & Tapering River Overlay Layer (`_waterOverlayBitmap`)
     const waterCanvas = createSurface(pw, ph);
-    const wCtx = waterCanvas.getContext('2d');
+    const wCtx = waterCanvas.getContext("2d");
 
     const waterEdgePath = new Path2D();
-    const waterPath = this.buildVignelliWaterPath(W, H, waterMask, elevationField, ts, null, waterEdgePath);
+    const waterPath = this.buildVignelliWaterPath(
+      W,
+      H,
+      waterMask,
+      elevationField,
+      ts,
+      null,
+      waterEdgePath,
+    );
 
     wCtx.save();
-    wCtx.lineCap = 'butt';
-    wCtx.lineJoin = 'bevel';
+    wCtx.lineCap = "butt";
+    wCtx.lineJoin = "bevel";
     wCtx.strokeStyle = PALETTE.bgPaper;
     wCtx.lineWidth = ts * 1.45;
     wCtx.stroke(waterEdgePath);
     wCtx.fillStyle = PALETTE.bgPaper;
     wCtx.fill(waterPath);
 
-    wCtx.lineCap = 'round';
-    wCtx.lineJoin = 'round';
-    for (const pass of ['bank', 'water']) {
-      wCtx.strokeStyle = pass === 'bank' ? PALETTE.bgPaper : PALETTE.waterCyan;
-      const bankExtra = pass === 'bank' ? ts * 1.15 : 0;
+    wCtx.lineCap = "round";
+    wCtx.lineJoin = "round";
+    for (const pass of ["bank", "water"]) {
+      wCtx.strokeStyle = pass === "bank" ? PALETTE.bgPaper : PALETTE.waterCyan;
+      const bankExtra = pass === "bank" ? ts * 1.15 : 0;
       for (const rObj of rivers) {
         const pts = Array.isArray(rObj) ? rObj : rObj.points;
         const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
@@ -190,15 +366,23 @@ export class TerrainBitmapBaker {
           const p1 = pts[i + 1];
           const p2 = pts[Math.min(pts.length - 1, i + 2)];
           const frac = i / (pts.length - 1);
-          const w = p1.width ?? (startW + (endW - startW) * Math.pow(frac, 0.90));
+          const w = p1.width ?? startW + (endW - startW) * Math.pow(frac, 0.9);
           wCtx.lineWidth = ts * w + bankExtra;
           wCtx.beginPath();
-          const x0 = i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
-          const y0 = i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
+          const x0 =
+            i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
+          const y0 =
+            i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
           const x1 = (p1.x + 0.5) * ts;
           const y1 = (p1.y + 0.5) * ts;
-          const x2 = i === pts.length - 2 ? (p1.x + 0.5) * ts : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
-          const y2 = i === pts.length - 2 ? (p1.y + 0.5) * ts : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
+          const x2 =
+            i === pts.length - 2
+              ? (p1.x + 0.5) * ts
+              : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
+          const y2 =
+            i === pts.length - 2
+              ? (p1.y + 0.5) * ts
+              : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
           wCtx.moveTo(x0, y0);
           wCtx.quadraticCurveTo(x1, y1, x2, y2);
           wCtx.stroke();
@@ -210,25 +394,37 @@ export class TerrainBitmapBaker {
     wCtx.fill(waterPath);
     wCtx.restore();
 
-    if (this._hydroBaseBitmap && typeof this._hydroBaseBitmap.close === 'function') {
+    if (
+      this._hydroBaseBitmap &&
+      "close" in this._hydroBaseBitmap &&
+      typeof this._hydroBaseBitmap.close === "function"
+    ) {
       this._hydroBaseBitmap.close();
     }
-    if (this._waterOverlayBitmap && typeof this._waterOverlayBitmap.close === 'function') {
+    if (
+      this._waterOverlayBitmap &&
+      "close" in this._waterOverlayBitmap &&
+      typeof this._waterOverlayBitmap.close === "function"
+    ) {
       this._waterOverlayBitmap.close();
     }
 
-    this._hydroBaseBitmap = typeof baseCanvas.transferToImageBitmap === 'function'
-      ? baseCanvas.transferToImageBitmap()
-      : baseCanvas;
-    this._waterOverlayBitmap = typeof waterCanvas.transferToImageBitmap === 'function'
-      ? waterCanvas.transferToImageBitmap()
-      : waterCanvas;
+    this._hydroBaseBitmap =
+      "transferToImageBitmap" in baseCanvas
+        ? baseCanvas.transferToImageBitmap()
+        : baseCanvas;
+    this._waterOverlayBitmap =
+      "transferToImageBitmap" in waterCanvas
+        ? waterCanvas.transferToImageBitmap()
+        : waterCanvas;
     this._cachedHydroVersion = hydroVersion;
   }
 
   /**
    * Composites pre-rasterized `_hydroBaseBitmap` + `urbanBlushPink` + `_waterOverlayBitmap` + batched `trees`
    * onto a single staging OffscreenCanvas and transfers the resulting `ImageBitmap`.
+   * @param {BakeComposePayload} payload
+   * @returns {{ bitmap: ImageBitmap | OffscreenCanvas | HTMLCanvasElement, bakeTimeMs: number }}
    */
   composeTerrainBitmap({ W, H, tileSize, zoneColorIdx, trees }) {
     const t0 = performance.now();
@@ -237,7 +433,7 @@ export class TerrainBitmapBaker {
     const ph = H * ts;
 
     const staging = createSurface(pw, ph);
-    const ctx = staging.getContext('2d');
+    const ctx = staging.getContext("2d");
     ctx.drawImage(this._hydroBaseBitmap, 0, 0);
 
     ctx.fillStyle = PALETTE.urbanBlushPink;
@@ -255,7 +451,7 @@ export class TerrainBitmapBaker {
 
     ctx.drawImage(this._waterOverlayBitmap, 0, 0);
 
-    ctx.fillStyle = 'rgba(186, 208, 181, 0.28)';
+    ctx.fillStyle = "rgba(186, 208, 181, 0.28)";
     ctx.beginPath();
     for (let i = 0; i < trees.length; i += 2) {
       const tree = trees[i];
@@ -267,7 +463,7 @@ export class TerrainBitmapBaker {
     }
     ctx.fill();
 
-    ctx.fillStyle = 'rgba(54, 56, 62, 0.1)';
+    ctx.fillStyle = "rgba(54, 56, 62, 0.1)";
     ctx.beginPath();
     for (const tree of trees) {
       const tx = tree.x * ts + 2.5;
@@ -292,38 +488,56 @@ export class TerrainBitmapBaker {
       ctx.fill();
     }
 
-    const bitmap = typeof staging.transferToImageBitmap === 'function'
-      ? staging.transferToImageBitmap()
-      : staging;
+    const bitmap =
+      "transferToImageBitmap" in staging
+        ? staging.transferToImageBitmap()
+        : staging;
     const bakeTimeMs = Number((performance.now() - t0).toFixed(1));
     return { bitmap, bakeTimeMs };
   }
 }
 
-if (typeof self !== 'undefined' && typeof self.addEventListener === 'function' && typeof document === 'undefined') {
+if (
+  typeof self !== "undefined" &&
+  typeof self.addEventListener === "function" &&
+  typeof document === "undefined"
+) {
+  const workerSelf = /** @type {DedicatedWorkerGlobalScope} */ (
+    /** @type {unknown} */ (self)
+  );
   const baker = new TerrainBitmapBaker();
 
+  /** @param {MessagePort} port */
   const attachPort = (port) => {
     port.onmessage = (ev) => {
       const msg = ev.data;
       if (!msg) return;
-      if (msg.type === 'prepareHydro') {
+      if (msg.type === "prepareHydro") {
         baker.prepareHydroLayers(msg);
-      } else if (msg.type === 'composeTerrain') {
+      } else if (msg.type === "composeTerrain") {
         if (msg.hydroPayload) {
           baker.prepareHydroLayers(msg.hydroPayload);
         }
         const { bitmap, bakeTimeMs } = baker.composeTerrainBitmap(msg);
+        const transfer =
+          typeof ImageBitmap !== "undefined" && bitmap instanceof ImageBitmap
+            ? [bitmap]
+            : [];
         port.postMessage(
-          { type: 'terrainReady', requestId: msg.requestId, bitmap, bakeTimeMs },
-          [bitmap]
+          {
+            type: "terrainReady",
+            requestId: msg.requestId,
+            bitmap,
+            bakeTimeMs,
+          },
+          transfer,
         );
       }
     };
   };
 
-  self.addEventListener('message', (event) => {
-    if (event.data?.type === 'connectPort' && event.ports?.[0]) {
+  workerSelf.addEventListener("message", (event) => {
+    if (event.data?.type === "connectPort" && event.ports?.[0]) {
       attachPort(event.ports[0]);
     }
   });
