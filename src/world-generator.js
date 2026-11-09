@@ -4065,8 +4065,8 @@ export class ProceduralLogisticsWorld {
     const absorbed = new Set();
     for (const de of directedEdges) {
       if (absorbed.has(de)) continue;
-      let ch = childrenMap.get(de.vk);
-      while (ch && ch.length === 1 && ch[0].axis === de.axis) {
+      const ch = childrenMap.get(de.vk);
+      if (ch && ch.length === 1 && ch[0].axis === de.axis) {
         const nextDe = ch[0];
         const grandCh = childrenMap.get(nextDe.vk);
         if (!grandCh || grandCh.length === 0) {
@@ -4078,9 +4078,7 @@ export class ProceduralLogisticsWorld {
           absorbed.add(nextDe);
           childrenMap.set(de.uk, [de]);
           childrenMap.delete(nextDe.uk);
-          break;
         }
-        break;
       }
     }
 

@@ -2,7 +2,7 @@
 
 ## Steps
 
-- [x] Phase 1: Configure native Bun tooling (`package.json`, `bunfig.toml`, `tsconfig.json`) and `oxlint` devDependency (while `bun lint` is gated in Bun v1.4.4)
+- [x] Phase 1: Configure native Bun tooling (`package.json`, `.oxlintrc.json`, `tsconfig.json`) and `oxlint` devDependency (while `bun lint` is gated in Bun v1.4.4)
 - [x] Phase 2: Author shared Hourglass domain schema in `src/types.d.ts` for comment-only `@import` consumption
 - [x] Phase 3: Add JSDoc type annotations to leaf modules, solvers, simulator, and dual Web Workers (`palette.js`, `math.js`, `terrain-solvers.js`, `hydrology-solvers.js`, `simulator.js`, `world-worker.js`, `terrain-bake-worker.js`)
 - [x] Phase 4: Declare `ProceduralLogisticsWorld` constructor fields and type the 9-stage memoized DAG pipeline in `src/world-generator.js`
@@ -19,7 +19,7 @@
    - Zero bundling, zero transpilation, and zero build output directory.
    - All shared domain types live in `src/types.d.ts` and are referenced inside `.js` files strictly via JSDoc `/** @import { ... } from './types.js' */` comments so the browser parser ignores them and makes **zero extra HTTP requests** at runtime.
 2. **Native Bun Toolchain + `oxlint` (until Bun v1.4.5 un-gates `bun lint`)**:
-   - **Linter**: `bunx oxlint --deny-warnings src/ tests/` (with `[lint]` also retained in `bunfig.toml` for Bun v1.4.5).
+   - **Linter**: `bunx oxlint --deny-warnings src/ tests/` configured via `.oxlintrc.json` (which both `oxlint` and `bun lint` read natively).
    - **Typechecker**: `bun check --no-script` configured via `tsconfig.json` (`allowJs: true`, `checkJs: true`, `noEmit: true`, Pragmatic Strict flags) using Bun's built-in TypeScript 7 checker and bundled `lib.dom.d.ts` / `lib.webworker.d.ts` definitions.
    - **Formatter**: `bun fmt --no-script` (`bun fmt --no-script --check src/ tests/ playwright.config.js index.html`).
    - **Test Runner**: `bun test --check` using `bun:test` directly against the pure ES modules in `src/` with zero DOM mocks required for the core generator, solvers, and simulator.
@@ -63,22 +63,37 @@ Add `"type": "module"` so `oxlint`, `bun check`, and `bun test` parse all `.js` 
 }
 ```
 
-### 2.2 `bunfig.toml`
-Configure `bun lint` and `bun test`:
+### 2.2 `.oxlintrc.json`
+Initialized via `bunx oxlint --init` (read natively by both `oxlint` today and `bun lint` in Bun v1.4.5+):
 
-```toml
-[lint]
-typeAware = true
-ignorePatterns = ["node_modules/"]
-
-[lint.categories]
-correctness = "error"
-suspicious = "warn"
-
-[lint.rules]
-"eqeqeq" = ["error", "smart"]
-"no-unused-vars" = "error"
-"@typescript-eslint/no-floating-promises" = "off"
+```json
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "eqeqeq": ["error", "smart"],
+    "no-unused-vars": "error",
+    "no-underscore-dangle": "off",
+    "no-shadow": "off",
+    "oxc/approx-constant": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/no-array-reverse": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "unicorn/require-post-message-target-origin": "off"
+  },
+  "ignorePatterns": ["node_modules/"],
+  "env": {
+    "builtin": true,
+    "browser": true,
+    "worker": true,
+    "es2024": true
+  }
+}
 ```
 
 ### 2.3 `tsconfig.json`
