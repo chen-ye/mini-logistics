@@ -315,16 +315,61 @@ export function ensureVehicleRoutingGraph(world) {
     }
   }
 
-  // Helper to find closest motorway sample near (x, y)
-  const findSampleNear = (targetMw, targetX, targetY) => {
+  /**
+   * @param {import('./types.js').Motorway} targetMw
+   * @param {number} targetX
+   * @param {number} targetY
+   * @param {{ x: number, y: number } | null} [fromPt]
+   * @param {{ x: number, y: number } | null} [toPt]
+   * @param {number} [dirSign]
+   */
+  const findSampleNear = (
+    targetMw,
+    targetX,
+    targetY,
+    fromPt = null,
+    toPt = null,
+    dirSign = 0,
+  ) => {
+    const samples = targetMw.samples;
     let bestK = 0;
     let bestD = Infinity;
-    for (let k = 0; k < targetMw.samples.length; k++) {
-      const s = targetMw.samples[k];
+    for (let k = 0; k < samples.length; k++) {
+      const s = samples[k];
       const d = Math.hypot(s.x - targetX, s.y - targetY);
       if (d < bestD) {
         bestD = d;
         bestK = k;
+      }
+    }
+    if (dirSign !== 0 && samples.length >= 2) {
+      const kNext = Math.max(0, Math.min(samples.length - 1, bestK + dirSign));
+      const kPrev = Math.max(0, Math.min(samples.length - 1, bestK - dirSign));
+      const tx = samples[kNext].x - samples[kPrev].x || dirSign;
+      const ty = samples[kNext].y - samples[kPrev].y || 0;
+      const tLen = Math.hypot(tx, ty) || 1;
+      const ux = tx / tLen;
+      const uy = ty / tLen;
+      if (fromPt) {
+        const dx = samples[bestK].x - fromPt.x;
+        const dy = samples[bestK].y - fromPt.y;
+        if (
+          dx * ux + dy * uy < 0.25 &&
+          bestK + dirSign >= 0 &&
+          bestK + dirSign < samples.length
+        ) {
+          bestK += dirSign;
+        }
+      } else if (toPt) {
+        const dx = toPt.x - samples[bestK].x;
+        const dy = toPt.y - samples[bestK].y;
+        if (
+          dx * ux + dy * uy < 0.25 &&
+          bestK - dirSign >= 0 &&
+          bestK - dirSign < samples.length
+        ) {
+          bestK -= dirSign;
+        }
       }
     }
     return bestK;
@@ -418,12 +463,9 @@ export function ensureVehicleRoutingGraph(world) {
           const pCx = ic.x + (rAx + rBx) * outerCtrl;
           const pCy = ic.y + (rAy + rBy) * outerCtrl;
 
-          const kA_outer = findSampleNear(entryA.mw, pAx, pAy);
-          const kB_outer = findSampleNear(entryB.mw, pBx, pBy);
-
           if (crossAB < 0) {
             const rNodesOuter = [];
-            for (const t of [0.25, 0.5, 0.75]) {
+            for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
               const mt = 1 - t;
               const rx = mt * mt * pAx + 2 * mt * t * pCx + t * t * pBx;
               const ry = mt * mt * pAy + 2 * mt * t * pCy + t * t * pBy;
@@ -431,6 +473,24 @@ export function ensureVehicleRoutingGraph(world) {
                 addNode(rx, ry, true, false, false, false, true),
               );
             }
+            const firstPt = nodes[rNodesOuter[0]];
+            const lastPt = nodes[rNodesOuter[rNodesOuter.length - 1]];
+            const kA_outer = findSampleNear(
+              entryA.mw,
+              pAx,
+              pAy,
+              null,
+              firstPt,
+              sA === -1 ? 1 : -1,
+            );
+            const kB_outer = findSampleNear(
+              entryB.mw,
+              pBx,
+              pBy,
+              lastPt,
+              null,
+              sB === 1 ? 1 : -1,
+            );
             const startNodeA =
               sA === -1
                 ? entryA.mNodesFwd[kA_outer]
@@ -452,7 +512,7 @@ export function ensureVehicleRoutingGraph(world) {
             }
           } else if (crossAB > 0) {
             const rNodesOuter = [];
-            for (const t of [0.25, 0.5, 0.75]) {
+            for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
               const mt = 1 - t;
               const rx = mt * mt * pBx + 2 * mt * t * pCx + t * t * pAx;
               const ry = mt * mt * pBy + 2 * mt * t * pCy + t * t * pAy;
@@ -460,6 +520,24 @@ export function ensureVehicleRoutingGraph(world) {
                 addNode(rx, ry, true, false, false, false, true),
               );
             }
+            const firstPt = nodes[rNodesOuter[0]];
+            const lastPt = nodes[rNodesOuter[rNodesOuter.length - 1]];
+            const kB_outer = findSampleNear(
+              entryB.mw,
+              pBx,
+              pBy,
+              null,
+              firstPt,
+              sB === -1 ? 1 : -1,
+            );
+            const kA_outer = findSampleNear(
+              entryA.mw,
+              pAx,
+              pAy,
+              lastPt,
+              null,
+              sA === 1 ? 1 : -1,
+            );
             const startNodeB =
               sB === -1
                 ? entryB.mNodesFwd[kB_outer]
@@ -482,16 +560,13 @@ export function ensureVehicleRoutingGraph(world) {
           }
 
           // Inner 270° Cloverleaf Loop Ramp
-          const kCrossA = findSampleNear(entryA.mw, ic.x, ic.y);
-          const kCrossB = findSampleNear(entryB.mw, ic.x, ic.y);
-
           if (crossAB > 0) {
             const p1x = ic.x + rAx * leafSpan;
             const p1y = ic.y + rAy * leafSpan;
             const p2x = ic.x + rBx * leafSpan;
             const p2y = ic.y + rBy * leafSpan;
             const rNodesInner = [];
-            for (const t of [0.16, 0.33, 0.5, 0.67, 0.84]) {
+            for (const t of [0.0, 0.16, 0.33, 0.5, 0.67, 0.84, 1.0]) {
               const mt = 1 - t;
               const rx =
                 mt * mt * mt * ic.x +
@@ -507,6 +582,24 @@ export function ensureVehicleRoutingGraph(world) {
                 addNode(rx, ry, true, false, false, false, true),
               );
             }
+            const firstPt = nodes[rNodesInner[0]];
+            const lastPt = nodes[rNodesInner[rNodesInner.length - 1]];
+            const kCrossA = findSampleNear(
+              entryA.mw,
+              ic.x,
+              ic.y,
+              null,
+              firstPt,
+              sA === 1 ? 1 : -1,
+            );
+            const kCrossB = findSampleNear(
+              entryB.mw,
+              ic.x,
+              ic.y,
+              lastPt,
+              null,
+              sB === -1 ? 1 : -1,
+            );
             const startNodeA =
               sA === 1 ? entryA.mNodesFwd[kCrossA] : entryA.mNodesRev[kCrossA];
             const endNodeB =
@@ -528,7 +621,7 @@ export function ensureVehicleRoutingGraph(world) {
             const p2x = ic.x + rAx * leafSpan;
             const p2y = ic.y + rAy * leafSpan;
             const rNodesInner = [];
-            for (const t of [0.16, 0.33, 0.5, 0.67, 0.84]) {
+            for (const t of [0.0, 0.16, 0.33, 0.5, 0.67, 0.84, 1.0]) {
               const mt = 1 - t;
               const rx =
                 mt * mt * mt * ic.x +
@@ -544,6 +637,24 @@ export function ensureVehicleRoutingGraph(world) {
                 addNode(rx, ry, true, false, false, false, true),
               );
             }
+            const firstPt = nodes[rNodesInner[0]];
+            const lastPt = nodes[rNodesInner[rNodesInner.length - 1]];
+            const kCrossB = findSampleNear(
+              entryB.mw,
+              ic.x,
+              ic.y,
+              null,
+              firstPt,
+              sB === 1 ? 1 : -1,
+            );
+            const kCrossA = findSampleNear(
+              entryA.mw,
+              ic.x,
+              ic.y,
+              lastPt,
+              null,
+              sA === -1 ? 1 : -1,
+            );
             const startNodeB =
               sB === 1 ? entryB.mNodesFwd[kCrossB] : entryB.mNodesRev[kCrossB];
             const endNodeA =
@@ -582,27 +693,6 @@ export function ensureVehicleRoutingGraph(world) {
       const pMainInner = toWorld(0.52, 0);
       const pSpurInner = toWorld(0, 0);
 
-      const kMainOuter = findSampleNear(
-        mainEntry.mw,
-        pMainOuter.x,
-        pMainOuter.y,
-      );
-      const kMainInner = findSampleNear(
-        mainEntry.mw,
-        pMainInner.x,
-        pMainInner.y,
-      );
-      const kSpurOuter = findSampleNear(
-        spurEntry.mw,
-        pSpurOuter.x,
-        pSpurOuter.y,
-      );
-      const kSpurInner = findSampleNear(
-        spurEntry.mw,
-        pSpurInner.x,
-        pSpurInner.y,
-      );
-
       const spurSamples = spurEntry.mw.samples;
       const spurEndAtIc =
         Math.hypot(
@@ -621,17 +711,35 @@ export function ensureVehicleRoutingGraph(world) {
       // Direction 1a: Mainline Fwd -> Spur Outbound
       {
         const rNodes = [];
-        for (const t of [0.25, 0.5, 0.75]) {
+        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
           const mt = 1 - t;
           const lx = mt * mt * -2.15 + 2 * mt * t * -0.72;
           const ly = 2 * mt * t * (sy * 0.72) + t * t * (sy * 2.15);
           const wPt = toWorld(lx, ly);
           rNodes.push(addNode(wPt.x, wPt.y, true, false, false, false, true));
         }
+        const firstPt = nodes[rNodes[0]];
+        const lastPt = nodes[rNodes[rNodes.length - 1]];
+        const kMO = findSampleNear(
+          mainEntry.mw,
+          pMainOuter.x,
+          pMainOuter.y,
+          null,
+          firstPt,
+          1,
+        );
+        const kSO = findSampleNear(
+          spurEntry.mw,
+          pSpurOuter.x,
+          pSpurOuter.y,
+          lastPt,
+          null,
+          spurEndAtIc ? -1 : 1,
+        );
         const chain = [
-          mainEntry.mNodesFwd[kMainOuter],
+          mainEntry.mNodesFwd[kMO],
           ...rNodes,
-          spurOutboundNode[kSpurOuter],
+          spurOutboundNode[kSO],
         ];
         for (let c = 0; c < chain.length - 1; c++) {
           const uN = chain[c];
@@ -646,17 +754,35 @@ export function ensureVehicleRoutingGraph(world) {
       // Direction 1b: Spur Inbound -> Mainline Rev
       {
         const rNodes = [];
-        for (const t of [0.25, 0.5, 0.75]) {
+        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
           const mt = 1 - t;
           const lx = 2 * mt * t * -0.72 + t * t * -2.15;
           const ly = mt * mt * (sy * 2.15) + 2 * mt * t * (sy * 0.72);
           const wPt = toWorld(lx, ly);
           rNodes.push(addNode(wPt.x, wPt.y, true, false, false, false, true));
         }
+        const firstPt = nodes[rNodes[0]];
+        const lastPt = nodes[rNodes[rNodes.length - 1]];
+        const kSO = findSampleNear(
+          spurEntry.mw,
+          pSpurOuter.x,
+          pSpurOuter.y,
+          null,
+          firstPt,
+          spurEndAtIc ? 1 : -1,
+        );
+        const kMO = findSampleNear(
+          mainEntry.mw,
+          pMainOuter.x,
+          pMainOuter.y,
+          lastPt,
+          null,
+          -1,
+        );
         const chain = [
-          spurInboundNode[kSpurOuter],
+          spurInboundNode[kSO],
           ...rNodes,
-          mainEntry.mNodesRev[kMainOuter],
+          mainEntry.mNodesRev[kMO],
         ];
         for (let c = 0; c < chain.length - 1; c++) {
           const uN = chain[c];
@@ -698,20 +824,38 @@ export function ensureVehicleRoutingGraph(world) {
       // Direction 2a: Spur Inbound -> Mainline Fwd
       {
         const rNodes = [];
-        for (const t of [0.25, 0.5, 0.75]) {
+        for (const t of [0.0, 0.33, 0.67, 1.0]) {
           const lp = evalCubicSeg(seg1_p0, seg1_p1, seg1_p2, seg1_p3, t);
           const wp = toWorld(lp.lx, lp.ly);
           rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
         }
-        for (const t of [0.25, 0.5, 0.75]) {
+        for (const t of [0.33, 0.67, 1.0]) {
           const lp = evalCubicSeg(seg2_p0, seg2_p1, seg2_p2, seg2_p3, t);
           const wp = toWorld(lp.lx, lp.ly);
           rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
         }
+        const firstPt = nodes[rNodes[0]];
+        const lastPt = nodes[rNodes[rNodes.length - 1]];
+        const kSI = findSampleNear(
+          spurEntry.mw,
+          pSpurInner.x,
+          pSpurInner.y,
+          null,
+          firstPt,
+          spurEndAtIc ? 1 : -1,
+        );
+        const kMI = findSampleNear(
+          mainEntry.mw,
+          pMainInner.x,
+          pMainInner.y,
+          lastPt,
+          null,
+          1,
+        );
         const chain = [
-          spurInboundNode[kSpurInner],
+          spurInboundNode[kSI],
           ...rNodes,
-          mainEntry.mNodesFwd[kMainInner],
+          mainEntry.mNodesFwd[kMI],
         ];
         for (let c = 0; c < chain.length - 1; c++) {
           const uN = chain[c];
@@ -726,20 +870,38 @@ export function ensureVehicleRoutingGraph(world) {
       // Direction 2b: Mainline Rev -> Spur Outbound
       {
         const rNodes = [];
-        for (const t of [0.25, 0.5, 0.75]) {
+        for (const t of [0.0, 0.33, 0.67, 1.0]) {
           const lp = evalCubicSeg(seg2_p3, seg2_p2, seg2_p1, seg2_p0, t);
           const wp = toWorld(lp.lx, lp.ly);
           rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
         }
-        for (const t of [0.25, 0.5, 0.75]) {
+        for (const t of [0.33, 0.67, 1.0]) {
           const lp = evalCubicSeg(seg1_p3, seg1_p2, seg1_p1, seg1_p0, t);
           const wp = toWorld(lp.lx, lp.ly);
           rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
         }
+        const firstPt = nodes[rNodes[0]];
+        const lastPt = nodes[rNodes[rNodes.length - 1]];
+        const kMI = findSampleNear(
+          mainEntry.mw,
+          pMainInner.x,
+          pMainInner.y,
+          null,
+          firstPt,
+          -1,
+        );
+        const kSI = findSampleNear(
+          spurEntry.mw,
+          pSpurInner.x,
+          pSpurInner.y,
+          lastPt,
+          null,
+          spurEndAtIc ? -1 : 1,
+        );
         const chain = [
-          mainEntry.mNodesRev[kMainInner],
+          mainEntry.mNodesRev[kMI],
           ...rNodes,
-          spurOutboundNode[kSpurInner],
+          spurOutboundNode[kSI],
         ];
         for (let c = 0; c < chain.length - 1; c++) {
           const uN = chain[c];
@@ -926,12 +1088,29 @@ export function findVehicleNetworkPath(world, sx, sy, ex, ey) {
       const nv = nodes[v];
       let stepCost = baseCost;
 
-      if (pu !== -1 && !nu.onMotorway && !nv.onMotorway) {
+      if (pu !== -1) {
         const dx = nv.x - nu.x;
         const dy = nv.y - nu.y;
-        if (dx !== prevDx || dy !== prevDy) {
-          const dot = dx * prevDx + dy * prevDy;
-          stepCost += dot > 0 ? 0.3 : dot === 0 ? 0.55 : 3.5;
+        const lPrev = Math.hypot(prevDx, prevDy);
+        const lCurr = Math.hypot(dx, dy);
+        if (
+          lPrev > 1e-3 &&
+          lCurr > 1e-3 &&
+          !nu.isRoundabout &&
+          !nv.isRoundabout
+        ) {
+          const cosTurn = (dx * prevDx + dy * prevDy) / (lPrev * lCurr);
+          if (
+            !nu.onMotorway ||
+            !nv.onMotorway ||
+            nu.isSlipRamp ||
+            nv.isSlipRamp
+          ) {
+            if (cosTurn < -0.75) continue;
+            if (cosTurn < -0.2) stepCost += 18.0;
+            else if (cosTurn < 0.2) stepCost += 0.55;
+            else if (cosTurn < 0.95) stepCost += 0.3;
+          }
         }
       }
 
@@ -1013,13 +1192,11 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
       const pOut = rawPath[Math.min(rawPath.length - 1, j + 1)];
       const thetaIn = Math.atan2(pIn.y - matchedRb.y, pIn.x - matchedRb.x);
       const thetaOut = Math.atan2(pOut.y - matchedRb.y, pOut.x - matchedRb.x);
-      const thetaStart = thetaIn - 0.18;
-      const thetaEnd = thetaOut + 0.18;
-      let sweep =
-        (((thetaStart - thetaEnd) % (Math.PI * 2)) + Math.PI * 2) %
-        (Math.PI * 2);
-      if (sweep < 0.22) sweep = 0.22;
-      if (sweep > Math.PI * 1.82) sweep = Math.PI * 0.45;
+      const rawSweep =
+        (((thetaIn - thetaOut) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      const pad = Math.min(0.18, rawSweep * 0.28);
+      const thetaStart = thetaIn - pad;
+      const sweep = Math.max(0.12, rawSweep - 2 * pad);
       const arcSteps = Math.max(3, Math.ceil(sweep / 0.42));
       for (let s = 0; s <= arcSteps; s++) {
         const ang = thetaStart - sweep * (s / arcSteps);
@@ -1218,17 +1395,15 @@ export function buildCommuterRoutes(world) {
     const dy = Math.round(bestDst.roadY ?? bestDst.y);
     const rawPath = world.findVehicleNetworkPath(hx, hy, dx, dy);
     if (!rawPath || rawPath.length < 2) continue;
+    const revPath =
+      world.findVehicleNetworkPath(dx, dy, hx, hy) || [...rawPath].reverse();
 
     const outboundTrack = world.buildDirectedLaneTrajectory(
       h,
       bestDst,
       rawPath,
     );
-    const inboundTrack = world.buildDirectedLaneTrajectory(
-      bestDst,
-      h,
-      [...rawPath].reverse(),
-    );
+    const inboundTrack = world.buildDirectedLaneTrajectory(bestDst, h, revPath);
     if (!outboundTrack || !inboundTrack) continue;
 
     world.commuterRoutes.push({
@@ -1292,10 +1467,12 @@ export function buildIndustrialCargoChain(world) {
     if (pathArcLen > crowD * 3.4 + 35) return false;
 
     const outboundTrack = world.buildDirectedLaneTrajectory(src, dst, roadPath);
+    const revRoadPath =
+      world.findVehicleNetworkPath(ex, ey, sx, sy) || [...roadPath].reverse();
     const inboundTrack = world.buildDirectedLaneTrajectory(
       dst,
       src,
-      [...roadPath].reverse(),
+      revRoadPath,
     );
 
     world.cargoLinks.push({

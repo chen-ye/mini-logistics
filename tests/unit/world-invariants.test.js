@@ -230,12 +230,9 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
         renderer.surfaceNetworkDisplayList?.recorder.getStats().commandCount,
       ).toBeGreaterThan(0);
 
-      // 7. Zero Non-Road Surface Steps Invariant (Plan A Step 4.1):
-      // For every link in world.cargoLinks, inspect consecutive points a = pts[i], b = pts[i + 1]
-      // Whenever both endpoints are surface road nodes (!a.onMotorway && !b.onMotorway), assert that either:
-      // - (gxA === gxB && gyA === gyB) (same integer tile), or
-      // - Boolean(a.isRoundabout || b.isRoundabout) (roundabout portal transition at the roundabout tile), or
-      // - world.hasRoadEdge(gxA, gyA, gxB, gyB) === true.
+      // 7. Zero Non-Road Surface Steps & Zero Trajectory Reversal Invariants:
+      // Every surface-to-surface step (!a.onMotorway && !b.onMotorway) must lie on the same tile or a committed road edge,
+      // and no directed vehicle track (cargoLinks or commuterRoutes) may contain a sharp reversal / snap-back (cosTurn < -0.5).
       for (const link of world.cargoLinks) {
         const pts = link.points;
         for (let i = 0; i < pts.length - 1; i++) {
@@ -246,17 +243,36 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
             const gyA = Math.round(a.y);
             const gxB = Math.round(b.x);
             const gyB = Math.round(b.y);
-            const isRoundaboutTransition = Boolean(
-              a.isRoundabout ||
-              b.isRoundabout ||
-              a.isRoundaboutArc ||
-              b.isRoundaboutArc,
-            );
             const valid =
               (gxA === gxB && gyA === gyB) ||
-              isRoundaboutTransition ||
               world.hasRoadEdge(gxA, gyA, gxB, gyB);
             expect(valid).toBe(true);
+          }
+        }
+      }
+
+      const allTracks = [
+        ...world.cargoLinks.flatMap((l) => [l.outboundTrack, l.inboundTrack]),
+        ...world.commuterRoutes.flatMap((r) => [
+          r.outboundTrack,
+          r.inboundTrack,
+        ]),
+      ];
+      for (const track of allTracks) {
+        const pts = track.pts;
+        for (let i = 1; i < pts.length - 1; i++) {
+          const p0 = pts[i - 1];
+          const p1 = pts[i];
+          const p2 = pts[i + 1];
+          const dx0 = p1.x - p0.x;
+          const dy0 = p1.y - p0.y;
+          const dx1 = p2.x - p1.x;
+          const dy1 = p2.y - p1.y;
+          const l0 = Math.hypot(dx0, dy0);
+          const l1 = Math.hypot(dx1, dy1);
+          if (l0 > 0.05 && l1 > 0.05) {
+            const cosTurn = (dx0 * dx1 + dy0 * dy1) / (l0 * l1);
+            expect(cosTurn).toBeGreaterThanOrEqual(-0.5);
           }
         }
       }
