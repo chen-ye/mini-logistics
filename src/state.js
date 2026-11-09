@@ -9,6 +9,7 @@
  *
  * @import {
  *   AppState,
+ *   CameraTarget,
  *   ControlLabels,
  *   GeneratorConfig,
  *   InspectedEntity,
@@ -218,27 +219,67 @@ export function batch(fn) {
 
 /**
  * Creates an immutable app store holding configuration, view layer, simulation speed,
- * drawer state, and entity inspector selection.
+ * drawer state, camera target, and entity inspector selection.
  *
  * @param {Partial<GeneratorConfig>} [initialConfig]
+ * @param {{
+ *   activeLayer?: ViewLayer,
+ *   simSpeed?: number,
+ *   drawerOpen?: boolean,
+ *   camera?: CameraTarget | null,
+ *   inspected?: { type?: string | null, id?: number | null, entity?: InspectedEntity | null } | null,
+ * }} [initialViewAndInteraction]
  */
-export function createAppStore(initialConfig = DEFAULT_GENERATOR_CONFIG) {
+export function createAppStore(
+  initialConfig = DEFAULT_GENERATOR_CONFIG,
+  initialViewAndInteraction = {},
+) {
   /** @type {Readonly<Required<GeneratorConfig>>} */
   const config = Object.freeze({
     ...DEFAULT_GENERATOR_CONFIG,
     ...initialConfig,
   });
 
+  const activeLayer = initialViewAndInteraction.activeLayer ?? "aesthetic";
+  const simSpeed = initialViewAndInteraction.simSpeed ?? 1;
+  const drawerOpen = initialViewAndInteraction.drawerOpen ?? true;
+  const initialCamera = initialViewAndInteraction.camera
+    ? Object.freeze({
+        cx: initialViewAndInteraction.camera.cx,
+        cy: initialViewAndInteraction.camera.cy,
+        zoom: initialViewAndInteraction.camera.zoom,
+      })
+    : null;
+
+  const rawInspected = initialViewAndInteraction.inspected;
+  const rawType = rawInspected?.type;
+  const inspectedType =
+    rawType === "airport" || rawType === "building" || rawType === "town"
+      ? rawType
+      : rawType === "resource"
+        ? /** @type {"building"} */ ("building")
+        : null;
+  const inspectedId =
+    rawInspected?.id != null
+      ? rawInspected.id
+      : rawInspected?.entity?.id != null
+        ? rawInspected.entity.id
+        : null;
+  const inspectedEntity = rawInspected?.entity ?? null;
+  const inspected = Object.freeze({
+    type: inspectedId == null && inspectedEntity == null ? null : inspectedType,
+    id: inspectedId,
+    entity: inspectedEntity,
+  });
+
   /** @type {AppState} */
   let state = Object.freeze({
     config,
-    activeLayer: "aesthetic",
-    simSpeed: 1,
-    drawerOpen: true,
-    inspected: Object.freeze({
-      type: null,
-      entity: null,
-    }),
+    activeLayer,
+    simSpeed,
+    drawerOpen,
+    camera: initialCamera,
+    inspected,
   });
 
   /**
@@ -357,6 +398,44 @@ export function createAppStore(initialConfig = DEFAULT_GENERATOR_CONFIG) {
     },
 
     /**
+     * Sets viewport-independent camera center and zoom, bailing out on value equality.
+     *
+     * @param {CameraTarget | null} targetCamera
+     * @returns {boolean}
+     */
+    setCamera(targetCamera) {
+      if (targetCamera === null) {
+        if (state.camera === null) return false;
+        state = Object.freeze({
+          ...state,
+          camera: null,
+        });
+        notify();
+        return true;
+      }
+
+      if (
+        state.camera !== null &&
+        Object.is(state.camera.cx, targetCamera.cx) &&
+        Object.is(state.camera.cy, targetCamera.cy) &&
+        Object.is(state.camera.zoom, targetCamera.zoom)
+      ) {
+        return false;
+      }
+
+      state = Object.freeze({
+        ...state,
+        camera: Object.freeze({
+          cx: targetCamera.cx,
+          cy: targetCamera.cy,
+          zoom: targetCamera.zoom,
+        }),
+      });
+      notify();
+      return true;
+    },
+
+    /**
      * Sets inspected entity, normalizing "resource" to "building".
      *
      * @param {string | null} type
@@ -375,9 +454,16 @@ export function createAppStore(initialConfig = DEFAULT_GENERATOR_CONFIG) {
           : /** @type {"airport" | "building" | "town" | null} */ (
               normalizedType
             );
+      const nextId =
+        nextEntity === null
+          ? null
+          : nextEntity.id != null
+            ? nextEntity.id
+            : null;
 
       if (
         Object.is(state.inspected.type, nextType) &&
+        Object.is(state.inspected.id, nextId) &&
         Object.is(state.inspected.entity, nextEntity)
       ) {
         return false;
@@ -387,6 +473,49 @@ export function createAppStore(initialConfig = DEFAULT_GENERATOR_CONFIG) {
         ...state,
         inspected: Object.freeze({
           type: nextType,
+          id: nextId,
+          entity: nextEntity,
+        }),
+      });
+      notify();
+      return true;
+    },
+
+    /**
+     * Sets inspected entity reference by type and id, retaining selection before entity hydration.
+     *
+     * @param {string | null} type
+     * @param {number | null} id
+     * @param {InspectedEntity | null} [entity]
+     * @returns {boolean}
+     */
+    setInspectedRef(type, id, entity = null) {
+      const normalizedType =
+        type === "resource"
+          ? /** @type {"building"} */ ("building")
+          : (type ?? null);
+      const nextId = id == null ? null : id;
+      const nextType =
+        nextId == null
+          ? null
+          : /** @type {"airport" | "building" | "town" | null} */ (
+              normalizedType
+            );
+      const nextEntity = nextId == null ? null : (entity ?? null);
+
+      if (
+        Object.is(state.inspected.type, nextType) &&
+        Object.is(state.inspected.id, nextId) &&
+        Object.is(state.inspected.entity, nextEntity)
+      ) {
+        return false;
+      }
+
+      state = Object.freeze({
+        ...state,
+        inspected: Object.freeze({
+          type: nextType,
+          id: nextId,
           entity: nextEntity,
         }),
       });

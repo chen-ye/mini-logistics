@@ -20,6 +20,7 @@ import {
 } from "./state.js";
 import { WORLD_SIZE_DEFAULTS, DEFAULT_GENERATOR_CONFIG } from "./constants.js";
 import { mountEntityInspector } from "./inspector-component.js";
+import { parseUrlState, serializeUrlState } from "./url-state.js";
 
 /**
  * @param {string} id
@@ -62,7 +63,7 @@ window.simulator = null;
 let worldWorker = null;
 let workerBusy = false;
 let nextRequestId = 1;
-/** @type {{ requestId: number, config: GeneratorConfig, preserveCamera: boolean, resolvers: Array<(w: ProceduralLogisticsWorld) => void> } | null} */
+/** @type {{ requestId: number, config: GeneratorConfig, preserveCamera: boolean, preserveUrlHydration: boolean, resolvers: Array<(w: ProceduralLogisticsWorld) => void> } | null} */
 let pendingJob = null;
 /** @type {Map<number, Array<(w: ProceduralLogisticsWorld) => void>>} */
 const inflightResolvers = new Map();
@@ -75,7 +76,12 @@ function initWorldWorker() {
     });
 
     worker.addEventListener("message", async (event) => {
-      const { requestId, preserveCamera, world: rawWorld } = event.data;
+      const {
+        requestId,
+        preserveCamera,
+        preserveUrlHydration,
+        world: rawWorld,
+      } = event.data;
       const resolveList = inflightResolvers.get(requestId) || [];
       inflightResolvers.delete(requestId);
 
@@ -90,7 +96,12 @@ function initWorldWorker() {
       }
 
       const world = hydrateTransferredWorld(rawWorld);
-      await applyGeneratedWorld(world, preserveCamera, true);
+      await applyGeneratedWorld(
+        world,
+        preserveCamera,
+        true,
+        preserveUrlHydration,
+      );
       for (const r of resolveList) r(world);
     });
     worker.addEventListener("error", (err) => {
@@ -106,6 +117,15 @@ function initWorldWorker() {
 
 worldWorker = initWorldWorker();
 
+/**
+ * @param {{
+ *   requestId: number,
+ *   config: GeneratorConfig,
+ *   preserveCamera: boolean,
+ *   preserveUrlHydration: boolean,
+ *   resolvers: Array<(w: ProceduralLogisticsWorld) => void>,
+ * }} job
+ */
 function dispatchToWorker(job) {
   if (!worldWorker) return;
   workerBusy = true;
@@ -114,70 +134,217 @@ function dispatchToWorker(job) {
     requestId: job.requestId,
     config: job.config,
     preserveCamera: job.preserveCamera,
+    preserveUrlHydration: job.preserveUrlHydration,
   });
 }
 
-// Signal-grade immutable store holding app state
-const store = createAppStore(DEFAULT_GENERATOR_CONFIG);
+const isInitialMobile =
+  typeof window !== "undefined" && window.innerWidth < 768;
+const initialUrlState =
+  typeof window !== "undefined"
+    ? parseUrlState(window.location.search, isInitialMobile)
+    : parseUrlState("", false);
 
-async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
+// Signal-grade immutable store holding app state
+const store = createAppStore(initialUrlState.config, {
+  activeLayer: initialUrlState.activeLayer,
+  simSpeed: initialUrlState.simSpeed,
+  drawerOpen: initialUrlState.drawerOpen,
+  camera: initialUrlState.camera,
+  inspected: initialUrlState.inspected,
+});
+
+renderer.activeLayer = store.getState().activeLayer;
+renderer.drawerOpen = store.getState().drawerOpen;
+simSpeed = store.getState().simSpeed;
+
+let isRestoringFromHistory = false;
+
+/**
+ * Updates URL history state with canonical serialized query string.
+ *
+ * @param {boolean} [push=false]
+ */
+function updateUrl(push = false) {
+  if (isRestoringFromHistory) return;
+  if (typeof window === "undefined" || !window.history) return;
+
+  const isMobile = window.innerWidth < 768;
+  const currentQuery = serializeUrlState(store.getState(), {
+    isMobileViewport: isMobile,
+  });
+  const nextUrl = currentQuery
+    ? `${window.location.pathname}${currentQuery}`
+    : window.location.pathname;
+
+  const currentFull = `${window.location.pathname}${window.location.search}`;
+  if (currentFull === nextUrl) return;
+
+  if (push) {
+    window.history.pushState(null, "", nextUrl);
+  } else {
+    window.history.replaceState(null, "", nextUrl);
+  }
+}
+
+/**
+ * Converts renderer camera to world-tile coordinates and syncs to store and URL.
+ */
+function syncStoreCameraFromRenderer() {
+  if (!currentWorld || !canvas) return;
+  const ts = currentWorld.tileSize;
+  const z = renderer.camera.zoom;
+  const cx = (canvas.width * 0.5 - renderer.camera.x) / (z * ts);
+  const cy = (canvas.height * 0.5 - renderer.camera.y) / (z * ts);
+  store.setCamera({ cx, cy, zoom: z });
+  updateUrl(false);
+}
+
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {boolean} [preserveCamera]
+ * @param {boolean} [fromWorker=false]
+ * @param {boolean} [preserveUrlHydration=false]
+ */
+async function applyGeneratedWorld(
+  world,
+  preserveCamera,
+  fromWorker = false,
+  preserveUrlHydration = false,
+) {
   renderer.prepareDisplayLists(world);
   currentWorld = world;
   simulator = new LogisticsSimulator(world);
   window.currentWorld = currentWorld;
   window.simulator = simulator;
 
-  renderer.selectedEntity = null;
-  store.setInspected(null, null);
-
-  if (!preserveCamera) {
+  const storeCamera = store.getState().camera;
+  if (preserveUrlHydration && storeCamera) {
+    renderer.camera.zoom = storeCamera.zoom;
+    renderer.camera.x =
+      canvas.width * 0.5 - storeCamera.cx * storeCamera.zoom * world.tileSize;
+    renderer.camera.y =
+      canvas.height * 0.5 - storeCamera.cy * storeCamera.zoom * world.tileSize;
+  } else if (!preserveCamera) {
     renderer.fitCamera(world);
   }
+
+  const inspectedState = store.getState().inspected;
+  if (
+    preserveUrlHydration &&
+    inspectedState.type &&
+    inspectedState.id != null
+  ) {
+    /** @type {InspectedEntity | null} */
+    let entity = null;
+    if (inspectedState.type === "airport") {
+      entity =
+        world.airports.find((a) => a.id === inspectedState.id) ||
+        world.airports[inspectedState.id] ||
+        null;
+    } else if (inspectedState.type === "town") {
+      entity =
+        world.towns.find((t) => t.id === inspectedState.id) ||
+        world.towns[inspectedState.id] ||
+        null;
+    } else if (inspectedState.type === "building") {
+      entity =
+        world.destinations.find((d) => d.id === inspectedState.id) || null;
+    }
+
+    if (entity) {
+      const shouldFocus = storeCamera === null;
+      openEntityInspector(inspectedState.type, entity, shouldFocus, false);
+    } else {
+      renderer.selectedEntity = null;
+      store.setInspected(null, null);
+    }
+  } else if (!preserveCamera) {
+    renderer.selectedEntity = null;
+    store.setInspected(null, null);
+  }
+
   updateTelemetryUI(world, fromWorker);
 }
 
 /**
- * Synchronizes generator configuration from DOM inputs into the store
- * and returns the frozen config state.
+ * Populates DOM controls and labels from the generator configuration.
+ *
+ * @param {Partial<GeneratorConfig>} cfg
+ */
+export function syncDomInputsFromConfig(cfg) {
+  const seedInput = getInput("seedInput");
+  const seedVal = cfg.seed || DEFAULT_GENERATOR_CONFIG.seed;
+  if (seedInput && seedInput.value !== seedVal) {
+    seedInput.value = seedVal;
+  }
+  const worldSizeSelect = getSelect("worldSizeSelect");
+  const sizeVal = cfg.worldSize || DEFAULT_GENERATOR_CONFIG.worldSize;
+  if (worldSizeSelect && worldSizeSelect.value !== sizeVal) {
+    worldSizeSelect.value = sizeVal;
+  }
+  const archetypeSelect = getSelect("archetypeSelect");
+  const archVal = cfg.archetype || DEFAULT_GENERATOR_CONFIG.archetype;
+  if (archetypeSelect && archetypeSelect.value !== archVal) {
+    archetypeSelect.value = archVal;
+  }
+  const terrainAlgoSelect = getSelect("terrainAlgoSelect");
+  const terrainVal = cfg.terrainAlgo || DEFAULT_GENERATOR_CONFIG.terrainAlgo;
+  if (terrainAlgoSelect && terrainAlgoSelect.value !== terrainVal) {
+    terrainAlgoSelect.value = terrainVal;
+  }
+  const hydrologyAlgoSelect = getSelect("hydrologyAlgoSelect");
+  const hydroVal = cfg.hydrologyAlgo || DEFAULT_GENERATOR_CONFIG.hydrologyAlgo;
+  if (hydrologyAlgoSelect && hydrologyAlgoSelect.value !== hydroVal) {
+    hydrologyAlgoSelect.value = hydroVal;
+  }
+  const airportMixSelect = getSelect("airportMixSelect");
+  const airMixVal = cfg.airportMix || DEFAULT_GENERATOR_CONFIG.airportMix;
+  if (airportMixSelect && airportMixSelect.value !== airMixVal) {
+    airportMixSelect.value = airMixVal;
+  }
+  const toggleInterRamps = getInput("toggleInterRamps");
+  const rampsVal =
+    cfg.includeIntermediateRamps ??
+    DEFAULT_GENERATOR_CONFIG.includeIntermediateRamps;
+  if (toggleInterRamps && toggleInterRamps.checked !== rampsVal) {
+    toggleInterRamps.checked = rampsVal;
+  }
+  const sliderWater = getInput("sliderWater");
+  const waterVal = cfg.waterCoverage ?? DEFAULT_GENERATOR_CONFIG.waterCoverage;
+  if (sliderWater && parseInt(sliderWater.value, 10) !== waterVal) {
+    sliderWater.value = String(waterVal);
+  }
+  const sliderTowns = getInput("sliderTowns");
+  const townsVal = cfg.townCount ?? DEFAULT_GENERATOR_CONFIG.townCount;
+  if (sliderTowns && parseInt(sliderTowns.value, 10) !== townsVal) {
+    sliderTowns.value = String(townsVal);
+  }
+  const sliderDensity = getInput("sliderDensity");
+  const densityVal =
+    cfg.buildingDensity ?? DEFAULT_GENERATOR_CONFIG.buildingDensity;
+  if (sliderDensity && parseInt(sliderDensity.value, 10) !== densityVal) {
+    sliderDensity.value = String(densityVal);
+  }
+  const sliderAirports = getInput("sliderAirports");
+  const airportsVal = cfg.airportCount ?? DEFAULT_GENERATOR_CONFIG.airportCount;
+  if (sliderAirports && parseInt(sliderAirports.value, 10) !== airportsVal) {
+    sliderAirports.value = String(airportsVal);
+  }
+  const sliderWind = getInput("sliderWind");
+  const windVal = cfg.windAxis ?? DEFAULT_GENERATOR_CONFIG.windAxis;
+  if (sliderWind && parseInt(sliderWind.value, 10) !== windVal) {
+    sliderWind.value = String(windVal);
+  }
+  updateAirportSliderLabel();
+}
+
+/**
+ * Returns generator configuration from the immutable store.
  *
  * @returns {GeneratorConfig}
  */
 export function getGeneratorConfig() {
-  const cfg = {
-    seed: getInput("seedInput")?.value.trim() || DEFAULT_GENERATOR_CONFIG.seed,
-    worldSize:
-      getSelect("worldSizeSelect")?.value || DEFAULT_GENERATOR_CONFIG.worldSize,
-    archetype:
-      getSelect("archetypeSelect")?.value || DEFAULT_GENERATOR_CONFIG.archetype,
-    terrainAlgo:
-      getSelect("terrainAlgoSelect")?.value ||
-      DEFAULT_GENERATOR_CONFIG.terrainAlgo,
-    hydrologyAlgo:
-      getSelect("hydrologyAlgoSelect")?.value ||
-      DEFAULT_GENERATOR_CONFIG.hydrologyAlgo,
-    airportMix:
-      getSelect("airportMixSelect")?.value ||
-      DEFAULT_GENERATOR_CONFIG.airportMix,
-    includeIntermediateRamps: getInput("toggleInterRamps")
-      ? getInput("toggleInterRamps").checked
-      : DEFAULT_GENERATOR_CONFIG.includeIntermediateRamps,
-    waterCoverage: getInput("sliderWater")
-      ? parseInt(getInput("sliderWater").value, 10)
-      : DEFAULT_GENERATOR_CONFIG.waterCoverage,
-    townCount: getInput("sliderTowns")
-      ? parseInt(getInput("sliderTowns").value, 10)
-      : DEFAULT_GENERATOR_CONFIG.townCount,
-    buildingDensity: getInput("sliderDensity")
-      ? parseInt(getInput("sliderDensity").value, 10)
-      : DEFAULT_GENERATOR_CONFIG.buildingDensity,
-    airportCount: getInput("sliderAirports")
-      ? parseInt(getInput("sliderAirports").value, 10)
-      : DEFAULT_GENERATOR_CONFIG.airportCount,
-    windAxis: getInput("sliderWind")
-      ? parseInt(getInput("sliderWind").value, 10)
-      : DEFAULT_GENERATOR_CONFIG.windAxis,
-  };
-  store.patchConfig(cfg);
   return store.getState().config;
 }
 
@@ -185,7 +352,7 @@ export function getGeneratorConfig() {
  * Updates airport slider label directly, maintaining backwards compatibility.
  */
 export function updateAirportSliderLabel() {
-  const cfg = getGeneratorConfig();
+  const cfg = store.getState().config;
   const labels = deriveControlLabels(cfg);
   const el = getEl("valAirports");
   if (el) el.textContent = labels.airportsLabel;
@@ -216,7 +383,9 @@ store.subscribe(
     renderer.activeLayer = layer;
     document.querySelectorAll(".layer-btn").forEach((b) => {
       const btn = /** @type {HTMLElement} */ (b);
-      btn.classList.toggle("active", btn.dataset.layer === layer);
+      const isActive = btn.dataset.layer === layer;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
     });
   },
 );
@@ -232,6 +401,7 @@ store.subscribe(
       btn.classList.toggle("bg-[#36383e]", isActive);
       btn.classList.toggle("text-[#f2efe9]", isActive);
       btn.classList.toggle("text-stone-500", !isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
     });
   },
 );
@@ -244,15 +414,24 @@ store.subscribe(
     const drawer = document.getElementById("generatorDrawer");
     if (drawer) {
       drawer.classList.toggle("hidden", !open);
+      drawer.toggleAttribute("inert", !open);
+    }
+    const toggleBtn = document.getElementById("toggleDrawerBtn");
+    if (toggleBtn) {
+      toggleBtn.setAttribute("aria-expanded", String(open));
     }
   },
 );
 
 /**
  * @param {boolean} [preserveCamera]
+ * @param {boolean} [preserveUrlHydration=false]
  * @returns {Promise<ProceduralLogisticsWorld | void>}
  */
-export function rebuildWorld(preserveCamera = false) {
+export function rebuildWorld(
+  preserveCamera = false,
+  preserveUrlHydration = false,
+) {
   // Update UI synchronously for immediate visual feedback (INP best practice)
   updateAirportSliderLabel();
   const badgeEl = document.getElementById("genTimeBadge");
@@ -268,6 +447,7 @@ export function rebuildWorld(preserveCamera = false) {
           requestId,
           config: cfg,
           preserveCamera,
+          preserveUrlHydration,
           resolvers: [resolve],
         });
       } else {
@@ -275,12 +455,15 @@ export function rebuildWorld(preserveCamera = false) {
           pendingJob.config = cfg;
           pendingJob.preserveCamera =
             pendingJob.preserveCamera && preserveCamera;
+          pendingJob.preserveUrlHydration =
+            pendingJob.preserveUrlHydration || preserveUrlHydration;
           pendingJob.resolvers.push(resolve);
         } else {
           pendingJob = {
             requestId: nextRequestId++,
             config: cfg,
             preserveCamera,
+            preserveUrlHydration,
             resolvers: [resolve],
           };
         }
@@ -290,7 +473,12 @@ export function rebuildWorld(preserveCamera = false) {
 
   // Fallback if Worker is unavailable
   const world = fallbackPipeline(cfg);
-  return applyGeneratedWorld(world, preserveCamera, false);
+  return applyGeneratedWorld(
+    world,
+    preserveCamera,
+    false,
+    preserveUrlHydration,
+  );
 }
 
 window.rebuildWorld = rebuildWorld;
@@ -357,14 +545,22 @@ function focusCameraOnEntity(type, entity) {
  * @param {string} type
  * @param {InspectedEntity} entity
  * @param {boolean} [shouldFocus]
+ * @param {boolean} [pushHistory=true]
  */
-export function openEntityInspector(type, entity, shouldFocus = false) {
+export function openEntityInspector(
+  type,
+  entity,
+  shouldFocus = false,
+  pushHistory = true,
+) {
   const normalizedType = type === "resource" ? "building" : type;
   renderer.selectedEntity = entity;
   store.setInspected(normalizedType, entity);
   if (shouldFocus) {
     focusCameraOnEntity(normalizedType, entity);
+    syncStoreCameraFromRenderer();
   }
+  updateUrl(pushHistory);
 }
 
 window.openEntityInspector = openEntityInspector;
@@ -377,13 +573,16 @@ if (inspectorCard) {
     getWorld: () => currentWorld,
     onFocus: (type, entity) => {
       focusCameraOnEntity(type, entity);
+      syncStoreCameraFromRenderer();
     },
     onSelectEntity: (type, entity, shouldFocus) => {
-      openEntityInspector(type, entity, shouldFocus);
+      openEntityInspector(type, entity, shouldFocus, true);
     },
     onClose: () => {
       renderer.selectedEntity = null;
       store.setInspected(null, null);
+      updateUrl(false);
+      canvas.focus({ preventScroll: true });
     },
   });
 }
@@ -459,7 +658,20 @@ function findEntityAtWorldPos(wx, wy, touchPad = 0) {
 function handleResize() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
-  if (currentWorld) renderer.fitCamera(currentWorld);
+  if (currentWorld) {
+    const storeCam = store.getState().camera;
+    if (storeCam) {
+      renderer.camera.zoom = storeCam.zoom;
+      renderer.camera.x =
+        canvas.width * 0.5 -
+        storeCam.cx * storeCam.zoom * currentWorld.tileSize;
+      renderer.camera.y =
+        canvas.height * 0.5 -
+        storeCam.cy * storeCam.zoom * currentWorld.tileSize;
+    } else {
+      renderer.fitCamera(currentWorld);
+    }
+  }
 }
 window.addEventListener("resize", handleResize);
 
@@ -568,45 +780,62 @@ function handlePointerEnd(e) {
     return;
   }
 
-  if (activePointers.size === 0 && isDragging) {
+  if (activePointers.size === 0) {
+    const wasDragging = isDragging;
+    const wasMultiTouch = hadMultiTouch;
     isDragging = false;
-    if (hadMultiTouch) return;
+    hadMultiTouch = false;
 
-    const tapThreshold = e.pointerType === "touch" ? 12 : 6;
-    const moveDist = Math.hypot(
-      e.clientX - pointerDownPos.x,
-      e.clientY - pointerDownPos.y,
-    );
-    if (moveDist < tapThreshold && currentWorld) {
-      const wx =
-        (e.clientX - renderer.camera.x) /
-        (renderer.camera.zoom * currentWorld.tileSize);
-      const wy =
-        (e.clientY - renderer.camera.y) /
-        (renderer.camera.zoom * currentWorld.tileSize);
-      const touchPad = e.pointerType === "touch" ? 2.2 : 0;
+    if (wasMultiTouch) {
+      syncStoreCameraFromRenderer();
+      return;
+    }
 
-      const hit = findEntityAtWorldPos(wx, wy, touchPad);
-      if (hit) {
+    if (wasDragging) {
+      const tapThreshold = e.pointerType === "touch" ? 12 : 6;
+      const moveDist = Math.hypot(
+        e.clientX - pointerDownPos.x,
+        e.clientY - pointerDownPos.y,
+      );
+
+      if (moveDist >= tapThreshold) {
+        syncStoreCameraFromRenderer();
+        return;
+      }
+
+      if (currentWorld) {
+        const wx =
+          (e.clientX - renderer.camera.x) /
+          (renderer.camera.zoom * currentWorld.tileSize);
+        const wy =
+          (e.clientY - renderer.camera.y) /
+          (renderer.camera.zoom * currentWorld.tileSize);
+        const touchPad = e.pointerType === "touch" ? 2.2 : 0;
+
+        const hit = findEntityAtWorldPos(wx, wy, touchPad);
+        if (hit) {
+          if (window.innerWidth < 640) {
+            store.setDrawerOpen(false);
+          }
+          openEntityInspector(hit.type, hit.entity, false, true);
+          return;
+        }
+
+        const now = performance.now();
+        if (e.pointerType === "touch" && now - lastTapTime < 300) {
+          zoomAroundPoint(1.35, e.clientX, e.clientY);
+          lastTapTime = 0;
+          syncStoreCameraFromRenderer();
+          return;
+        }
+        lastTapTime = now;
+
+        renderer.selectedEntity = null;
+        store.setInspected(null, null);
+        updateUrl(false);
         if (window.innerWidth < 640) {
           store.setDrawerOpen(false);
         }
-        openEntityInspector(hit.type, hit.entity, false);
-        return;
-      }
-
-      const now = performance.now();
-      if (e.pointerType === "touch" && now - lastTapTime < 300) {
-        zoomAroundPoint(1.35, e.clientX, e.clientY);
-        lastTapTime = 0;
-        return;
-      }
-      lastTapTime = now;
-
-      renderer.selectedEntity = null;
-      store.setInspected(null, null);
-      if (window.innerWidth < 640) {
-        store.setDrawerOpen(false);
       }
     }
   }
@@ -614,6 +843,9 @@ function handlePointerEnd(e) {
 
 window.addEventListener("pointerup", handlePointerEnd);
 window.addEventListener("pointercancel", handlePointerEnd);
+
+/** @type {ReturnType<typeof setTimeout> | null} */
+let wheelEndTimer = null;
 
 canvas.addEventListener(
   "wheel",
@@ -636,6 +868,11 @@ canvas.addEventListener(
     // Proportional exponential zoom: smooth and controlled across trackpads and notched wheels alike
     const zoomFactor = Math.exp(-clampedDy * 0.0008);
     zoomAroundPoint(zoomFactor, e.clientX, e.clientY);
+
+    if (wheelEndTimer) clearTimeout(wheelEndTimer);
+    wheelEndTimer = setTimeout(() => {
+      syncStoreCameraFromRenderer();
+    }, 150);
   },
   { passive: false },
 );
@@ -644,20 +881,35 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     renderer.selectedEntity = null;
     store.setInspected(null, null);
+    updateUrl(false);
     return;
   }
   if (document.activeElement && document.activeElement.tagName === "INPUT") {
     return;
   }
   const panStep = 40;
-  if (e.key === "ArrowLeft") renderer.camera.x += panStep;
-  else if (e.key === "ArrowRight") renderer.camera.x -= panStep;
-  else if (e.key === "ArrowUp") renderer.camera.y += panStep;
-  else if (e.key === "ArrowDown") renderer.camera.y -= panStep;
-  else if (e.key === "+" || e.key === "=") {
+  let didPanOrZoom = false;
+  if (e.key === "ArrowLeft") {
+    renderer.camera.x += panStep;
+    didPanOrZoom = true;
+  } else if (e.key === "ArrowRight") {
+    renderer.camera.x -= panStep;
+    didPanOrZoom = true;
+  } else if (e.key === "ArrowUp") {
+    renderer.camera.y += panStep;
+    didPanOrZoom = true;
+  } else if (e.key === "ArrowDown") {
+    renderer.camera.y -= panStep;
+    didPanOrZoom = true;
+  } else if (e.key === "+" || e.key === "=") {
     zoomAroundPoint(1.18, canvas.width * 0.5, canvas.height * 0.5);
+    didPanOrZoom = true;
   } else if (e.key === "-") {
     zoomAroundPoint(0.84, canvas.width * 0.5, canvas.height * 0.5);
+    didPanOrZoom = true;
+  }
+  if (didPanOrZoom) {
+    syncStoreCameraFromRenderer();
   }
 });
 
@@ -665,6 +917,7 @@ window.addEventListener("keydown", (e) => {
 document.getElementById("toggleDrawerBtn")?.addEventListener("click", () => {
   const nextOpen = !store.getState().drawerOpen;
   store.setDrawerOpen(nextOpen);
+  updateUrl(false);
   if (nextOpen && window.innerWidth < 640) {
     store.setInspected(null, null);
   }
@@ -674,10 +927,13 @@ document
   .getElementById("closeDrawerMobileBtn")
   ?.addEventListener("click", () => {
     store.setDrawerOpen(false);
+    updateUrl(false);
   });
 
 document.getElementById("resetViewBtn")?.addEventListener("click", () => {
   if (currentWorld) renderer.fitCamera(currentWorld);
+  store.setCamera(null);
+  updateUrl(false);
   if (window.innerWidth < 640) {
     store.setDrawerOpen(false);
   }
@@ -685,14 +941,18 @@ document.getElementById("resetViewBtn")?.addEventListener("click", () => {
 
 document.getElementById("zoomInBtn")?.addEventListener("click", () => {
   zoomAroundPoint(1.25, canvas.width * 0.5, canvas.height * 0.5);
+  syncStoreCameraFromRenderer();
 });
 
 document.getElementById("zoomOutBtn")?.addEventListener("click", () => {
   zoomAroundPoint(0.8, canvas.width * 0.5, canvas.height * 0.5);
+  syncStoreCameraFromRenderer();
 });
 
 document.getElementById("hudFitBtn")?.addEventListener("click", () => {
   if (currentWorld) renderer.fitCamera(currentWorld);
+  store.setCamera(null);
+  updateUrl(false);
 });
 
 getEl("randomSeedBtn")?.addEventListener("click", () => {
@@ -702,18 +962,47 @@ getEl("randomSeedBtn")?.addEventListener("click", () => {
   const newSeed = `${p}-${num}`;
   const seedInput = getInput("seedInput");
   if (seedInput) seedInput.value = newSeed;
+  store.setCamera(null);
+  store.setInspected(null, null);
   store.patchConfig({ seed: newSeed });
+  updateUrl(true);
   rebuildWorld(false);
+});
+
+getInput("seedInput")?.addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === "Enter") {
+    const inp = /** @type {HTMLInputElement} */ (e.target);
+    const newSeed = inp.value.trim() || DEFAULT_GENERATOR_CONFIG.seed;
+    inp.value = newSeed;
+    if (newSeed !== store.getState().config.seed) {
+      store.setCamera(null);
+      store.setInspected(null, null);
+      store.patchConfig({ seed: newSeed });
+      updateUrl(true);
+      rebuildWorld(false);
+    }
+    inp.blur();
+  }
 });
 
 getInput("seedInput")?.addEventListener("change", (e) => {
   const inp = /** @type {HTMLInputElement} */ (e.target);
-  store.patchConfig({ seed: inp.value.trim() });
-  rebuildWorld(false);
+  const newSeed = inp.value.trim() || DEFAULT_GENERATOR_CONFIG.seed;
+  inp.value = newSeed;
+  if (newSeed !== store.getState().config.seed) {
+    store.setCamera(null);
+    store.setInspected(null, null);
+    store.patchConfig({ seed: newSeed });
+    updateUrl(true);
+    rebuildWorld(false);
+  }
 });
 
 getSelect("archetypeSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
+  store.setCamera(null);
+  store.setInspected(null, null);
   if (sel.value === "island-hopper") {
     const apSlider = getInput("sliderAirports");
     if (parseInt(apSlider.value, 10) < 5) {
@@ -724,17 +1013,21 @@ getSelect("archetypeSelect")?.addEventListener("change", (e) => {
           airportCount: 5,
         });
       });
+      updateUrl(true);
       rebuildWorld(false);
       return;
     }
   }
   store.patchConfig({ archetype: sel.value });
+  updateUrl(true);
   rebuildWorld(false);
 });
 
 getSelect("worldSizeSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
   const def = WORLD_SIZE_DEFAULTS[sel.value];
+  store.setCamera(null);
+  store.setInspected(null, null);
   if (def) {
     const tSlider = getInput("sliderTowns");
     const aSlider = getInput("sliderAirports");
@@ -750,30 +1043,35 @@ getSelect("worldSizeSelect")?.addEventListener("change", (e) => {
   } else {
     store.patchConfig({ worldSize: sel.value });
   }
+  updateUrl(true);
   rebuildWorld(false);
 });
 
 getSelect("terrainAlgoSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
   store.patchConfig({ terrainAlgo: sel.value });
+  updateUrl(false);
   rebuildWorld(true);
 });
 
 getSelect("hydrologyAlgoSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
   store.patchConfig({ hydrologyAlgo: sel.value });
+  updateUrl(false);
   rebuildWorld(true);
 });
 
 getSelect("airportMixSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
   store.patchConfig({ airportMix: sel.value });
+  updateUrl(false);
   rebuildWorld(true);
 });
 
 getInput("toggleInterRamps")?.addEventListener("change", (e) => {
   const inp = /** @type {HTMLInputElement} */ (e.target);
   store.patchConfig({ includeIntermediateRamps: inp.checked });
+  updateUrl(false);
   rebuildWorld(true);
 });
 
@@ -782,11 +1080,21 @@ getInput("sliderWater")?.addEventListener("input", (e) => {
   store.patchConfig({ waterCoverage: parseInt(inp.value, 10) });
   rebuildWorld(true);
 });
+getInput("sliderWater")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ waterCoverage: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
 
 getInput("sliderTowns")?.addEventListener("input", (e) => {
   const inp = /** @type {HTMLInputElement} */ (e.target);
   store.patchConfig({ townCount: parseInt(inp.value, 10) });
   rebuildWorld(true);
+});
+getInput("sliderTowns")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ townCount: parseInt(inp.value, 10) });
+  updateUrl(false);
 });
 
 getInput("sliderDensity")?.addEventListener("input", (e) => {
@@ -794,17 +1102,32 @@ getInput("sliderDensity")?.addEventListener("input", (e) => {
   store.patchConfig({ buildingDensity: parseInt(inp.value, 10) });
   rebuildWorld(true);
 });
+getInput("sliderDensity")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ buildingDensity: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
 
 getInput("sliderAirports")?.addEventListener("input", (e) => {
   const inp = /** @type {HTMLInputElement} */ (e.target);
   store.patchConfig({ airportCount: parseInt(inp.value, 10) });
   rebuildWorld(true);
 });
+getInput("sliderAirports")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ airportCount: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
 
 getInput("sliderWind")?.addEventListener("input", (e) => {
   const inp = /** @type {HTMLInputElement} */ (e.target);
   store.patchConfig({ windAxis: parseInt(inp.value, 10) });
   rebuildWorld(true);
+});
+getInput("sliderWind")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ windAxis: parseInt(inp.value, 10) });
+  updateUrl(false);
 });
 
 // Layer Overlay Buttons
@@ -813,6 +1136,7 @@ document.querySelectorAll(".layer-btn").forEach((el) => {
   btn.addEventListener("click", () => {
     const layer = /** @type {ViewLayer} */ (btn.dataset.layer || "aesthetic");
     store.setActiveLayer(layer);
+    updateUrl(false);
   });
 });
 
@@ -822,7 +1146,81 @@ document.querySelectorAll(".speed-btn").forEach((el) => {
   btn.addEventListener("click", () => {
     const speed = parseFloat(btn.dataset.speed || "1");
     store.setSimSpeed(speed);
+    updateUrl(false);
   });
+});
+
+window.addEventListener("popstate", () => {
+  isRestoringFromHistory = true;
+  try {
+    const isMobile = window.innerWidth < 768;
+    const popped = parseUrlState(window.location.search, isMobile);
+    const prevConfig = store.getState().config;
+    const configChanged = !shallowEqual(prevConfig, popped.config);
+
+    batch(() => {
+      store.patchConfig(popped.config);
+      store.setActiveLayer(popped.activeLayer);
+      store.setSimSpeed(popped.simSpeed);
+      store.setDrawerOpen(popped.drawerOpen);
+      store.setCamera(popped.camera);
+      if (popped.inspected.type && popped.inspected.id != null) {
+        store.setInspectedRef(popped.inspected.type, popped.inspected.id, null);
+      } else {
+        store.setInspected(null, null);
+      }
+    });
+
+    syncDomInputsFromConfig(store.getState().config);
+
+    if (configChanged) {
+      rebuildWorld(false, true);
+    } else if (currentWorld) {
+      if (popped.camera) {
+        renderer.camera.zoom = popped.camera.zoom;
+        renderer.camera.x =
+          canvas.width * 0.5 -
+          popped.camera.cx * popped.camera.zoom * currentWorld.tileSize;
+        renderer.camera.y =
+          canvas.height * 0.5 -
+          popped.camera.cy * popped.camera.zoom * currentWorld.tileSize;
+      } else {
+        renderer.fitCamera(currentWorld);
+      }
+
+      if (popped.inspected.type && popped.inspected.id != null) {
+        /** @type {InspectedEntity | null} */
+        let entity = null;
+        if (popped.inspected.type === "airport") {
+          entity =
+            currentWorld.airports.find((a) => a.id === popped.inspected.id) ||
+            currentWorld.airports[popped.inspected.id] ||
+            null;
+        } else if (popped.inspected.type === "town") {
+          entity =
+            currentWorld.towns.find((t) => t.id === popped.inspected.id) ||
+            currentWorld.towns[popped.inspected.id] ||
+            null;
+        } else if (popped.inspected.type === "building") {
+          entity =
+            currentWorld.destinations.find(
+              (d) => d.id === popped.inspected.id,
+            ) || null;
+        }
+        if (entity) {
+          openEntityInspector(popped.inspected.type, entity, false, false);
+        } else {
+          renderer.selectedEntity = null;
+          store.setInspected(null, null);
+        }
+      } else {
+        renderer.selectedEntity = null;
+        store.setInspected(null, null);
+      }
+    }
+  } finally {
+    isRestoringFromHistory = false;
+  }
 });
 
 // Main Animation Loop
@@ -846,11 +1244,44 @@ function animate(now) {
 }
 
 function initApp() {
-  if (window.innerWidth < 768) {
-    store.setDrawerOpen(false);
+  syncDomInputsFromConfig(store.getState().config);
+
+  const initialOpen = store.getState().drawerOpen;
+  const drawer = document.getElementById("generatorDrawer");
+  if (drawer) {
+    drawer.classList.toggle("hidden", !initialOpen);
+    drawer.toggleAttribute("inert", !initialOpen);
   }
+  const toggleBtn = document.getElementById("toggleDrawerBtn");
+  if (toggleBtn) {
+    toggleBtn.setAttribute("aria-expanded", String(initialOpen));
+  }
+
+  const activeLayer = store.getState().activeLayer;
+  document.querySelectorAll(".layer-btn").forEach((b) => {
+    const btn = /** @type {HTMLElement} */ (b);
+    const isActive = btn.dataset.layer === activeLayer;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-pressed", String(isActive));
+  });
+
+  const simSpd = store.getState().simSpeed;
+  document.querySelectorAll(".speed-btn").forEach((el) => {
+    const btn = /** @type {HTMLElement} */ (el);
+    const isActive = parseFloat(btn.dataset.speed || "1") === simSpd;
+    btn.classList.toggle("bg-[#36383e]", isActive);
+    btn.classList.toggle("text-[#f2efe9]", isActive);
+    btn.classList.toggle("text-stone-500", !isActive);
+    btn.setAttribute("aria-pressed", String(isActive));
+  });
+
+  const inspCard = document.getElementById("inspectorCard");
+  if (inspCard) {
+    inspCard.toggleAttribute("inert", !store.getState().inspected.entity);
+  }
+
   handleResize();
-  rebuildWorld(false);
+  rebuildWorld(false, true);
   requestAnimationFrame(animate);
 }
 
