@@ -254,7 +254,8 @@ describe("Signal-Grade App Store & Memoization (src/state.js)", () => {
   test("batch(fn) coalesces multiple store mutations into a single subscriber flush", () => {
     const store = createAppStore();
     let notifyCount = 0;
-    let lastState = null;
+    let lastState =
+      /** @type {import('../../src/types.js').AppState | null} */ (null);
 
     store.subscribe(
       (s) => s,

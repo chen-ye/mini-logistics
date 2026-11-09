@@ -13,7 +13,7 @@
  */
 export function synthesizeTerrainAndBasins(world) {
   const { W, H } = world;
-  const waterRatio = world.config.waterCoverage / 100;
+  const waterRatio = (world.config.waterCoverage ?? 30) / 100;
   const arch = world.config.archetype;
   const terrainAlgo = world.config.terrainAlgo || "tectonic-fbm";
 

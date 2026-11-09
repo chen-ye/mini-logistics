@@ -96,7 +96,7 @@ describe("FlatMinHeap typed-array binary min-heap", () => {
       const prio = prios.get(id);
       expect(prio).toBeDefined();
       expect(prio).toBeGreaterThanOrEqual(prevPrio);
-      prevPrio = prio;
+      prevPrio = prio ?? prevPrio;
     }
 
     expect(poppedIds).toEqual([40, 20, 60, 50, 10, 30]);

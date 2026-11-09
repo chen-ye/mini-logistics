@@ -29,9 +29,9 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
 
   /**
    * Smooth a river polyline with Laplacian passes so meanders are 100% C1 smooth (zero spikes!).
-   * @param {RiverPoint[] | null} pts
+   * @param {RiverPoint[]} pts
    * @param {number} [passes]
-   * @returns {RiverPoint[] | null}
+   * @returns {RiverPoint[]}
    */
   const smoothPolyline = (pts, passes = 4) => {
     if (!pts || pts.length < 5) return pts;
@@ -85,10 +85,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
 
   /**
    * Continuous, spike-free Ikeda floodplain meandering displacement.
-   * @param {RiverPoint[] | null} rawPath
+   * @param {RiverPoint[]} rawPath
    * @param {number} [phaseOffset]
    * @param {number} [ampScale]
-   * @returns {RiverPoint[] | null}
+   * @returns {RiverPoint[]}
    */
   const applyMeanderingDisplacement = (
     rawPath,
@@ -209,10 +209,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       [-1, 0, 1.0],
       [0, 1, 1.0],
       [0, -1, 1.0],
-      [1, 1, 1.414],
-      [-1, 1, 1.414],
-      [1, -1, 1.414],
-      [-1, -1, 1.414],
+      [1, 1, Math.SQRT2],
+      [-1, 1, Math.SQRT2],
+      [1, -1, Math.SQRT2],
+      [-1, -1, Math.SQRT2],
     ];
 
     let steps = 0;
@@ -330,6 +330,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
   const pickHighlandMountainSprings = (count = 2) => {
     const springs = [];
     for (let s = 0; s < count; s++) {
+      /** @type {Point2D | null} */
       let bestSp = null;
       let bestScore = -1;
       for (let attempt = 0; attempt < 55; attempt++) {
@@ -389,8 +390,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
             return;
         }
       }
-      const dSink = Math.hypot(x - primarySink.deepX, y - primarySink.deepY);
-      if (dSink < 105) return;
+      const dSink = primarySink
+        ? Math.hypot(x - primarySink.deepX, y - primarySink.deepY)
+        : 999;
+      if (primarySink && dSink < 105) return;
       const elev = world.elevationField[id];
       const valleyScore =
         1.0 -
@@ -635,8 +638,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           const d2 = (gx - x) * (gx - x) + (gy - y) * (gy - y);
           if (d2 > v2) continue;
           const gid = world.idx(gx, gy);
-          const prev = touchedMap.get(gid);
-          if (!prev || d2 < prev.d2) {
+          const existing = touchedMap.get(gid);
+          if (!existing || d2 < existing.d2) {
             touchedMap.set(gid, { d2, i });
           }
         }
@@ -751,10 +754,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       [-1, 0, 1.0],
       [0, 1, 1.0],
       [0, -1, 1.0],
-      [1, 1, 1.414],
-      [-1, 1, 1.414],
-      [1, -1, 1.414],
-      [-1, -1, 1.414],
+      [1, 1, Math.SQRT2],
+      [-1, 1, Math.SQRT2],
+      [1, -1, Math.SQRT2],
+      [-1, -1, Math.SQRT2],
     ];
     while (pfHeap.size > 0) {
       const u = pfHeap.pop();
@@ -821,6 +824,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     // Island-Hopper: short volcanic island streams from high peaks to nearest island coast
     const placedSprings = [];
     for (let sPass = 0; sPass < 5; sPass++) {
+      /** @type {Point2D | null} */
       let bestSp = null;
       let bestElev = -1;
       for (let attempt = 0; attempt < 35; attempt++) {
@@ -839,7 +843,10 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       }
       if (bestSp) {
         placedSprings.push(bestSp);
-        let targetSink = primarySink;
+        let targetSink = primarySink || {
+          deepX: Math.round(W * 0.5),
+          deepY: Math.round(H * 0.5),
+        };
         let minSD = Infinity;
         for (
           let wy = Math.max(4, bestSp.y - 45);
@@ -880,7 +887,11 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     ];
     for (let sPass = 0; sPass < allSources.length; sPass++) {
       const entry = allSources[sPass];
-      let targetSink = primarySink;
+      let targetSink =
+        primarySink ||
+        (basins[0]
+          ? { deepX: basins[0].deepX, deepY: basins[0].deepY }
+          : { deepX: Math.round(W * 0.5), deepY: Math.round(H * 0.5) });
       let minSD = Infinity;
       for (const b of basins) {
         const d = Math.hypot(entry.x - b.deepX, entry.y - b.deepY);

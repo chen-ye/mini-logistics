@@ -9,6 +9,8 @@
     "checkJs": true,
     "noEmit": true,
     "strict": false,
+    "strictNullChecks": true,
+    "useUnknownInCatchVariables": true,
     "noImplicitThis": true,
     "strictFunctionTypes": true,
     "strictBindCallApply": true,

@@ -25,25 +25,25 @@ import { mountEntityInspector } from "./inspector-component.js";
  * @param {string} id
  * @returns {HTMLElement}
  */
-const getEl = (id) => document.getElementById(id);
+const getEl = (id) => {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`Missing DOM element #${id}`);
+  return el;
+};
 
 /**
  * @param {string} id
  * @returns {HTMLInputElement}
  */
-const getInput = (id) =>
-  /** @type {HTMLInputElement} */ (document.getElementById(id));
+const getInput = (id) => /** @type {HTMLInputElement} */ (getEl(id));
 
 /**
  * @param {string} id
  * @returns {HTMLSelectElement}
  */
-const getSelect = (id) =>
-  /** @type {HTMLSelectElement} */ (document.getElementById(id));
+const getSelect = (id) => /** @type {HTMLSelectElement} */ (getEl(id));
 
-const canvas = /** @type {HTMLCanvasElement} */ (
-  document.getElementById("worldCanvas")
-);
+const canvas = /** @type {HTMLCanvasElement} */ (getEl("worldCanvas"));
 const renderer = new MiniMotorwaysRenderer(canvas);
 /** @type {ProceduralLogisticsWorld | null} */
 let currentWorld = null;
@@ -107,6 +107,7 @@ function initWorldWorker() {
 worldWorker = initWorldWorker();
 
 function dispatchToWorker(job) {
+  if (!worldWorker) return;
   workerBusy = true;
   inflightResolvers.set(job.requestId, job.resolvers);
   worldWorker.postMessage({
@@ -122,7 +123,7 @@ const store = createAppStore(DEFAULT_GENERATOR_CONFIG);
 async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
   renderer.prepareDisplayLists(world);
   currentWorld = world;
-  simulator = new LogisticsSimulator(currentWorld);
+  simulator = new LogisticsSimulator(world);
   window.currentWorld = currentWorld;
   window.simulator = simulator;
 
@@ -130,9 +131,9 @@ async function applyGeneratedWorld(world, preserveCamera, fromWorker = false) {
   store.setInspected(null, null);
 
   if (!preserveCamera) {
-    renderer.fitCamera(currentWorld);
+    renderer.fitCamera(world);
   }
-  updateTelemetryUI(currentWorld, fromWorker);
+  updateTelemetryUI(world, fromWorker);
 }
 
 /**
@@ -306,24 +307,22 @@ function updateTelemetryUI(world, fromWorker = false) {
       : fromWorker
         ? " · 2W Parallel"
         : "";
-  document.getElementById("genTimeBadge").textContent =
-    `${displayMs} ms${cacheSuffix}`;
-  document.getElementById("statPop").textContent =
-    world.houses.length + world.destinations.length;
+  getEl("genTimeBadge").textContent = `${displayMs} ms${cacheSuffix}`;
+  getEl("statPop").textContent = String(
+    world.houses.length + world.destinations.length,
+  );
   const hubs = world.airports.filter((a) => a.airportClass === "HUB").length;
   const others = world.airports.length - hubs;
-  document.getElementById("statAirports").textContent =
-    `${hubs} Hub · ${others} Reg`;
+  getEl("statAirports").textContent = `${hubs} Hub · ${others} Reg`;
   const clovers = world.interchanges.filter(
     (i) => i.type === "cloverleaf" || i.type === "trumpet",
   ).length;
   const ramps = world.interchanges.filter(
     (i) => i.type === "diamond-ramp",
   ).length;
-  document.getElementById("statBridges").textContent =
-    `${clovers} Sys · ${ramps} Ramp`;
+  getEl("statBridges").textContent = `${clovers} Sys · ${ramps} Ramp`;
 
-  const logEl = document.getElementById("pipelineLog");
+  const logEl = getEl("pipelineLog");
   logEl.innerHTML = world.logs
     .map(
       (l) =>
@@ -379,7 +378,7 @@ if (inspectorCard) {
     onFocus: (type, entity) => {
       focusCameraOnEntity(type, entity);
     },
-    onSelectEntity: (type, entity, shouldFocus = false) => {
+    onSelectEntity: (type, entity, shouldFocus) => {
       openEntityInspector(type, entity, shouldFocus);
     },
     onClose: () => {
@@ -409,6 +408,7 @@ function findEntityAtWorldPos(wx, wy, touchPad = 0) {
   }
 
   // 2. Check All Industrial & Commercial Buildings (`currentWorld.destinations`) — highest specificity!
+  /** @type {import('./types.js').Destination | null} */
   let bestBuilding = null;
   let bestBldDist = Infinity;
   const bldPad = 0.65 + touchPad * 0.65;
@@ -835,13 +835,12 @@ function animate(now) {
     simulator.update(dt, simSpeed);
     renderer.render(currentWorld, simulator);
 
-    document.getElementById("tripCounter").textContent =
+    getEl("tripCounter").textContent =
       simulator.tripsCompleted.toLocaleString();
     const clockAngle = (simulator.simTime * 24) % 360;
-    document.getElementById("clockHand").style.transform =
-      `rotate(${clockAngle}deg)`;
+    getEl("clockHand").style.transform = `rotate(${clockAngle}deg)`;
     const dayIdx = Math.floor((simulator.simTime * 24) / 360) % 7;
-    document.getElementById("dayLabel").textContent = daysOfWeek[dayIdx];
+    getEl("dayLabel").textContent = daysOfWeek[dayIdx];
   }
   requestAnimationFrame(animate);
 }

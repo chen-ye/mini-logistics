@@ -836,6 +836,7 @@ export function buildVignelliWaterPath(
     const y0 = (y + 0.5) * ts;
     const y1 = (y + 1.5) * ts;
     const ym = (y + 1.0) * ts;
+    /** @type {number | null} */
     let runStart = null;
 
     for (let x = -1; x < W; x++) {

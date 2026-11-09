@@ -2,6 +2,7 @@
  * @import { ProceduralLogisticsWorld } from "./world-generator.js"
  * @import {
  *   Point2D,
+ *   Town,
  *   Motorway,
  *   CloverleafInterchange,
  *   DiamondSlipRamp,
@@ -22,6 +23,7 @@ import {
 export function applyRightOfWayClearance(world) {
   world.displaceBuildingsAlongMotorwayCorridors();
   world.pruneEmptyOuterStreets();
+  world.rebindOrDisplaceOrphanedFrontage();
 }
 
 /*************************************************************************
@@ -177,6 +179,7 @@ export function createTerminalStreetStub(
 
   let chosenAx = town.x;
   let chosenAy = town.y;
+  /** @type {Array<{ x: number, y: number, isBridge?: boolean }> | null} */
   let chosenTiePath = null;
   let chosenAngle = baseAngle;
   let bestStubCost = Infinity;
@@ -432,6 +435,20 @@ export function interchangeRoadOverlapCost(world, cx, cy, radius = 4.2) {
   return cost;
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {Array<{ x: number, y: number }>} samples
+ * @param {number} sx
+ * @param {number} sy
+ * @param {number} ex
+ * @param {number} ey
+ * @param {number | null} [airportId]
+ * @param {number} [preferOff]
+ * @param {number} [candidateOff]
+ * @param {boolean} [forbidAnyCrossing]
+ * @param {number | null} [allowTouchTrunkNum]
+ * @returns {number}
+ */
 export function scoreMotorwaySamples(
   world,
   samples,
@@ -881,6 +898,16 @@ export function ensureCoarseValleyCostTable(world) {
   world._coarseGen = 0;
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {number} sx
+ * @param {number} sy
+ * @param {number} ex
+ * @param {number} ey
+ * @param {number | null} [airportId]
+ * @param {number} [lateralBias]
+ * @returns {Array<{ x: number, y: number }> | null}
+ */
 export function findValleyMotorwayWaypoints(
   world,
   sx,
@@ -925,10 +952,10 @@ export function findValleyMotorwayWaypoints(
     [-1, 0, 1.0],
     [0, 1, 1.0],
     [0, -1, 1.0],
-    [1, 1, 1.414],
-    [-1, 1, 1.414],
-    [1, -1, 1.414],
-    [-1, -1, 1.414],
+    [1, 1, Math.SQRT2],
+    [-1, 1, Math.SQRT2],
+    [1, -1, Math.SQRT2],
+    [-1, -1, Math.SQRT2],
   ];
 
   let iterCount = 0;
@@ -1079,6 +1106,18 @@ export function findValleyMotorwayWaypoints(
   return null;
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {number} number
+ * @param {number} sx
+ * @param {number} sy
+ * @param {number} ex
+ * @param {number} ey
+ * @param {number | null} [airportId]
+ * @param {number | null} [townId]
+ * @param {{ x: number, y: number } | null} [forcedViaPt]
+ * @returns {any}
+ */
 export function createMotorwayEntity(
   world,
   number,
@@ -1236,6 +1275,7 @@ export function createMotorwayEntity(
     }
   }
 
+  /** @type {{ waypoints: Array<{ x: number, y: number }>, samples: Array<{ x: number, y: number }> } | null} */
   let bestCand = null;
   let bestScore = Infinity;
 
@@ -1410,6 +1450,14 @@ export function removeOrphanedTerminalStub(world, x, y) {
  * Attempts to build a 3-way Trumpet Spur Motorway from `(originX, originY)` (an airport gate
  * or unserved town beltway stub) directly into a dry interior point on an existing trunk motorway,
  * terminating at the trumpet throat with a perpendicular arrival tangent.
+ *
+ * @param {ProceduralLogisticsWorld} world
+ * @param {number} number
+ * @param {number} originX
+ * @param {number} originY
+ * @param {number | null} [airportId]
+ * @param {number | null} [townId]
+ * @returns {{ mw: import('./types.js').Motorway, trumpetIc: import('./types.js').Interchange } | null}
  */
 export function tryBuildTrumpetSpurToTrunk(
   world,
@@ -1420,6 +1468,7 @@ export function tryBuildTrumpetSpurToTrunk(
   townId = null,
 ) {
   const ap = airportId !== null ? world.airports[airportId] : null;
+  /** @type {{ mw: import('./types.js').Motorway, trumpetIc: import('./types.js').Interchange } | null} */
   let bestResult = null;
   let bestScore = Infinity;
 
@@ -2464,8 +2513,10 @@ export function findExistingOctilinearUnderpass(
       const alignNormal = Math.abs((ux / uLen) * nx + (uy / uLen) * ny);
       if (alignNormal < 0.68) continue;
 
+      /** @type {{ x: number, y: number } | null} */
       let posTerm = null;
       let bestPosErr = Infinity;
+      /** @type {{ x: number, y: number } | null} */
       let negTerm = null;
       let bestNegErr = Infinity;
 
@@ -2540,6 +2591,7 @@ export function buildIntermediateExpresswayRamps(world) {
 
     const maxRampsForMw = arcLen >= 88 ? 2 : 1;
     for (let rPass = 0; rPass < maxRampsForMw; rPass++) {
+      /** @type {{ kCenter: number, x: number, y: number, angleRad: number, connSide: number, posTerm: { x: number, y: number }, negTerm: { x: number, y: number }, sdx: number, sdy: number, stepReach: number, existingUnderpass: boolean, nearestTown: Town } | null} */
       let bestCandidate = null;
       let bestScore = -Infinity;
 
@@ -2567,6 +2619,7 @@ export function buildIntermediateExpresswayRamps(world) {
         );
         if (nearExisting) continue;
 
+        /** @type {Town | null} */
         let nearestTown = null;
         let minTownDist = Infinity;
         for (const t of world.towns) {
@@ -2616,6 +2669,9 @@ export function buildIntermediateExpresswayRamps(world) {
               connSide,
               posTerm,
               negTerm,
+              sdx: 0,
+              sdy: 0,
+              stepReach: 0,
               existingUnderpass: true,
               nearestTown,
             };
@@ -2769,7 +2825,7 @@ export function buildIntermediateExpresswayRamps(world) {
         const nearTerm = connSide === 1 ? posTerm : negTerm;
         const farTerm = connSide === 1 ? negTerm : posTerm;
 
-        let isThroughDiamond = Boolean(existingUnderpass);
+        let isThroughDiamond = existingUnderpass;
 
         if (!existingUnderpass) {
           const makeSideBlockFn = (sideSign, termPt) => (tx, ty) => {
@@ -2803,7 +2859,9 @@ export function buildIntermediateExpresswayRamps(world) {
           if (!connectorPath || connectorPath.length < 2) continue;
 
           // Also check if `farTerm` on `-connSide` can connect to a road or town within 28 tiles (`A1 Through-Diamond`)
+          /** @type {Array<{ x: number, y: number, isBridge?: boolean }> | null} */
           let oppConnectorPath = null;
+          /** @type {{ x: number, y: number } | null} */
           let oppTargetPt = null;
           let bestOppD = 28;
           for (const t of world.towns) {
@@ -3021,6 +3079,7 @@ export function buildNumberedMotorways(world) {
   }
   pairs.sort((a, b) => b.gravity - a.gravity);
 
+  /** @type {{ tA: Town, tB: Town, gravity: number, d: number } | null} */
   let primaryPair = null;
 
   for (const cand of pairs) {
@@ -3123,6 +3182,7 @@ export function buildNumberedMotorways(world) {
           : null;
 
       // Find the best dry Cloverleaf crossing point along the middle 56% of M-1
+      /** @type {{ x: number, y: number } | null} */
       let bestViaPt = null;
       let minViaDist = Infinity;
       const midX = (sx + ex) * 0.5;

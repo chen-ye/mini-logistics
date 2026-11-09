@@ -1,3 +1,4 @@
+/** @import { Town, RoadSegment } from "./types.js" */
 /** @import { ProceduralLogisticsWorld } from "./world-generator.js" */
 import { PALETTE } from "./palette.js";
 import { ROAD_GRID, BUILDING_MASK, WORLD_GEOMETRY } from "./constants.js";
@@ -65,6 +66,7 @@ export function buildRegionalRoadNetwork(world) {
   };
 
   while (connected.size < nodes.length) {
+    /** @type {[number, number] | null} */
     let bestEdge = null;
     let bestCost = Infinity;
     for (const i of connected) {
@@ -119,6 +121,7 @@ export function buildRegionalRoadNetwork(world) {
     };
 
     for (let c = 0; c < maxChords; c++) {
+      /** @type {[number, number] | null} */
       let bestChord = null;
       let bestScore = Infinity;
       for (let i = 0; i < nodes.length; i++) {
@@ -332,6 +335,7 @@ export function seedSecondaryTownsAlongTrunks(world) {
     const minSpacing = tier === 3 ? 21 : 14;
 
     let bestScore = -1;
+    /** @type {{ x: number, y: number, score: number, lmId: number, nearTrunkPt: { x: number, y: number } | null } | null} */
     let bestPt = null;
 
     for (let cIdx = 0; cIdx < candidateSites.length; cIdx++) {
@@ -359,6 +363,7 @@ export function seedSecondaryTownsAlongTrunks(world) {
         if (d < minBridgeD) minBridgeD = d;
       }
       let minTrunkD = Infinity;
+      /** @type {{ x: number, y: number } | null} */
       let nearTrunkPt = null;
       for (let k = 0; k < trunkRoadPts.length; k++) {
         const tp = trunkRoadPts[k];
@@ -443,6 +448,8 @@ export function seedSecondaryTownsAlongTrunks(world) {
         suitabilityScore: Math.round(Math.min(99, bestPt.score * 100)),
         housesCount: 0,
         destinationsCount: 0,
+        commercialCount: 0,
+        industrialCount: 0,
         airportId: null,
         _seededInPhase1: false,
         boroughs: [{ x: bestPt.x, y: bestPt.y, r: urbanRadius }],
@@ -517,6 +524,18 @@ export function seedSecondaryTownsAlongTrunks(world) {
   );
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {number} sx
+ * @param {number} sy
+ * @param {number} ex
+ * @param {number} ey
+ * @param {boolean} [allowWaterBridge]
+ * @param {((nx: number, ny: number, cx: number, cy: number) => boolean) | null} [blockedFn]
+ * @param {boolean} [stopOnExistingRoad]
+ * @param {{ isInterchangeBypass?: boolean, turnPenalty?: number, extraCostFn?: ((nx: number, ny: number) => number) } | null} [options]
+ * @returns {Array<{ x: number, y: number, isBridge?: boolean }> | null}
+ */
 export function findRoadPathAStar(
   world,
   sx,
@@ -562,6 +581,7 @@ export function findRoadPathAStar(
     const topId = heapId[0];
     const lastId = heapId.pop();
     const lastF = heapF.pop();
+    if (lastId === undefined || lastF === undefined) return topId;
     const n = heapId.length;
     if (n > 0) {
       let i = 0;
@@ -588,10 +608,10 @@ export function findRoadPathAStar(
     [-1, 0, 1.0],
     [0, 1, 1.0],
     [0, -1, 1.0],
-    [1, 1, 1.414],
-    [-1, 1, 1.414],
-    [1, -1, 1.414],
-    [-1, -1, 1.414],
+    [1, 1, Math.SQRT2],
+    [-1, 1, Math.SQRT2],
+    [1, -1, Math.SQRT2],
+    [-1, -1, Math.SQRT2],
   ];
 
   while (heapId.length > 0) {
@@ -859,6 +879,12 @@ export function findRoadPathAStar(
   return null;
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {Array<{ x: number, y: number, isBridge?: boolean }>} path
+ * @param {string} [roadType]
+ * @param {Record<string, any> | null} [extraProps]
+ */
 export function commitRoadPath(
   world,
   path,
@@ -989,13 +1015,17 @@ export function commitRoadPath(
       world.addRoadEdge(x0, y0, x1, y1);
     } else {
       if (seg.length >= 2) {
-        world.roads.push({ points: seg, type: roadType, ...extraProps });
+        /** @type {RoadSegment} */
+        const r = Object.assign({ points: seg, type: roadType }, extraProps);
+        world.roads.push(r);
       }
       seg = [];
     }
   }
   if (seg.length >= 2) {
-    world.roads.push({ points: seg, type: roadType, ...extraProps });
+    /** @type {RoadSegment} */
+    const r = Object.assign({ points: seg, type: roadType }, extraProps);
+    world.roads.push(r);
   }
 
   // Populate `world.roadGrid` exclusively from the simplified vertices (`pts`) so zero ghost road tiles exist!
@@ -1027,6 +1057,10 @@ export function commitRoadPath(
 /*************************************************************************
  * STAGE 6A & 7: ORGANIC MULTI-BOROUGH GRIDS, VARIED BLOCK SIZES & RCI PACKER
  *************************************************************************/
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {((town: any) => boolean) | null} [filterFn]
+ */
 export function carveTownStreetGrids(world, filterFn = null) {
   const densityMult = (world.config.buildingDensity || 250) / 100;
 
@@ -1046,9 +1080,11 @@ export function carveTownStreetGrids(world, filterFn = null) {
     const numExtraBoroughs = town.tier === 1 ? 3 : town.tier === 2 ? 2 : 0;
 
     for (let b = 0; b < numExtraBoroughs; b++) {
-      let bestBx = null,
-        bestBy = null,
-        bestScore = -1;
+      /** @type {number | null} */
+      let bestBx = null;
+      /** @type {number | null} */
+      let bestBy = null;
+      let bestScore = -1;
       for (let a = 0; a < 16; a++) {
         const ang =
           (a / 16) * Math.PI * 2 + b * 0.45 + world.rng.range(-0.12, 0.12);
@@ -1093,7 +1129,7 @@ export function carveTownStreetGrids(world, filterFn = null) {
           bestBy = cy;
         }
       }
-      if (bestBx !== null) {
+      if (bestBx !== null && bestBy !== null) {
         const bRad = Math.round(R * (b === 0 ? 0.66 : 0.54));
         boroughs.push({ x: bestBx, y: bestBy, r: bRad, isMainCBD: false });
       }
@@ -1351,6 +1387,7 @@ export function seedOutOfTownResourceNiches(world) {
       if (world.isPointInAirportPad(cx, cy, 7.0)) continue;
 
       // Require clear rural separation outside town urban radii (`>= urbanRadius + 4.5`)
+      /** @type {Town | null} */
       let nearestTown = null;
       let minTownDist = Infinity;
       let tooCloseToTown = false;
@@ -1368,6 +1405,7 @@ export function seedOutOfTownResourceNiches(world) {
       if (tooCloseToTown || !nearestTown || minTownDist > 42) continue;
 
       // Find nearest paved road tile within 5..18 tiles for a crisp rural haul spur
+      /** @type {{ x: number, y: number } | null} */
       let nearestRoadPt = null;
       let minRoadDist = Infinity;
       for (let k = 0; k < roadTargets.length; k++) {
@@ -1390,6 +1428,7 @@ export function seedOutOfTownResourceNiches(world) {
       // 1. `MINE` (Foothill Quarry & Mine): elevated ridge toes & canyon mouths (`hAbove >= 0.115`)
       // 2. `TIMBER` (Upland Forestry Camp): moist wooded hills (`hAbove >= 0.085`, high `fertilityField`)
       // 3. `FARM` (Alluvial Agribusiness): flat fertile valley floors (`hAbove <= 0.085`, low `slope`)
+      /** @type {"MINE" | "TIMBER" | "FARM" | null} */
       let resourceType = null;
       let nicheScore = -1;
 
@@ -1449,8 +1488,11 @@ export function seedOutOfTownResourceNiches(world) {
 
   for (let slotIdx = 0; slotIdx < targetSites; slotIdx++) {
     const preferredType = desiredMix[slotIdx % desiredMix.length];
+    /** @type {{ gx: number, gy: number, cx: number, cy: number, resourceType: string, nicheScore: number, nearestTown: Town, nearestRoadPt: { x: number, y: number } } | null} */
     let chosenCand = null;
+    /** @type {Array<{ x: number, y: number, isBridge?: boolean }> | null} */
     let chosenHaulPath = null;
+    /** @type {{ lotX: number, lotY: number, rx: number, ry: number } | null} */
     let chosenDriveway = null;
 
     for (const passPrefer of [true, false]) {
@@ -1521,7 +1563,7 @@ export function seedOutOfTownResourceNiches(world) {
       if (chosenCand) break;
     }
 
-    if (!chosenCand) continue;
+    if (!chosenCand || !chosenHaulPath || !chosenDriveway) continue;
 
     world.commitRoadPath(chosenHaulPath, "arterial");
     const contactPt = chosenHaulPath[chosenHaulPath.length - 1];
@@ -2004,6 +2046,7 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     }
 
     // Scan perimeter around `[gx..gx+wTiles-1, gy..gy+hTiles-1]` for street & arterial frontage
+    /** @type {{ x: number, y: number, lotX: number, lotY: number } | null} */
     let roadTouch = null;
     let touchesArterial = false;
     let arterialCount = 0;
@@ -2266,6 +2309,12 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
   }
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {Town} town
+ * @param {number} targetHouses
+ * @param {number | null} [customRadius]
+ */
 export function tryPlaceNeighborhoodHouses(
   world,
   town,
@@ -2304,6 +2353,7 @@ export function tryPlaceNeighborhoodHouses(
         continue;
       if (world.zoneColorIdx[id] !== town.colorIdx) continue;
 
+      /** @type {{ x: number, y: number } | null} */
       let driveway = null;
       for (const [dx, dy] of dirs) {
         const rx = gx + dx;

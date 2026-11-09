@@ -83,6 +83,16 @@ export const SIM_CONFIG = Object.freeze({
     laneOffsetDriveway: 0.06,
     laneOffsetSlipRamp: 0.04,
   }),
+  AVIATION: Object.freeze({
+    taxiSpeed: 2.2,
+    takeoffSpeed: 13.5,
+    cruiseSpeed: 16.5,
+    landingSpeed: 12.5,
+    gateDwellSec: 1.2,
+    holdShortLookaheadTiles: 12,
+    climbOutAlt: 0.18,
+    cruiseAlt: 1.0,
+  }),
 });
 
 /** @type {Readonly<Record<string, WorldSizePreset>>} */

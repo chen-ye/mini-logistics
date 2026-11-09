@@ -228,8 +228,8 @@ export class ProceduralLogisticsWorld {
 
     /** @type {SeededRNG} */
     this.rng = new SeededRNG(config.seed || "OTTD-METRO-84");
-    /** @type {FastNoise2D | null} */
-    this.noise = null;
+    /** @type {FastNoise2D} */
+    this.noise = new FastNoise2D(this.rng);
 
     /** @type {RiverRibbon[]} */
     this.rivers = [];
@@ -286,7 +286,7 @@ export class ProceduralLogisticsWorld {
     this.wallTimeMs = 0;
     /** @type {RoadTopology | undefined} */
     this.roadTopology = undefined;
-    /** @type {{ roundabouts: any[], driveways?: any[] } | undefined} */
+    /** @type {{ roundabouts: import('./types.js').RoundaboutSpec[], driveways?: import('./types.js').DrivewaySpec[] } | undefined} */
     this.routingGraph = undefined;
     /** @type {{ com: number, raw: number, mfg: number, log: number } | undefined} */
     this.rciCounts = undefined;
@@ -476,7 +476,11 @@ export class ProceduralLogisticsWorld {
   }
 
   initPrevailingWind() {
-    if (this.config.windAxis >= 0 && this.config.windAxis <= 3) {
+    if (
+      this.config.windAxis !== undefined &&
+      this.config.windAxis >= 0 &&
+      this.config.windAxis <= 3
+    ) {
       this.windAngleIndex = this.config.windAxis;
     } else {
       this.windAngleIndex = this.rng.int(0, 3);
@@ -525,7 +529,7 @@ export class ProceduralLogisticsWorld {
         const nx = x + dirs[i][0];
         const ny = y + dirs[i][1];
         if (this.inBounds(nx, ny)) {
-          const step = i < 4 ? 1.0 : 1.414;
+          const step = i < 4 ? 1.0 : Math.SQRT2;
           const nid = this.idx(nx, ny);
           if (d0 + step < this.distToWater[nid]) {
             this.distToWater[nid] = d0 + step;
@@ -781,6 +785,7 @@ export class ProceduralLogisticsWorld {
       const maxSlope = tier <= 2 ? 0.38 : 0.46;
 
       let bestScore = -1;
+      /** @type {{ x: number, y: number, score: number, lmId: number } | null} */
       let bestPt = null;
 
       for (let cIdx = 0; cIdx < candidateSites.length; cIdx++) {
@@ -872,6 +877,8 @@ export class ProceduralLogisticsWorld {
           suitabilityScore: Math.round(Math.min(99, bestPt.score * 100)),
           housesCount: 0,
           destinationsCount: 0,
+          commercialCount: 0,
+          industrialCount: 0,
           airportId: null,
           _seededInPhase1: true,
           boroughs: [{ x: bestPt.x, y: bestPt.y, r: urbanRadius }],
@@ -897,10 +904,26 @@ export class ProceduralLogisticsWorld {
     return solveAndPlaceAirports(this);
   }
 
+  /**
+   * @param {number} px
+   * @param {number} py
+   * @param {number} [margin]
+   * @param {number | null} [allowGateAirportId]
+   * @returns {boolean}
+   */
   isPointInAirportPad(px, py, margin = 1.6, allowGateAirportId = null) {
     return isPointInAirportPad(this, px, py, margin, allowGateAirportId);
   }
 
+  /**
+   * @param {number} x1
+   * @param {number} y1
+   * @param {number} x2
+   * @param {number} y2
+   * @param {number} [margin]
+   * @param {number | null} [allowGateAirportId]
+   * @returns {boolean}
+   */
   doesSegmentCrossAirport(
     x1,
     y1,
@@ -920,6 +943,12 @@ export class ProceduralLogisticsWorld {
     );
   }
 
+  /**
+   * @param {Array<{ x: number, y: number }>} samples
+   * @param {number} [margin]
+   * @param {number | null} [allowGateAirportId]
+   * @returns {boolean}
+   */
   doesPolylineCrossAirport(samples, margin = 1.6, allowGateAirportId = null) {
     return doesPolylineCrossAirport(this, samples, margin, allowGateAirportId);
   }
@@ -974,6 +1003,17 @@ export class ProceduralLogisticsWorld {
     return seedSecondaryTownsAlongTrunks(this);
   }
 
+  /**
+   * @param {number} sx
+   * @param {number} sy
+   * @param {number} ex
+   * @param {number} ey
+   * @param {boolean} [allowWaterBridge]
+   * @param {((nx: number, ny: number, cx: number, cy: number) => boolean) | null} [blockedFn]
+   * @param {boolean} [stopOnExistingRoad]
+   * @param {{ isInterchangeBypass?: boolean, turnPenalty?: number, extraCostFn?: ((nx: number, ny: number) => number) } | null} [options]
+   * @returns {Array<{ x: number, y: number, isBridge?: boolean }> | null}
+   */
   findRoadPathAStar(
     sx,
     sy,
@@ -998,14 +1038,17 @@ export class ProceduralLogisticsWorld {
   }
 
   /**
-   * @param {any} path
+   * @param {Array<{ x: number, y: number, isBridge?: boolean }>} path
    * @param {"arterial" | "street" | "motorway" | "airport-spine"} [roadType="arterial"]
-   * @param {any} [extraProps=null]
+   * @param {Record<string, any> | null} [extraProps=null]
    */
   commitRoadPath(path, roadType = "arterial", extraProps = null) {
     return commitRoadPath(this, path, roadType, extraProps);
   }
 
+  /**
+   * @param {((town: any) => boolean) | null} [filterFn=null]
+   */
   carveTownStreetGrids(filterFn = null) {
     return carveTownStreetGrids(this, filterFn);
   }
@@ -1047,6 +1090,11 @@ export class ProceduralLogisticsWorld {
     return placeTownCommercialAndIndustrial(this, town, R, densityMult);
   }
 
+  /**
+   * @param {Town} town
+   * @param {number} targetHouses
+   * @param {number | null} [customRadius=null]
+   */
   tryPlaceNeighborhoodHouses(town, targetHouses, customRadius = null) {
     return tryPlaceNeighborhoodHouses(this, town, targetHouses, customRadius);
   }
@@ -1092,6 +1140,19 @@ export class ProceduralLogisticsWorld {
     return interchangeRoadOverlapCost(this, cx, cy, radius);
   }
 
+  /**
+   * @param {Array<{ x: number, y: number }>} samples
+   * @param {number} sx
+   * @param {number} sy
+   * @param {number} ex
+   * @param {number} ey
+   * @param {number | null} [airportId]
+   * @param {number} [preferOff]
+   * @param {number} [candidateOff]
+   * @param {boolean} [forbidAnyCrossing]
+   * @param {number | null} [allowTouchTrunkNum]
+   * @returns {number}
+   */
   scoreMotorwaySamples(
     samples,
     sx,
@@ -1123,6 +1184,15 @@ export class ProceduralLogisticsWorld {
     return ensureCoarseValleyCostTable(this);
   }
 
+  /**
+   * @param {number} sx
+   * @param {number} sy
+   * @param {number} ex
+   * @param {number} ey
+   * @param {number | null} [airportId]
+   * @param {number} [biasOff]
+   * @returns {Array<{ x: number, y: number }> | null}
+   */
   findValleyMotorwayWaypoints(sx, sy, ex, ey, airportId = null, biasOff = 0) {
     return findValleyMotorwayWaypoints(
       this,
@@ -1135,6 +1205,17 @@ export class ProceduralLogisticsWorld {
     );
   }
 
+  /**
+   * @param {number} number
+   * @param {number} sx
+   * @param {number} sy
+   * @param {number} ex
+   * @param {number} ey
+   * @param {number | null} [airportId]
+   * @param {number | null} [townId]
+   * @param {{ x: number, y: number } | null} [forcedViaPt]
+   * @returns {any}
+   */
   createMotorwayEntity(
     number,
     sx,
@@ -1170,6 +1251,14 @@ export class ProceduralLogisticsWorld {
     return removeOrphanedTerminalStub(this, x, y);
   }
 
+  /**
+   * @param {number} number
+   * @param {number} originX
+   * @param {number} originY
+   * @param {number | null} [airportId]
+   * @param {number | null} [townId]
+   * @returns {any}
+   */
   tryBuildTrumpetSpurToTrunk(
     number,
     originX,
@@ -1411,7 +1500,12 @@ export function createWorldPipeline({
         waterMask: w.waterMask,
         seaLevel: w.seaLevel,
         basins: basins.map((b) => ({ ...b })),
-        primarySink: primarySink ? { ...primarySink } : null,
+        primarySink: primarySink
+          ? { ...primarySink }
+          : {
+              deepX: Math.round(w.W * 0.5),
+              deepY: Math.round(w.H * 0.5),
+            },
         hydroFeatures: w.hydroFeatures.map((f) => ({ ...f })),
       };
     },
@@ -1473,7 +1567,9 @@ export function createWorldPipeline({
           headwaterPt: r.headwaterPt ? { ...r.headwaterPt } : null,
         })),
         hydroFeatures: w.hydroFeatures.map((f) => ({ ...f })),
-        confluencePoint: w.confluencePoint ? { ...w.confluencePoint } : null,
+        confluencePoint: w.confluencePoint
+          ? Object.assign({}, w.confluencePoint)
+          : null,
         seaLevel: w.seaLevel,
         hydroLog,
       };
@@ -1884,7 +1980,7 @@ export function createWorldPipeline({
     },
   );
 
-  return (config, targetWorld = null) => {
+  return (config, targetWorld) => {
     const t0 = performance.now();
     w.ensureGridSize(config.worldSize || "standard");
     const noise = memoNoise(config.seed).value;
@@ -1997,7 +2093,7 @@ export function createWorldPipeline({
     out.roadGrid = s9.value.roadGrid;
     out.buildingMask = s9.value.buildingMask;
     out.roads = s9.value.roads;
-    out.roadEdges = s9.value.roadTopology.roadEdges;
+    out.roadEdges = s9.value.roadTopology.roadEdges || new Set();
     out.houses = s9.value.houses;
     out.destinations = s9.value.destinations;
     out.trees = s9.value.trees;
@@ -2034,19 +2130,19 @@ export function createWorldPipeline({
  * @returns {ArrayBufferLike[]}
  */
 export function extractWorldTransferables(world) {
-  delete world.rng;
-  delete world.noise;
-  delete world.roadEdges;
-  delete world._vehicleGraph;
-  delete world._astarG;
-  delete world._astarParent;
-  delete world._astarSeenGen;
-  delete world._astarClosedGen;
-  delete world._coarseBaseCost;
-  delete world._coarseG;
-  delete world._coarseParent;
-  delete world._coarseSeenGen;
-  delete world._coarseClosedGen;
+  Reflect.deleteProperty(world, "rng");
+  Reflect.deleteProperty(world, "noise");
+  Reflect.deleteProperty(world, "roadEdges");
+  Reflect.deleteProperty(world, "_vehicleGraph");
+  Reflect.deleteProperty(world, "_astarG");
+  Reflect.deleteProperty(world, "_astarParent");
+  Reflect.deleteProperty(world, "_astarSeenGen");
+  Reflect.deleteProperty(world, "_astarClosedGen");
+  Reflect.deleteProperty(world, "_coarseBaseCost");
+  Reflect.deleteProperty(world, "_coarseG");
+  Reflect.deleteProperty(world, "_coarseParent");
+  Reflect.deleteProperty(world, "_coarseSeenGen");
+  Reflect.deleteProperty(world, "_coarseClosedGen");
 
   world.routingGraph = {
     roundabouts: world.routingGraph?.roundabouts || [],

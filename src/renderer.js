@@ -2,7 +2,8 @@
  * @import {
  *   ViewLayer,
  *   InspectedEntity,
- *   RoadGraphDiagnostics
+ *   RoadGraphDiagnostics,
+ *   PlaneEndpoint
  * } from './types.js'
  */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
@@ -18,6 +19,7 @@ import {
   drawUrbanBlushAndTrees,
 } from "./canvas-layer-cache.js";
 import { deriveRoadTopology } from "./vehicle-routing.js";
+import { buildFlightTrack } from "./simulator.js";
 
 /**
  * @param {any} ctx
@@ -65,7 +67,7 @@ export class MiniMotorwaysRenderer {
     /** @type {{ elevRef: Float32Array, waterRef: Uint8Array, ts: number, arableFillPath: Path2D, arableStrokePath: Path2D } | null} */
     this._cachedArablePaths = null;
 
-    // 4 Retained Vector Display Lists (`VectorLayerRecorder`)
+    // 5 Retained Vector Display Lists (`VectorLayerRecorder`)
     /** @type {{ key: string, contours: VectorLayerRecorder, water: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
     this.hydroDisplayList = null;
     /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, blush: VectorLayerRecorder, treesAndFarms: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
@@ -74,6 +76,8 @@ export class MiniMotorwaysRenderer {
     this.surfaceNetworkDisplayList = null;
     /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, recorder: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
     this.motorwayDisplayList = null;
+    /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, recorder: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
+    this.airwayDisplayList = null;
 
     // Cached screen-space radial vignette gradient
     /** @type {CanvasGradient | null} */
@@ -88,6 +92,8 @@ export class MiniMotorwaysRenderer {
    * @param {ProceduralLogisticsWorld} world
    */
   fitCamera(world) {
+    if (!this.canvas) return;
+    const canvas = this.canvas;
     const ts = world.tileSize;
     const worldPxW = world.W * ts;
     const worldPxH = world.H * ts;
@@ -95,7 +101,7 @@ export class MiniMotorwaysRenderer {
     // On portrait or small mobile viewports, fit the camera around the active metropolitan
     // bounding box (towns + airports) so the network fills the portrait screen legibly.
     if (
-      (this.canvas.width < 640 || this.canvas.width < this.canvas.height) &&
+      (canvas.width < 640 || canvas.width < canvas.height) &&
       world.towns.length > 0
     ) {
       let minX = Infinity,
@@ -118,23 +124,23 @@ export class MiniMotorwaysRenderer {
       const boxH = Math.max(50, maxY - minY) * ts;
       const cx = (minX + maxX) * 0.5 * ts;
       const cy = (minY + maxY) * 0.5 * ts;
-      const scaleX = (this.canvas.width * 0.92) / boxW;
-      const scaleY = (this.canvas.height * 0.78) / boxH;
+      const scaleX = (canvas.width * 0.92) / boxW;
+      const scaleY = (canvas.height * 0.78) / boxH;
       this.camera.zoom = Math.max(
         0.18,
         Math.min(1.25, Math.min(scaleX, scaleY)),
       );
-      this.camera.x = this.canvas.width * 0.5 - cx * this.camera.zoom;
-      this.camera.y = this.canvas.height * 0.52 - cy * this.camera.zoom;
+      this.camera.x = canvas.width * 0.5 - cx * this.camera.zoom;
+      this.camera.y = canvas.height * 0.52 - cy * this.camera.zoom;
       return;
     }
 
-    const scaleX = this.canvas.width / worldPxW;
-    const scaleY = this.canvas.height / worldPxH;
+    const scaleX = canvas.width / worldPxW;
+    const scaleY = canvas.height / worldPxH;
     // Fill viewport edge-to-edge on landscape screens so map-border bays & rivers bleed cleanly to the screen edge
     this.camera.zoom = Math.max(scaleX, scaleY);
-    this.camera.x = (this.canvas.width - worldPxW * this.camera.zoom) * 0.5;
-    this.camera.y = (this.canvas.height - worldPxH * this.camera.zoom) * 0.5;
+    this.camera.x = (canvas.width - worldPxW * this.camera.zoom) * 0.5;
+    this.camera.y = (canvas.height - worldPxH * this.camera.zoom) * 0.5;
   }
 
   /**
@@ -175,15 +181,14 @@ export class MiniMotorwaysRenderer {
       return this.hydroDisplayList;
     }
 
-    const canReuseVectorPaths = Boolean(
-      this._cachedVectorPaths &&
-      this._cachedVectorHydroVersion === world.hydroVersion,
-    );
+    const canReuseVectorPaths =
+      this._cachedVectorPaths !== null &&
+      this._cachedVectorHydroVersion === world.hydroVersion;
     let contourLayers;
     let waterPath;
     let waterEdgePath;
 
-    if (canReuseVectorPaths) {
+    if (canReuseVectorPaths && this._cachedVectorPaths) {
       ({ contourLayers, waterPath, waterEdgePath } = this._cachedVectorPaths);
     } else {
       contourLayers = [];
@@ -355,7 +360,37 @@ export class MiniMotorwaysRenderer {
   }
 
   /**
-   * Pre-builds all 4 retained `VectorLayerRecorder` display lists for `world`.
+   * Builds or reuses the retained airway corridors display list (`airwayDisplayList`:
+   * subtle runway-aligned dashed airway arcs between airport pairs).
+   *
+   * @param {ProceduralLogisticsWorld} world
+   */
+  ensureAirwayDisplayList(world) {
+    const ts = world.tileSize;
+    if (
+      this.airwayDisplayList &&
+      this.airwayDisplayList.worldRef === world &&
+      this.airwayDisplayList.ts === ts
+    ) {
+      return this.airwayDisplayList;
+    }
+
+    const rec = new VectorLayerRecorder();
+    this.drawAirwayCorridors(rec, world, ts);
+
+    this.airwayDisplayList = {
+      worldRef: world,
+      ts,
+      recorder: rec,
+      replay(ctx) {
+        rec.replay(ctx);
+      },
+    };
+    return this.airwayDisplayList;
+  }
+
+  /**
+   * Pre-builds all 5 retained `VectorLayerRecorder` display lists for `world`.
    *
    * @param {ProceduralLogisticsWorld} world
    */
@@ -364,10 +399,12 @@ export class MiniMotorwaysRenderer {
     this.ensureUrbanTerrainDisplayList(world);
     this.ensureSurfaceNetworkDisplayList(world);
     this.ensureMotorwayDisplayList(world);
+    this.ensureAirwayDisplayList(world);
   }
 
   render(world, sim) {
     const { ctx, canvas, camera } = this;
+    if (!ctx || !canvas) return;
     const ts = world.tileSize;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -403,6 +440,7 @@ export class MiniMotorwaysRenderer {
 
     // 6. Draw Live Surface Road Vehicles (Commuter Cars + Articulated Freight Trucks on surface streets & roundabouts)
     this.drawCars(ctx, world, sim, ts, "road");
+    this.drawPlanes(ctx, world, sim, ts, "ground");
 
     // 7. Replay Retained Motorway Display List ([1], [2], [3] Overpasses, Interchanges, Tunnels & Shields)
     this.ensureMotorwayDisplayList(world).replay(ctx);
@@ -420,7 +458,8 @@ export class MiniMotorwaysRenderer {
     }
 
     // 9. Draw Live Aircraft & Flight Corridors
-    this.drawPlanes(ctx, world, sim, ts);
+    this.ensureAirwayDisplayList(world).replay(ctx);
+    this.drawPlanes(ctx, world, sim, ts, "air");
 
     // 10. Highlight Selected Building, Farm Estate, Town or Airport + Active Supply-Chain Corridors
     if (this.selectedEntity) {
@@ -481,7 +520,7 @@ export class MiniMotorwaysRenderer {
         ).length;
 
     ctx.save();
-    const drawerOpen = canvas.width >= 640 && Boolean(this.drawerOpen);
+    const drawerOpen = canvas.width >= 640 && this.drawerOpen;
     const inspOpen = Boolean(this.selectedEntity);
     if (canvas.width < 640 && inspOpen) {
       ctx.restore();
@@ -2930,6 +2969,13 @@ export class MiniMotorwaysRenderer {
     }
   }
 
+  /**
+   * @param {CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D} ctx
+   * @param {ProceduralLogisticsWorld} _world
+   * @param {any} sim
+   * @param {number} ts
+   * @param {"road" | "motorway" | null} [modeFilter=null]
+   */
   drawCars(ctx, _world, sim, ts, modeFilter = null) {
     const ox = ts * 0.5;
     const oy = ts * 0.5;
@@ -2982,98 +3028,157 @@ export class MiniMotorwaysRenderer {
     }
   }
 
-  drawPlanes(ctx, _world, sim, ts) {
-    const ox = ts * 0.5;
-    const oy = ts * 0.5;
+  /**
+   * Records or draws subtle runway-aligned dashed airway arcs between airports.
+   *
+   * @param {CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | VectorLayerRecorder} ctx
+   * @param {ProceduralLogisticsWorld} world
+   * @param {number} ts
+   */
+  drawAirwayCorridors(ctx, world, ts) {
+    if (!world.airports || world.airports.length === 0) return;
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(54, 56, 62, 0.12)";
+    ctx.lineWidth = 1.1;
+    ctx.setLineDash([5, 6]);
+
+    const halfTs = ts * 0.5;
+    if (world.airports.length >= 2) {
+      for (const apA of world.airports) {
+        for (const apB of world.airports) {
+          if (apA.id === apB.id) continue;
+          const track = buildFlightTrack(apA, apB);
+          const { sx, sy, c1x, c1y, c2x, c2y, ex, ey } = track.airwayCurve;
+          ctx.beginPath();
+          ctx.moveTo(sx * ts + halfTs, sy * ts + halfTs);
+          ctx.bezierCurveTo(
+            c1x * ts + halfTs,
+            c1y * ts + halfTs,
+            c2x * ts + halfTs,
+            c2y * ts + halfTs,
+            ex * ts + halfTs,
+            ey * ts + halfTs,
+          );
+          ctx.stroke();
+        }
+      }
+    } else if (world.airports.length === 1) {
+      const ap = world.airports[0];
+      if (ap) {
+        const ang = ap.angleRad ?? 0;
+        /** @type {PlaneEndpoint} */
+        const dest = {
+          x: ap.x + Math.cos(ang + 0.35) * 95,
+          y: ap.y + Math.sin(ang + 0.35) * 95,
+          angleRad: ang,
+          halfLen: 6,
+        };
+        const track = buildFlightTrack(ap, dest);
+        const { sx, sy, c1x, c1y, c2x, c2y, ex, ey } = track.airwayCurve;
+        ctx.beginPath();
+        ctx.moveTo(sx * ts + halfTs, sy * ts + halfTs);
+        ctx.bezierCurveTo(
+          c1x * ts + halfTs,
+          c1y * ts + halfTs,
+          c2x * ts + halfTs,
+          c2y * ts + halfTs,
+          ex * ts + halfTs,
+          ey * ts + halfTs,
+        );
+        ctx.stroke();
+      }
+    }
+
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /**
+   * Draws live aircraft in either ground taxi/gate phase or airborne cruise/takeoff/landing phase.
+   *
+   * @param {CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D} ctx
+   * @param {ProceduralLogisticsWorld} _world
+   * @param {any} sim
+   * @param {number} ts
+   * @param {"ground" | "air" | null} [layerMode=null]
+   */
+  drawPlanes(ctx, _world, sim, ts, layerMode = null) {
+    if (!sim || !sim.planes) return;
 
     for (const p of sim.planes) {
-      const oSide = p.origin.apronSide || 1;
-      const dSide = p.dest.apronSide || 1;
-      const oRwyOff = -oSide * (p.origin.isHub ? 1.15 : 0.75) * ts;
-      const dRwyOff = -dSide * (p.dest.isHub ? 1.15 : 0.75) * ts;
+      const alt = p.altitude ?? 0;
+      const isGround = alt <= 0.001;
 
-      const oCos = Math.cos(p.origin.angleRad || 0);
-      const oSin = Math.sin(p.origin.angleRad || 0);
-      const dCos = Math.cos(p.dest.angleRad || 0);
-      const dSin = Math.sin(p.dest.angleRad || 0);
+      if (layerMode === "ground" && !isGround) continue;
+      if (layerMode === "air" && isGround) continue;
 
-      const sx = p.origin.x * ts + ox - oSin * oRwyOff;
-      const sy = p.origin.y * ts + oy + oCos * oRwyOff;
-      const ex = p.dest.x * ts + ox - dSin * dRwyOff;
-      const ey = p.dest.y * ts + oy + dCos * dRwyOff;
+      const px = p.x * ts + ts * 0.5;
+      const py = p.y * ts + ts * 0.5;
+      const ang = p.ang ?? 0;
+      const isCargo = Boolean(p.isCargoFreighter);
+      const accent = p.color || null;
 
-      const dx = ex - sx;
-      const dy = ey - sy;
-      const dist = Math.hypot(dx, dy) || 1;
-      const climbPull = Math.min(ts * 18, dist * 0.34);
+      const shadowOff = isGround ? 1.2 : 1.5 + alt * 22;
+      const bodyScale = isGround ? 0.85 : 0.85 + alt * 0.35;
+      const shadowScale = isGround ? 0.85 : 0.75 + alt * 0.2;
 
-      const oSign = dx * oCos + dy * oSin >= 0 ? 1 : -1;
-      const dSign = dx * dCos + dy * dSin >= 0 ? 1 : -1;
-
-      const c1x = sx + oCos * oSign * climbPull;
-      const c1y = sy + oSin * oSign * climbPull;
-      const c2x = ex - dCos * dSign * climbPull;
-      const c2y = ey - dSin * dSign * climbPull;
-
-      // Draw subtle runway-aligned dashed airway arc between airports
-      ctx.save();
-      ctx.strokeStyle = "rgba(54, 56, 62, 0.14)";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 6]);
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.bezierCurveTo(c1x, c1y, c2x, c2y, ex, ey);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Evaluate aircraft position and tangent along the cubic Bezier flight path
-      const t = p.progress;
-      const mt = 1 - t;
-      const b0 = mt * mt * mt;
-      const b1 = 3 * mt * mt * t;
-      const b2 = 3 * mt * t * t;
-      const b3 = t * t * t;
-      const px = b0 * sx + b1 * c1x + b2 * c2x + b3 * ex;
-      const py = b0 * sy + b1 * c1y + b2 * c2y + b3 * ey;
-
-      const d0 = 3 * mt * mt;
-      const d1 = 6 * mt * t;
-      const d2 = 3 * t * t;
-      const vx = d0 * (c1x - sx) + d1 * (c2x - c1x) + d2 * (ex - c2x);
-      const vy = d0 * (c1y - sy) + d1 * (c2y - c1y) + d2 * (ey - c2y);
-      const ang = Math.atan2(vy, vx);
-      const altitude = Math.sin(t * Math.PI); // 0 on runway, 1 at cruise apex
-
-      // Ground shadow of aircraft
-      const shadowOff = 4 + altitude * 22;
+      // Ground contact or parallax shadow
       this.drawAirplaneSilhouette(
         ctx,
         px + shadowOff,
         py + shadowOff,
         ang,
-        0.75 + altitude * 0.2,
-        "rgba(54, 56, 62, 0.18)",
+        shadowScale,
+        "rgba(18, 22, 28, 0.18)",
+        null,
+        null,
+        isCargo,
       );
 
-      // Crisp White & Color-Accented Minimalist Aircraft
+      // Crisp White & Color-Accented Minimalist Aircraft Body
       this.drawAirplaneSilhouette(
         ctx,
         px,
         py,
         ang,
-        0.85 + altitude * 0.35,
+        bodyScale,
         "#ffffff",
         "#36383e",
+        accent,
+        isCargo,
       );
-      ctx.restore();
     }
   }
 
-  drawAirplaneSilhouette(ctx, x, y, ang, scale, fill, stroke = null) {
+  /**
+   * @param {CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D} ctx
+   * @param {number} x
+   * @param {number} y
+   * @param {number} ang
+   * @param {number} scale
+   * @param {string} fill
+   * @param {string | null} [stroke=null]
+   * @param {string | null} [accentColor=null]
+   * @param {boolean} [isCargoFreighter=false]
+   */
+  drawAirplaneSilhouette(
+    ctx,
+    x,
+    y,
+    ang,
+    scale,
+    fill,
+    stroke = null,
+    accentColor = null,
+    isCargoFreighter = false,
+  ) {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(ang);
     ctx.scale(scale, scale);
+
+    const isShadow = fill === "rgba(18, 22, 28, 0.18)";
 
     ctx.fillStyle = fill;
     if (stroke) {
@@ -3081,27 +3186,153 @@ export class MiniMotorwaysRenderer {
       ctx.lineWidth = 1.4;
     }
 
-    ctx.beginPath();
-    // Minimalist geometric swept-wing jet
-    ctx.moveTo(11, 0);
-    ctx.lineTo(4, 2.2);
-    ctx.lineTo(-2, 10.5);
-    ctx.lineTo(-5, 10.5);
-    ctx.lineTo(-2.5, 2.2);
-    ctx.lineTo(-8.5, 2.0);
-    ctx.lineTo(-11, 5.5);
-    ctx.lineTo(-12.5, 5.5);
-    ctx.lineTo(-11, 0);
-    ctx.lineTo(-12.5, -5.5);
-    ctx.lineTo(-11, -5.5);
-    ctx.lineTo(-8.5, -2.0);
-    ctx.lineTo(-2.5, -2.2);
-    ctx.lineTo(-5, -10.5);
-    ctx.lineTo(-2, -10.5);
-    ctx.lineTo(4, -2.2);
-    ctx.closePath();
-    ctx.fill();
-    if (stroke) ctx.stroke();
+    if (isCargoFreighter) {
+      // -------------------------------------------------------------
+      // Air Cargo Freighter (High-wing heavy hauler with 4 nacelles)
+      // -------------------------------------------------------------
+      ctx.beginPath();
+      ctx.moveTo(12.2, 0);
+      ctx.lineTo(5.2, 3.2);
+      ctx.lineTo(0.5, 12.8);
+      ctx.lineTo(-4.2, 12.8);
+      ctx.lineTo(-2.8, 3.2);
+      ctx.lineTo(-8.8, 2.6);
+      ctx.lineTo(-11.4, 6.2);
+      ctx.lineTo(-13.0, 6.2);
+      ctx.lineTo(-11.5, 0);
+      ctx.lineTo(-13.0, -6.2);
+      ctx.lineTo(-11.4, -6.2);
+      ctx.lineTo(-8.8, -2.6);
+      ctx.lineTo(-2.8, -3.2);
+      ctx.lineTo(-4.2, -12.8);
+      ctx.lineTo(0.5, -12.8);
+      ctx.lineTo(5.2, -3.2);
+      ctx.closePath();
+      ctx.fill();
+
+      // 4 Wing-mounted quad engine nacelles
+      const nacelles = [
+        { x: -0.5, y: 5.8 },
+        { x: -1.8, y: 9.6 },
+        { x: -0.5, y: -5.8 },
+        { x: -1.8, y: -9.6 },
+      ];
+      for (const nac of nacelles) {
+        ctx.beginPath();
+        ctx.roundRect(nac.x - 1.6, nac.y - 0.9, 3.2, 1.8, 0.7);
+        ctx.fill();
+        if (stroke) ctx.stroke();
+      }
+
+      if (stroke) {
+        ctx.stroke();
+      }
+
+      // Livery accents when drawing aircraft body (not shadow)
+      if (!isShadow) {
+        const cargoColor =
+          this && this.activeLayer === "rci"
+            ? "#8b5cf6"
+            : accentColor || "#d97706";
+        ctx.fillStyle = cargoColor;
+
+        // Wingtip cargo accents (left & right)
+        ctx.beginPath();
+        ctx.moveTo(0.5, 12.8);
+        ctx.lineTo(-4.2, 12.8);
+        ctx.lineTo(-3.8, 10.8);
+        ctx.lineTo(0.2, 10.8);
+        ctx.closePath();
+        ctx.moveTo(0.5, -12.8);
+        ctx.lineTo(-4.2, -12.8);
+        ctx.lineTo(-3.8, -10.8);
+        ctx.lineTo(0.2, -10.8);
+        ctx.closePath();
+        ctx.fill();
+
+        // Tail fin & horizontal stabilizer cargo accents
+        ctx.beginPath();
+        ctx.moveTo(-8.8, 0);
+        ctx.lineTo(-11.5, 0);
+        ctx.lineTo(-13.0, 2.8);
+        ctx.lineTo(-13.0, -2.8);
+        ctx.closePath();
+        ctx.moveTo(-11.4, 6.2);
+        ctx.lineTo(-13.0, 6.2);
+        ctx.lineTo(-12.4, 4.6);
+        ctx.lineTo(-11.0, 4.6);
+        ctx.closePath();
+        ctx.moveTo(-11.4, -6.2);
+        ctx.lineTo(-13.0, -6.2);
+        ctx.lineTo(-12.4, -4.6);
+        ctx.lineTo(-11.0, -4.6);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else {
+      // -------------------------------------------------------------
+      // Passenger Jet (Sleek swept-wing twin jet)
+      // -------------------------------------------------------------
+      ctx.beginPath();
+      // Minimalist geometric swept-wing jet
+      ctx.moveTo(11, 0);
+      ctx.lineTo(4, 2.2);
+      ctx.lineTo(-2, 10.5);
+      ctx.lineTo(-5, 10.5);
+      ctx.lineTo(-2.5, 2.2);
+      ctx.lineTo(-8.5, 2.0);
+      ctx.lineTo(-11, 5.5);
+      ctx.lineTo(-12.5, 5.5);
+      ctx.lineTo(-11, 0);
+      ctx.lineTo(-12.5, -5.5);
+      ctx.lineTo(-11, -5.5);
+      ctx.lineTo(-8.5, -2.0);
+      ctx.lineTo(-2.5, -2.2);
+      ctx.lineTo(-5, -10.5);
+      ctx.lineTo(-2, -10.5);
+      ctx.lineTo(4, -2.2);
+      ctx.closePath();
+      ctx.fill();
+      if (stroke) ctx.stroke();
+
+      // Livery accents when drawing aircraft body (not shadow)
+      if (!isShadow && accentColor) {
+        ctx.fillStyle = accentColor;
+
+        // Wingtip winglets (left and right)
+        ctx.beginPath();
+        ctx.moveTo(-2, 10.5);
+        ctx.lineTo(-5, 10.5);
+        ctx.lineTo(-4.3, 8.8);
+        ctx.lineTo(-2.1, 8.8);
+        ctx.closePath();
+        ctx.moveTo(-2, -10.5);
+        ctx.lineTo(-5, -10.5);
+        ctx.lineTo(-4.3, -8.8);
+        ctx.lineTo(-2.1, -8.8);
+        ctx.closePath();
+        ctx.fill();
+
+        // Swept tail fin / empennage accent
+        ctx.beginPath();
+        ctx.moveTo(-8.5, 0);
+        ctx.lineTo(-12.5, 2.4);
+        ctx.lineTo(-12.5, -2.4);
+        ctx.closePath();
+        ctx.moveTo(-11, 5.5);
+        ctx.lineTo(-12.5, 5.5);
+        ctx.lineTo(-12.0, 4.2);
+        ctx.lineTo(-10.8, 4.2);
+        ctx.closePath();
+        ctx.moveTo(-11, -5.5);
+        ctx.lineTo(-12.5, -5.5);
+        ctx.lineTo(-12.0, -4.2);
+        ctx.lineTo(-10.8, -4.2);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
     ctx.restore();
   }
 
@@ -3554,7 +3785,7 @@ export class MiniMotorwaysRenderer {
     const diag = this.computeRoadGraphDiagnostics(world);
 
     ctx.save();
-    const drawerOpen = canvas.width >= 640 && Boolean(this.drawerOpen);
+    const drawerOpen = canvas.width >= 640 && this.drawerOpen;
     const leftSafe = drawerOpen ? 412 : 14;
     const boxW = Math.min(canvas.width - leftSafe - 14, 790);
     const boxH = 38;

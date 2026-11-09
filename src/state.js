@@ -346,7 +346,7 @@ export function createAppStore(initialConfig = DEFAULT_GENERATOR_CONFIG) {
      * @returns {boolean}
      */
     setDrawerOpen(open) {
-      const nextOpen = Boolean(open);
+      const nextOpen = open;
       if (Object.is(state.drawerOpen, nextOpen)) return false;
       state = Object.freeze({
         ...state,

@@ -48,10 +48,10 @@ export function getAirportTierSpec(world, aIdx) {
 export function solveAndPlaceAirports(world) {
   const isIslandHopper = world.config.archetype === "island-hopper";
   const effectiveApCount = isIslandHopper
-    ? Math.max(world.config.airportCount, 5)
-    : world.config.airportCount;
+    ? Math.max(world.config.airportCount ?? 2, 5)
+    : (world.config.airportCount ?? 2);
   const targetAirports = Math.min(effectiveApCount, world.towns.length);
-  const baseRad = world.windVector.rad;
+  const baseRad = world.windVector ? world.windVector.rad : 0;
 
   world.airportHeatmap.fill(0);
 
@@ -126,6 +126,7 @@ export function solveAndPlaceAirports(world) {
             baseRad + Math.PI / 4,
           ];
 
+    /** @type {{ cx: number, cy: number, rad: number, score: number, proximityScore: number, approachClearance: number, distHost: number } | null} */
     let bestSite = null;
     let bestScore = -1;
 
@@ -471,6 +472,14 @@ export function solveAndPlaceAirports(world) {
   );
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {number} px
+ * @param {number} py
+ * @param {number} [margin]
+ * @param {number | null} [allowGateAirportId]
+ * @returns {boolean}
+ */
 export function isPointInAirportPad(
   world,
   px,
@@ -503,6 +512,16 @@ export function isPointInAirportPad(
   return false;
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {number} x1
+ * @param {number} y1
+ * @param {number} x2
+ * @param {number} y2
+ * @param {number} [margin]
+ * @param {number | null} [allowGateAirportId]
+ * @returns {boolean}
+ */
 export function doesSegmentCrossAirport(
   world,
   x1,
@@ -525,6 +544,13 @@ export function doesSegmentCrossAirport(
   return false;
 }
 
+/**
+ * @param {ProceduralLogisticsWorld} world
+ * @param {Array<{ x: number, y: number }>} samples
+ * @param {number} [margin]
+ * @param {number | null} [allowGateAirportId]
+ * @returns {boolean}
+ */
 export function doesPolylineCrossAirport(
   world,
   samples,

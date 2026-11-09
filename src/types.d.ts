@@ -144,7 +144,7 @@ export interface Borough {
 
 export interface Town {
   id: number;
-  clusterId?: number;
+  clusterId: number;
   name: string;
   iata: string;
   x: number;
@@ -161,8 +161,8 @@ export interface Town {
   airportId: number | null;
   housesCount: number;
   destinationsCount: number;
-  commercialCount?: number;
-  industrialCount?: number;
+  commercialCount: number;
+  industrialCount: number;
   boroughs: Borough[];
   _seededInPhase1?: boolean;
 }
@@ -513,6 +513,9 @@ export interface DirectedLanePoint {
   isBridge?: boolean;
   isStreet?: boolean;
   isDriveway?: boolean;
+  isSlipRamp?: boolean;
+  isRoundabout?: boolean;
+  isRoundaboutArc?: boolean;
 }
 
 export interface DirectedLaneTrack {
@@ -561,7 +564,7 @@ export interface Stage2ATerrainState {
   waterMask: Uint8Array;
   seaLevel: number;
   basins: WaterBasin[];
-  primarySink: PrimarySink | null;
+  primarySink: PrimarySink;
   hydroFeatures: HydroFeature[];
 }
 
@@ -671,6 +674,38 @@ export interface CarAgent {
   color: string;
 }
 
+export type TownPalette = DistrictColor;
+
+export type FlightPhase =
+  "TAXI_OUT" | "TAKEOFF" | "CRUISE" | "LANDING" | "TAXI_IN" | "GATE_DWELL";
+
+export interface FlightTrackPoint {
+  x: number;
+  y: number;
+  altitude: number;
+  phase: FlightPhase;
+  speed: number;
+}
+
+export interface FlightAirwayCurve {
+  sx: number;
+  sy: number;
+  c1x: number;
+  c1y: number;
+  c2x: number;
+  c2y: number;
+  ex: number;
+  ey: number;
+}
+
+export interface FlightTrack {
+  pts: FlightTrackPoint[];
+  cumLen: Float32Array;
+  totalLength: number;
+  holdShortDist: number;
+  airwayCurve: FlightAirwayCurve;
+}
+
 export interface PlaneEndpoint {
   id?: number;
   x: number;
@@ -678,16 +713,30 @@ export interface PlaneEndpoint {
   angleRad: number;
   halfLen: number;
   halfWid?: number;
+  approachLen?: number;
+  apronSide?: number;
+  airportClass?: string;
   isHub?: boolean;
-  palette?: DistrictColor;
+  palette?: TownPalette;
 }
 
 export interface PlaneAgent {
   origin: Airport | PlaneEndpoint;
   dest: Airport | PlaneEndpoint;
-  progress: number;
+  track: FlightTrack;
+  dist: number;
+  segIdx: number;
+  phase: FlightPhase;
+  altitude: number;
+  x: number;
+  y: number;
+  ang: number;
   speed: number;
+  dwellTimer: number;
+  holdingShort: boolean;
+  isCargoFreighter: boolean;
   color: string;
+  progress: number;
 }
 
 export interface RoadGraphAnomaly {

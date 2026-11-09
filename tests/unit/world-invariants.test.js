@@ -229,6 +229,37 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
       expect(
         renderer.surfaceNetworkDisplayList?.recorder.getStats().commandCount,
       ).toBeGreaterThan(0);
+
+      // 7. Zero Non-Road Surface Steps Invariant (Plan A Step 4.1):
+      // For every link in world.cargoLinks, inspect consecutive points a = pts[i], b = pts[i + 1]
+      // Whenever both endpoints are surface road nodes (!a.onMotorway && !b.onMotorway), assert that either:
+      // - (gxA === gxB && gyA === gyB) (same integer tile), or
+      // - Boolean(a.isRoundabout || b.isRoundabout) (roundabout portal transition at the roundabout tile), or
+      // - world.hasRoadEdge(gxA, gyA, gxB, gyB) === true.
+      for (const link of world.cargoLinks) {
+        const pts = link.points;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i];
+          const b = pts[i + 1];
+          if (!a.onMotorway && !b.onMotorway) {
+            const gxA = Math.round(a.x);
+            const gyA = Math.round(a.y);
+            const gxB = Math.round(b.x);
+            const gyB = Math.round(b.y);
+            const isRoundaboutTransition = Boolean(
+              a.isRoundabout ||
+              b.isRoundabout ||
+              a.isRoundaboutArc ||
+              b.isRoundaboutArc,
+            );
+            const valid =
+              (gxA === gxB && gyA === gyB) ||
+              isRoundaboutTransition ||
+              world.hasRoadEdge(gxA, gyA, gxB, gyB);
+            expect(valid).toBe(true);
+          }
+        }
+      }
     }
   });
 });

@@ -272,7 +272,9 @@ export function finalizeFarmEstateFromParcels(
     [fgx + 1, fgy + 1],
   ];
   while (queue.length > 0) {
-    const [cx, cy] = queue.shift();
+    const top = queue.shift();
+    if (!top) break;
+    const [cx, cy] = top;
     for (const [nx, ny] of [
       [cx - 1, cy],
       [cx + 1, cy],
@@ -554,11 +556,40 @@ export function buildBrokenGridTractorTracks(
   if (!bspParcels || bspParcels.length === 0) return [];
 
   // 1. Collect shared seams between adjacent BSP parcels + the 4 root edges of the 2×2 farmstead pad
+  /** @type {Array<{ axis: string, y?: number, x?: number, a: number, b: number, parcels: number[], isPad: boolean }>} */
   const rawSeams = [
-    { axis: "h", y: fgy, a: fgx, b: fgx + 2, parcels: [], isPad: true },
-    { axis: "h", y: fgy + 2, a: fgx, b: fgx + 2, parcels: [], isPad: true },
-    { axis: "v", x: fgx, a: fgy, b: fgy + 2, parcels: [], isPad: true },
-    { axis: "v", x: fgx + 2, a: fgy, b: fgy + 2, parcels: [], isPad: true },
+    {
+      axis: "h",
+      y: fgy,
+      a: fgx,
+      b: fgx + 2,
+      parcels: /** @type {number[]} */ ([]),
+      isPad: true,
+    },
+    {
+      axis: "h",
+      y: fgy + 2,
+      a: fgx,
+      b: fgx + 2,
+      parcels: /** @type {number[]} */ ([]),
+      isPad: true,
+    },
+    {
+      axis: "v",
+      x: fgx,
+      a: fgy,
+      b: fgy + 2,
+      parcels: /** @type {number[]} */ ([]),
+      isPad: true,
+    },
+    {
+      axis: "v",
+      x: fgx + 2,
+      a: fgy,
+      b: fgy + 2,
+      parcels: /** @type {number[]} */ ([]),
+      isPad: true,
+    },
   ];
 
   for (let i = 0; i < bspParcels.length; i++) {
@@ -676,6 +707,8 @@ export function buildBrokenGridTractorTracks(
     return v;
   };
 
+  /** @typedef {{ id: string, u: number, v: number, x0: number, y0: number, x1: number, y1: number, axis: string, len: number, parcels: Set<number>, isPad: boolean }} FarmAtomicEdge */
+  /** @type {Map<string, FarmAtomicEdge>} */
   const edgeMap = new Map();
   const addAtomicEdge = (x0, y0, x1, y1, axis, parcels, isPad) => {
     if (x0 === x1 && y0 === y1) return;
@@ -724,15 +757,23 @@ export function buildBrokenGridTractorTracks(
   };
 
   for (const hs of hSeams) {
+    if (hs.y === undefined) continue;
+    const hy = hs.y;
     const xs = new Set([hs.a, hs.b]);
     for (const os of hSeams) {
-      if (os.y === hs.y) {
+      if (os.y === hy) {
         if (os.a >= hs.a && os.a <= hs.b) xs.add(os.a);
         if (os.b >= hs.a && os.b <= hs.b) xs.add(os.b);
       }
     }
     for (const vs of vSeams) {
-      if (vs.x >= hs.a && vs.x <= hs.b && hs.y >= vs.a && hs.y <= vs.b) {
+      if (
+        vs.x !== undefined &&
+        vs.x >= hs.a &&
+        vs.x <= hs.b &&
+        hy >= vs.a &&
+        hy <= vs.b
+      ) {
         xs.add(vs.x);
       }
     }
@@ -740,9 +781,9 @@ export function buildBrokenGridTractorTracks(
     for (let k = 0; k < sortedX.length - 1; k++) {
       addAtomicEdge(
         sortedX[k],
-        hs.y,
+        hy,
         sortedX[k + 1],
-        hs.y,
+        hy,
         "h",
         hs.parcels,
         hs.isPad,
@@ -751,24 +792,32 @@ export function buildBrokenGridTractorTracks(
   }
 
   for (const vs of vSeams) {
+    if (vs.x === undefined) continue;
+    const vx = vs.x;
     const ys = new Set([vs.a, vs.b]);
     for (const os of vSeams) {
-      if (os.x === vs.x) {
+      if (os.x === vx) {
         if (os.a >= vs.a && os.a <= vs.b) ys.add(os.a);
         if (os.b >= vs.a && os.b <= vs.b) ys.add(os.b);
       }
     }
     for (const hs of hSeams) {
-      if (hs.y >= vs.a && hs.y <= vs.b && vs.x >= hs.a && vs.x <= hs.b) {
+      if (
+        hs.y !== undefined &&
+        hs.y >= vs.a &&
+        hs.y <= vs.b &&
+        vx >= hs.a &&
+        vx <= hs.b
+      ) {
         ys.add(hs.y);
       }
     }
     const sortedY = [...ys].sort((a, b) => a - b);
     for (let k = 0; k < sortedY.length - 1; k++) {
       addAtomicEdge(
-        vs.x,
+        vx,
         sortedY[k],
-        vs.x,
+        vx,
         sortedY[k + 1],
         "v",
         vs.parcels,
@@ -811,7 +860,9 @@ export function buildBrokenGridTractorTracks(
   let grew = true;
   while (grew) {
     grew = false;
+    /** @type {FarmAtomicEdge | null} */
     let bestEdge = null;
+    /** @type {number | null} */
     let bestTo = null;
     let bestCost = Infinity;
 
@@ -891,12 +942,15 @@ export function buildBrokenGridTractorTracks(
       dist.set(tk, 0);
       pq.push({ k: tk, d: 0 });
     }
+    /** @type {number | null} */
     let targetVert = null;
+    /** @type {FarmAtomicEdge | null} */
     let targetLeafEdge = null;
 
     while (pq.length > 0) {
       pq.sort((a, b) => a.d - b.d);
       const curr = pq.shift();
+      if (!curr) break;
       if (curr.d > (dist.get(curr.k) ?? Infinity)) continue;
       const u = vertices.get(curr.k);
       if (!u) continue;
@@ -1177,6 +1231,7 @@ export function traceSmoothEstateLoops(world, estateTileSet) {
         const nextEdges = adj.get(`${currX},${currY}`);
         if (!nextEdges) break;
         // Prefer rightmost turn to keep loops simple and non-self-intersecting
+        /** @type {{ x0: number, y0: number, x1: number, y1: number, used: boolean } | null} */
         let chosen = null;
         for (const e of nextEdges) {
           if (!e.used) {
