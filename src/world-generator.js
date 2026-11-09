@@ -4150,7 +4150,6 @@ export class ProceduralLogisticsWorld {
       const rCeil = Math.ceil(maxR);
       const gx0 = Math.round(px);
       const gy0 = Math.round(py);
-      let connectedAny = false;
       for (let dy = -rCeil; dy <= rCeil; dy++) {
         for (let dx = -rCeil; dx <= rCeil; dx++) {
           const gx = gx0 + dx;
@@ -4161,22 +4160,7 @@ export class ProceduralLogisticsWorld {
           const d = Math.hypot(gx - px, gy - py);
           if (d <= maxR) {
             addBiEdge(portalNode, sNode, d * 0.9 + rampCost);
-            connectedAny = true;
           }
-        }
-      }
-      if (!connectedAny && numSurfaceNodes > 0) {
-        let bestS = -1;
-        let bestD = Infinity;
-        for (let s = 0; s < numSurfaceNodes; s++) {
-          const d = Math.hypot(nodes[s].x - px, nodes[s].y - py);
-          if (d < bestD) {
-            bestD = d;
-            bestS = s;
-          }
-        }
-        if (bestS !== -1 && bestD <= 6.5) {
-          addBiEdge(portalNode, bestS, bestD + rampCost);
         }
       }
     };
@@ -5185,7 +5169,7 @@ export class ProceduralLogisticsWorld {
         }
       }
     }
-    if (arcLen / chord > 1.85) return Infinity;
+    if (arcLen < 22 || arcLen / chord > 1.85) return Infinity;
 
     // Hard invariant 4: Never form an acute V-spike (< 115°) when sharing an endpoint with an existing motorway
     const nS = samples.length;
@@ -5250,6 +5234,15 @@ export class ProceduralLogisticsWorld {
 
           const minCrossArm = this.motorways.length >= 2 ? 28 : 20;
           if (dStartA < 20 || dEndA < 20 || dStartB < minCrossArm || dEndB < minCrossArm) return Infinity;
+          // Reject candidates that come within 12 tiles of two existing motorways (cross-brace prevention)
+          for (const other2 of this.motorways) {
+            if (other2.number === other.number || !other2.samples) continue;
+            for (let k2 = 0; k2 < other2.samples.length; k2 += 2) {
+              if (Math.hypot(other2.samples[k2].x - hit.x, other2.samples[k2].y - hit.y) < 12.0) {
+                return Infinity;
+              }
+            }
+          }
           const nearMajorIc = this.interchanges.some(
             ic => (ic.type === 'cloverleaf' || ic.type === 'trumpet') && Math.hypot(ic.x - hit.x, ic.y - hit.y) < 28.0
           );
@@ -5928,6 +5921,7 @@ export class ProceduralLogisticsWorld {
     let bestScore = Infinity;
 
     for (const trunk of this.motorways) {
+      if (trunk.prunedStart || trunk.prunedEnd) continue;
       const tSamples = trunk.samples;
       if (!tSamples || tSamples.length < 14) continue;
       const trunkLen = this.polylineArcLength(tSamples, 0, tSamples.length - 1);
@@ -5938,8 +5932,13 @@ export class ProceduralLogisticsWorld {
 
       for (let i = iStart; i <= iEnd; i++) {
         const hitPt = tSamples[i];
-        if (Math.hypot(hitPt.x - trunk.sx, hitPt.y - trunk.sy) < 9.5) continue;
-        if (Math.hypot(hitPt.x - trunk.ex, hitPt.y - trunk.ey) < 9.5) continue;
+        if (Math.hypot(hitPt.x - trunk.sx, hitPt.y - trunk.sy) < 12.0) continue;
+        if (Math.hypot(hitPt.x - trunk.ex, hitPt.y - trunk.ey) < 12.0) continue;
+
+        const nearOtherMway = this.motorways.some(
+          m => m.number !== trunk.number && m.samples && m.samples.some(sp => Math.hypot(sp.x - hitPt.x, sp.y - hitPt.y) < 12.0)
+        );
+        if (nearOtherMway) continue;
 
         const nearOtherIc = this.interchanges.some(
           ic => (ic.type === 'cloverleaf' || ic.type === 'trumpet') && Math.hypot(ic.x - hitPt.x, ic.y - hitPt.y) < 24.0
@@ -6929,13 +6928,35 @@ export class ProceduralLogisticsWorld {
           const dPos = Math.hypot(posTerm.x - nearestTown.x, posTerm.y - nearestTown.y);
           const dNeg = Math.hypot(negTerm.x - nearestTown.x, negTerm.y - nearestTown.y);
           const connSide = dPos <= dNeg ? 1 : -1;
+          const farTermCand = connSide === 1 ? negTerm : posTerm;
+
+          // Check if the opposite side (`-connSide`) has a reachable road or town within 28 tiles
+          let hasOppositeRoad = false;
+          for (let dy = -20; dy <= 20 && !hasOppositeRoad; dy += 2) {
+            for (let dx = -20; dx <= 20; dx += 2) {
+              const rx = farTermCand.x + dx;
+              const ry = farTermCand.y + dy;
+              if (!this.inBounds(rx, ry, 2) || this.roadGrid[this.idx(rx, ry)] === 0) continue;
+              const sideV = ((rx - gx) * nx + (ry - gy) * ny) * (-connSide);
+              if (sideV >= 3.0 && Math.hypot(dx, dy) <= 22) {
+                hasOppositeRoad = true;
+                break;
+              }
+            }
+          }
+
+          // Cap pure one-sided Diamond-T interchanges (`!hasOppositeRoad`) to at most 1 per expressway
+          const existingOneSidedOnMw = this.interchanges.some(
+            ic => ic.type === 'diamond-ramp' && ic.mwayNumber === mw.number && !ic.isThroughDiamond
+          );
+          if (!hasOppositeRoad && existingOneSidedOnMw) continue;
 
           const wingClear = !this.roads.some(r =>
             r.points.some(rp => Math.hypot(rp.x - pt.x, rp.y - pt.y) < 3.6)
           );
           if (!wingClear) continue;
 
-          const score = 50 - minTownDist;
+          const score = 50 - minTownDist + (hasOppositeRoad ? 32 : 0);
           if (score > bestScore) {
             bestScore = score;
             bestCandidate = {
@@ -6971,12 +6992,16 @@ export class ProceduralLogisticsWorld {
           let isThroughDiamond = Boolean(existingUnderpass);
 
           if (!existingUnderpass) {
-            const makeSideBlockFn = (sideSign) => (tx, ty) => {
+            const makeSideBlockFn = (sideSign, termPt) => (tx, ty) => {
               const dx = tx - x;
               const dy = ty - y;
               const u = dx * cosA + dy * sinA;
               const v = (dx * nx + dy * ny) * sideSign;
-              if (Math.abs(u) < 16 && v < 1.6) return true;
+              if (Math.abs(u) < 16 && v < 1.8) return true;
+              if (termPt && Math.hypot(tx - termPt.x, ty - termPt.y) <= 4.5) {
+                const outDot = (tx - termPt.x) * (sdx * sideSign) + (ty - termPt.y) * (sdy * sideSign);
+                if (outDot < 0) return true;
+              }
               for (let s = 0; s < samples.length; s += 2) {
                 if (Math.hypot(tx - samples[s].x, ty - samples[s].y) < 1.6) return true;
               }
@@ -6989,10 +7014,53 @@ export class ProceduralLogisticsWorld {
               nearestTown.x,
               nearestTown.y,
               false,
-              makeSideBlockFn(connSide),
+              makeSideBlockFn(connSide, nearTerm),
               true
             );
             if (!connectorPath || connectorPath.length < 2) continue;
+
+            // Also check if `farTerm` on `-connSide` can connect to a road or town within 28 tiles (`A1 Through-Diamond`)
+            let oppConnectorPath = null;
+            let oppTargetPt = null;
+            let bestOppD = 28;
+            for (const t of this.towns) {
+              const sideV = ((t.x - x) * nx + (t.y - y) * ny) * (-connSide);
+              const d = Math.hypot(t.x - farTerm.x, t.y - farTerm.y);
+              if (sideV >= 3.0 && d < bestOppD) {
+                bestOppD = d;
+                oppTargetPt = { x: t.x, y: t.y };
+              }
+            }
+            if (!oppTargetPt) {
+              for (let dy = -22; dy <= 22; dy += 2) {
+                for (let dx = -22; dx <= 22; dx += 2) {
+                  const rx = farTerm.x + dx;
+                  const ry = farTerm.y + dy;
+                  if (!this.inBounds(rx, ry, 2) || this.roadGrid[this.idx(rx, ry)] === 0) continue;
+                  const sideV = ((rx - x) * nx + (ry - y) * ny) * (-connSide);
+                  const d = Math.hypot(dx, dy);
+                  if (sideV >= 3.2 && d >= 2.0 && d < bestOppD) {
+                    bestOppD = d;
+                    oppTargetPt = { x: rx, y: ry };
+                  }
+                }
+              }
+            }
+            if (oppTargetPt) {
+              const candOpp = this.findRoadPathAStar(
+                farTerm.x,
+                farTerm.y,
+                oppTargetPt.x,
+                oppTargetPt.y,
+                false,
+                makeSideBlockFn(-connSide, farTerm),
+                true
+              );
+              if (candOpp && candOpp.length >= 2 && candOpp.length <= 28) {
+                oppConnectorPath = candOpp;
+                isThroughDiamond = true;
+              }
+            }
 
             this.displaceBuildingsInRadius(x, y, 4.2);
             this.displaceBuildingsInRadius(posTerm.x, posTerm.y, 2.5);
@@ -7002,20 +7070,17 @@ export class ProceduralLogisticsWorld {
             const stemPts = [];
             for (let s = -stepReach; s <= stepReach; s++) {
               const stepSign = connSide * s;
-              let px = x + sdx * stepSign;
-              let py = y + sdy * stepSign;
-              if (s === -stepReach) {
-                px += (x - px) * 0.19;
-                py += (y - py) * 0.19;
-              }
               stemPts.push({
-                x: px,
-                y: py,
+                x: x + sdx * stepSign,
+                y: y + sdy * stepSign,
                 isBridge: false
               });
             }
-            this.commitRoadPath(stemPts, 'arterial', { isUnderpassStem: true });
+            this.commitRoadPath(stemPts, 'arterial', { isUnderpassStem: !isThroughDiamond });
             this.commitRoadPath(connectorPath, 'arterial');
+            if (oppConnectorPath) {
+              this.commitRoadPath(oppConnectorPath, 'arterial');
+            }
           } else {
             // Existing octilinear surface road underpass (`A1`): keep the road course 100% unaltered,
             // only clearing buildings/trees underneath the 4 flexible slip-ramps!
@@ -7350,6 +7415,12 @@ export class ProceduralLogisticsWorld {
 
             const endA = resolveTownOrHubEndpoint(cTown, hubTown.x, hubTown.y, true);
             const endB = resolveTownOrHubEndpoint(hubTown, cTown.x, cTown.y, !endA.usedHubGate);
+            const stubSpan = Math.hypot(endB.stub.x - endA.stub.x, endB.stub.y - endA.stub.y);
+            if (stubSpan < 22) {
+              if (!endA.usedHubGate) this.removeOrphanedTerminalStub(endA.stub.x, endA.stub.y);
+              if (!endB.usedHubGate) this.removeOrphanedTerminalStub(endB.stub.x, endB.stub.y);
+              continue;
+            }
             const startX = endB.usedHubGate ? endB.stub.x : endA.stub.x;
             const startY = endB.usedHubGate ? endB.stub.y : endA.stub.y;
             const endX = endB.usedHubGate ? endA.stub.x : endB.stub.x;
@@ -7359,7 +7430,9 @@ export class ProceduralLogisticsWorld {
             const mwCluster = this.createMotorwayEntity(mwayNumber, startX, startY, endX, endY, startApId, hubTown.id);
             const crossesExisting =
               mwCluster && this.motorways.some(m => this.findPolylineIntersection(m.samples, mwCluster.samples) !== null);
-            if (mwCluster && (canShare || crossesExisting || (pass === 1 && (metro.tier === 1 || isIslandHopper)))) {
+            const allowStandalonePass1 =
+              pass === 1 && (metro.tier === 1 || (isIslandHopper && stubSpan >= 36));
+            if (mwCluster && (canShare || crossesExisting || allowStandalonePass1)) {
               if (endA.usedHubGate) endA.ap.motorwayId = mwayNumber;
               if (endB.usedHubGate) endB.ap.motorwayId = mwayNumber;
               mwayNumber++;

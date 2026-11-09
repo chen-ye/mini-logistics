@@ -2254,10 +2254,41 @@ export class MiniMotorwaysRenderer {
       }
 
       // 1. Soft Elevated Overpass Drop Shadow on the ground below (ONLY for above-ground surface spans!)
-      ctx.strokeStyle = 'rgba(54, 56, 62, 0.14)';
-      ctx.lineWidth = ts * 0.92;
+      //    Tapers smoothly to (0, 0) at terminal roundabouts and tunnel portals so the shadow tucks
+      //    completely underneath the 0.88*ts expressway deck as the road descends to surface grade!
+      const termPts = [];
+      if (!mw.prunedStart) termPts.push({ x: mw.sx, y: mw.sy });
+      if (!mw.prunedEnd) termPts.push({ x: mw.ex, y: mw.ey });
+      const portalPts = [];
+      for (const tun of tunnels) {
+        portalPts.push({ x: tun.x0, y: tun.y0 }, { x: tun.x1, y: tun.y1 });
+      }
+      const evalShadowElevation = (pt) => {
+        let h = 1.0;
+        for (const tp of termPts) {
+          const d = Math.hypot(pt.x - tp.x, pt.y - tp.y);
+          const f = Math.max(0, Math.min(1, (d - 1.5) / 3.6));
+          if (f < h) h = f;
+        }
+        for (const pp of portalPts) {
+          const d = Math.hypot(pt.x - pp.x, pt.y - pp.y);
+          const f = Math.max(0, Math.min(1, d / 2.6));
+          if (f < h) h = f;
+        }
+        return h * h * (3 - 2 * h);
+      };
+
+      ctx.strokeStyle = 'rgba(45, 42, 38, 0.10)';
+      ctx.lineWidth = ts * 0.80;
       for (const seg of surfaceSpans) {
-        this.traceMotorwaySamples(ctx, seg, ts, 8, 11);
+        const shadowSeg = seg.map(pt => {
+          const sh = evalShadowElevation(pt);
+          return {
+            x: pt.x + (2.8 * sh) / ts,
+            y: pt.y + (3.8 * sh) / ts
+          };
+        });
+        this.traceMotorwaySamples(ctx, shadowSeg, ts, 0, 0);
         ctx.stroke();
       }
 
