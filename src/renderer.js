@@ -3508,6 +3508,31 @@ export class MiniMotorwaysRenderer {
     ctx.setLineDash([5, 6]);
 
     const halfTs = ts * 0.5;
+    /**
+     * Strokes the complete airborne corridor (pClimbOut -> departure arc -> enroute Bezier -> arrival arc -> pAppEntry).
+     * @param {import('./types.js').FlightTrack} track
+     */
+    const strokeTrackAirway = (track) => {
+      const { pts } = track;
+      let firstCruise = -1;
+      let lastCruise = -1;
+      for (let i = 0; i < pts.length; i++) {
+        if (pts[i].phase === "CRUISE") {
+          if (firstCruise === -1) firstCruise = i;
+          lastCruise = i;
+        }
+      }
+      if (firstCruise === -1) return;
+      const i0 = Math.max(0, firstCruise - 1);
+      const i1 = Math.min(pts.length - 1, lastCruise + 1);
+      ctx.beginPath();
+      ctx.moveTo(pts[i0].x * ts + halfTs, pts[i0].y * ts + halfTs);
+      for (let i = i0 + 1; i <= i1; i++) {
+        ctx.lineTo(pts[i].x * ts + halfTs, pts[i].y * ts + halfTs);
+      }
+      ctx.stroke();
+    };
+
     if (world.airports.length >= 2) {
       for (const apA of world.airports) {
         for (const apB of world.airports) {
@@ -3516,18 +3541,7 @@ export class MiniMotorwaysRenderer {
             oSign: apA.activeSign,
             dSign: apB.activeSign,
           });
-          const { sx, sy, c1x, c1y, c2x, c2y, ex, ey } = track.airwayCurve;
-          ctx.beginPath();
-          ctx.moveTo(sx * ts + halfTs, sy * ts + halfTs);
-          ctx.bezierCurveTo(
-            c1x * ts + halfTs,
-            c1y * ts + halfTs,
-            c2x * ts + halfTs,
-            c2y * ts + halfTs,
-            ex * ts + halfTs,
-            ey * ts + halfTs,
-          );
-          ctx.stroke();
+          strokeTrackAirway(track);
         }
       }
     } else if (world.airports.length === 1) {
@@ -3542,18 +3556,7 @@ export class MiniMotorwaysRenderer {
           halfLen: 6,
         };
         const track = buildFlightTrack(ap, dest);
-        const { sx, sy, c1x, c1y, c2x, c2y, ex, ey } = track.airwayCurve;
-        ctx.beginPath();
-        ctx.moveTo(sx * ts + halfTs, sy * ts + halfTs);
-        ctx.bezierCurveTo(
-          c1x * ts + halfTs,
-          c1y * ts + halfTs,
-          c2x * ts + halfTs,
-          c2y * ts + halfTs,
-          ex * ts + halfTs,
-          ey * ts + halfTs,
-        );
-        ctx.stroke();
+        strokeTrackAirway(track);
       }
     }
 
