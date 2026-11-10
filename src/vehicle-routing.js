@@ -2025,11 +2025,11 @@ export function buildIndustrialCargoChain(world) {
           crowD +
           (sameLandmass ? 0 : 35) +
           (crowD <= 95 ? 0 : 45) +
-          10 * getOutbound(lg.id);
+          3.5 * getOutbound(lg.id);
         candidates.push({
           node: lg,
           stage: "LOG->COM",
-          color: "#2563eb",
+          color: "#7c3aed",
           label: "Wholesale Goods → Commercial Sink",
           score,
           isLog: true,
@@ -2041,11 +2041,11 @@ export function buildIndustrialCargoChain(world) {
           const crowD = Math.hypot(mfg.x - com.x, mfg.y - com.y);
           const sameLandmass = getLandmassId(mfg) === getLandmassId(com);
           const score =
-            crowD + (sameLandmass ? 0 : 35) + 20 + 10 * getOutbound(mfg.id);
+            crowD + (sameLandmass ? 0 : 35) + 28 + 11 * getOutbound(mfg.id);
           candidates.push({
             node: mfg,
             stage: "MFG->COM",
-            color: "#7c3aed",
+            color: "#4f46e5",
             label: "Factory Direct → Commercial CBD",
             score,
             isLog: false,
@@ -2178,8 +2178,8 @@ export function buildIndustrialCargoChain(world) {
     const targetLinks = Math.max(
       2,
       Math.min(
-        5,
-        Math.round(2 + (lg.relativeDemand || 0.2) * logNodes.length * 1.8),
+        6,
+        Math.round(2 + (lg.relativeDemand || 0.2) * logNodes.length * 2.2),
       ),
     );
     const sortedGoods = Object.keys(lg.demandProfile || {}).sort(
@@ -2483,7 +2483,7 @@ export function buildIndustrialCargoChain(world) {
         const color = tgt.isGatewayProxy
           ? "#0d9488"
           : tgt.zoneType === "commercial"
-            ? "#7c3aed"
+            ? "#4f46e5"
             : tgt.subType === "MFG"
               ? "#e11d48"
               : "#ea580c";
@@ -2566,7 +2566,7 @@ export function buildIndustrialCargoChain(world) {
         const label = tgt.isGatewayProxy
           ? "Consolidated Freight Export"
           : "Wholesale Goods → Commercial Sink";
-        const color = tgt.isGatewayProxy ? "#0d9488" : "#2563eb";
+        const color = tgt.isGatewayProxy ? "#0d9488" : "#7c3aed";
         if (
           connectLink(lg, tgt, stage, label, color, 160, "CONSUMER_GOODS", 2)
         ) {
@@ -2604,8 +2604,8 @@ export function buildIndustrialCargoChain(world) {
         const color = sup.isGatewayProxy
           ? "#0d9488"
           : sup.subType === "MFG"
-            ? "#7c3aed"
-            : "#2563eb";
+            ? "#4f46e5"
+            : "#7c3aed";
         const good = (com.demandedGoods && com.demandedGoods[0]) || "GROCERIES";
         if (connectLink(sup, com, stage, label, color, 160, good, 2)) {
           break;

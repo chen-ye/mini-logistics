@@ -1522,13 +1522,13 @@ export class MiniMotorwaysRenderer {
           pinCol = "#134e4a";
         } else if (d.subType === "RAW") {
           if (d.resourceType === "FISHERY") {
-            baseCol = "#0369a1";
-            roofCol = "#0284c7";
-            pinCol = "#0c4a6e";
+            baseCol = "#155e75";
+            roofCol = "#0891b2";
+            pinCol = "#164e63";
           } else if (d.resourceType === "CHEM") {
-            baseCol = "#0f766e";
-            roofCol = "#0d9488";
-            pinCol = "#134e4a";
+            baseCol = "#3f6212";
+            roofCol = "#65a30d";
+            pinCol = "#365314";
           } else {
             baseCol = "#b45309";
             roofCol = "#f59e0b";
@@ -2106,7 +2106,7 @@ export class MiniMotorwaysRenderer {
             ctx.fillRect(bx - 1, cy - bldH * 0.34, 2, bldH * 0.56);
           }
         } else {
-          // Secondary Manufacturing (`MFG`): Multi-Bay Sawtooth Factory Roof + Smokestack
+          // Secondary Manufacturing (`MFG`)
           setSub(ctx, 3);
           ctx.fillStyle = baseCol;
           ctx.beginPath();
@@ -2119,50 +2119,250 @@ export class MiniMotorwaysRenderer {
           );
           ctx.fill();
 
-          setSub(ctx, 4);
-          const numBays = hT >= 3 ? 4 : 3;
-          const bayH = (bldH * 0.82) / numBays;
-          for (let bay = 0; bay < numBays; bay++) {
-            const by = cy - bldH * 0.42 + bay * bayH;
+          if (d.mfgType === "STEEL") {
+            // Heavy foundry hall on left half
+            setSub(ctx, 4);
             ctx.fillStyle = roofCol;
-            ctx.fillRect(cx - bldW * 0.46, by, bldW * 0.92, bayH * 0.72);
-            ctx.fillStyle = "rgba(54, 56, 62, 0.25)";
-            ctx.fillRect(
+            ctx.beginPath();
+            ctx.roundRect(
               cx - bldW * 0.46,
-              by + bayH * 0.72,
-              bldW * 0.92,
-              bayH * 0.24,
+              cy - bldH * 0.42,
+              bldW * 0.48,
+              bldH * 0.8,
+              2,
             );
+            ctx.fill();
+
+            // Recessed dark slag-yard apron on right half
+            ctx.fillStyle = "#27272a";
+            ctx.beginPath();
+            ctx.roundRect(
+              cx + bldW * 0.04,
+              cy - bldH * 0.4,
+              bldW * 0.42,
+              bldH * 0.76,
+              1.5,
+            );
+            ctx.fill();
+
+            // Glowing orange molten-metal launder channel down slag apron
+            setSub(ctx, 5);
+            const lx = cx + bldW * 0.11;
+            ctx.fillStyle = "#f97316";
+            ctx.fillRect(lx - 1.2, cy - bldH * 0.35, 2.4, bldH * 0.66);
+            ctx.fillStyle = "#fdba74";
+            ctx.fillRect(lx - 0.5, cy - bldH * 0.35, 1.0, bldH * 0.66);
+
+            // Twin circular blast-furnace cupolas on right bay
+            const cupR = Math.min(bldW, bldH) * 0.14;
+            const coreR = Math.min(bldW, bldH) * 0.06;
+            const cupX = cx + bldW * 0.26;
+            const cupYs = [cy - bldH * 0.18, cy + bldH * 0.14];
+            for (const cY of cupYs) {
+              setSub(ctx, 5);
+              ctx.fillStyle = "#36383e";
+              ctx.beginPath();
+              ctx.arc(cupX, cY, cupR, 0, Math.PI * 2);
+              ctx.fill();
+
+              setSub(ctx, 6);
+              ctx.fillStyle = "#f97316";
+              ctx.beginPath();
+              ctx.arc(cupX, cY, coreR, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          } else if (d.mfgType === "FOOD") {
+            // Crisp insulated white cold-storage roof deck over roofCol trim
+            setSub(ctx, 4);
+            ctx.fillStyle = roofCol;
+            ctx.beginPath();
+            ctx.roundRect(
+              cx - bldW * 0.46,
+              cy - bldH * 0.42,
+              bldW * 0.92,
+              bldH * 0.8,
+              2,
+            );
+            ctx.fill();
+
+            ctx.fillStyle = "rgba(255, 255, 255, 0.78)";
+            ctx.beginPath();
+            ctx.roundRect(
+              cx - bldW * 0.44,
+              cy - bldH * 0.4,
+              bldW * 0.88,
+              bldH * 0.76,
+              1.5,
+            );
+            ctx.fill();
+
+            // 3 parallel rooftop chiller condenser bars on left bay
+            setSub(ctx, 5);
+            ctx.fillStyle = "#94a3b8";
+            const barW = bldW * 0.38;
+            const barH = Math.max(1.4, bldH * 0.08);
+            const barX = cx - bldW * 0.24;
+            const barYs = [cy - bldH * 0.22, cy, cy + bldH * 0.22];
+            for (const by of barYs) {
+              ctx.fillRect(barX - barW * 0.5, by - barH * 0.5, barW, barH);
+            }
+
+            // Twin cylindrical stainless-steel processing vats on right bay
+            const vatR = Math.min(bldW, bldH) * 0.13;
+            const vatCoords = [
+              [cx + bldW * 0.25, cy - bldH * 0.16],
+              [cx + bldW * 0.25, cy + bldH * 0.14],
+            ];
+            for (const [vx, vy] of vatCoords) {
+              setSub(ctx, 5);
+              ctx.fillStyle = "#e2e8f0";
+              ctx.strokeStyle = "#64748b";
+              ctx.lineWidth = 1.1;
+              ctx.beginPath();
+              ctx.arc(vx, vy, vatR, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.stroke();
+
+              setSub(ctx, 6);
+              ctx.fillStyle = "#ffffff";
+              ctx.beginPath();
+              ctx.arc(
+                vx - vatR * 0.3,
+                vy - vatR * 0.3,
+                vatR * 0.3,
+                0,
+                Math.PI * 2,
+              );
+              ctx.fill();
+            }
+          } else if (d.mfgType === "TECH") {
+            // Precision cleanroom wafer-fab deck
+            setSub(ctx, 4);
+            ctx.fillStyle = roofCol;
+            ctx.beginPath();
+            ctx.roundRect(
+              cx - bldW * 0.46,
+              cy - bldH * 0.42,
+              bldW * 0.92,
+              bldH * 0.8,
+              2,
+            );
+            ctx.fill();
+
+            // Inset sky-lit glass atrium
+            setSub(ctx, 5);
+            const atrW = bldW * 0.52;
+            const atrH = bldH * 0.44;
+            ctx.fillStyle = "rgba(186, 230, 253, 0.65)";
+            ctx.fillRect(cx - atrW * 0.5, cy - atrH * 0.5, atrW, atrH);
+            ctx.strokeStyle = "#0284c7";
+            ctx.lineWidth = 1.1;
+            ctx.strokeRect(cx - atrW * 0.5, cy - atrH * 0.5, atrW, atrH);
+            ctx.beginPath();
+            ctx.moveTo(cx - atrW * 0.5, cy);
+            ctx.lineTo(cx + atrW * 0.5, cy);
+            ctx.moveTo(cx, cy - atrH * 0.5);
+            ctx.lineTo(cx, cy + atrH * 0.5);
+            ctx.stroke();
+
+            // 4 symmetrical perimeter cleanroom air-handler pods
+            setSub(ctx, 6);
+            ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
+            const podW = Math.max(3.2, bldW * 0.15);
+            const podH = Math.max(2.2, bldH * 0.09);
+            const podXs = [cx - bldW * 0.34, cx + bldW * 0.34];
+            const podYs = [cy - bldH * 0.33, cy + bldH * 0.31];
+            for (const px of podXs) {
+              for (const py of podYs) {
+                ctx.fillRect(px - podW * 0.5, py - podH * 0.5, podW, podH);
+              }
+            }
+          } else {
+            // Multi-bay north-light sawtooth factory roof (GOODS or fallback)
+            setSub(ctx, 4);
+            const numBays = hT >= 3 ? 4 : 3;
+            const bayH = (bldH * 0.82) / numBays;
+            for (let bay = 0; bay < numBays; bay++) {
+              const by = cy - bldH * 0.42 + bay * bayH;
+              ctx.fillStyle = roofCol;
+              ctx.fillRect(cx - bldW * 0.46, by, bldW * 0.92, bayH * 0.72);
+              ctx.fillStyle = "rgba(224, 242, 254, 0.52)";
+              ctx.fillRect(
+                cx - bldW * 0.46,
+                by + bayH * 0.72,
+                bldW * 0.92,
+                bayH * 0.24,
+              );
+            }
+
+            // Compact corner exhaust stack
+            setSub(ctx, 5);
+            ctx.fillStyle = "#36383e";
+            ctx.beginPath();
+            ctx.arc(
+              cx + bldW * 0.34,
+              cy - bldH * 0.3,
+              ts * 0.24,
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+
+            setSub(ctx, 6);
+            ctx.fillStyle = "#ffffff";
+            ctx.beginPath();
+            ctx.arc(
+              cx + bldW * 0.34,
+              cy - bldH * 0.3,
+              ts * 0.1,
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
           }
-
-          // Corner industrial smokestack cylinder
-          setSub(ctx, 5);
-          ctx.fillStyle = "#36383e";
-          ctx.beginPath();
-          ctx.arc(cx + bldW * 0.34, cy - bldH * 0.3, ts * 0.24, 0, Math.PI * 2);
-          ctx.fill();
-
-          setSub(ctx, 6);
-          ctx.fillStyle = "#ffffff";
-          ctx.beginPath();
-          ctx.arc(cx + bldW * 0.34, cy - bldH * 0.3, ts * 0.1, 0, Math.PI * 2);
-          ctx.fill();
         }
 
         // Square Cargo Crate Pins on Industrial Roof
-        const maxCrates = Math.min(wT * hT >= 6 ? 5 : 4, d.pinsCount);
-        const crateCols = wT >= 3 ? 3 : 2;
-        for (let p = 0; p < maxCrates; p++) {
-          const px = cx - bldW * 0.32 + (p % crateCols) * (bldW * 0.24);
-          const py =
-            cy - bldH * 0.18 + Math.floor(p / crateCols) * (bldH * 0.26);
-          setSub(ctx, 7);
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(px - 2.1, py - 2.1, 4.2, 4.2);
-          setSub(ctx, 8);
-          ctx.strokeStyle = pinCol;
-          ctx.lineWidth = 1.25;
-          ctx.strokeRect(px - 2.1, py - 2.1, 4.2, 4.2);
+        if (wT === 1 || hT === 1) {
+          const maxCrates = Math.min(2, d.pinsCount || 0);
+          for (let p = 0; p < maxCrates; p++) {
+            let px = cx;
+            let py = cy;
+            if (maxCrates === 2) {
+              if (wT >= hT) {
+                px = cx - bldW * 0.22 + p * (bldW * 0.44);
+              } else {
+                py = cy - bldH * 0.22 + p * (bldH * 0.44);
+              }
+            }
+            setSub(ctx, 7);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(px - 2.1, py - 2.1, 4.2, 4.2);
+            setSub(ctx, 8);
+            ctx.strokeStyle = pinCol;
+            ctx.lineWidth = 1.25;
+            ctx.strokeRect(px - 2.1, py - 2.1, 4.2, 4.2);
+          }
+        } else {
+          const isShiftedLeft =
+            d.subType === "MFG" &&
+            (d.mfgType === "STEEL" || d.mfgType === "FOOD");
+          const maxCrates = Math.min(wT * hT >= 6 ? 5 : 4, d.pinsCount || 0);
+          const crateCols = isShiftedLeft ? 2 : wT >= 3 ? 3 : 2;
+          const startX = isShiftedLeft ? cx - bldW * 0.34 : cx - bldW * 0.32;
+          const stepX = isShiftedLeft ? bldW * 0.18 : bldW * 0.24;
+          for (let p = 0; p < maxCrates; p++) {
+            const px = startX + (p % crateCols) * stepX;
+            const py =
+              cy - bldH * 0.18 + Math.floor(p / crateCols) * (bldH * 0.26);
+            setSub(ctx, 7);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(px - 2.1, py - 2.1, 4.2, 4.2);
+            setSub(ctx, 8);
+            ctx.strokeStyle = pinCol;
+            ctx.lineWidth = 1.25;
+            ctx.strokeRect(px - 2.1, py - 2.1, 4.2, 4.2);
+          }
         }
       }
 
@@ -4136,11 +4336,15 @@ export class MiniMotorwaysRenderer {
             ? "#0d9488"
             : link.stage === "MFG->MFG"
               ? "#e11d48"
-              : link.stage === "RAW->MFG"
-                ? "#d97706"
-                : link.stage === "LOG->COM"
-                  ? "#7c3aed"
-                  : "#ea580c");
+              : link.stage === "MFG->LOG"
+                ? "#ea580c"
+                : link.stage === "RAW->MFG" || link.stage === "RAW->LOG"
+                  ? "#d97706"
+                  : link.stage === "MFG->COM"
+                    ? "#4f46e5"
+                    : link.stage === "LOG->COM"
+                      ? "#7c3aed"
+                      : "#ea580c");
       ctx.strokeStyle = linkColor;
       ctx.lineWidth = 2.4;
       ctx.setLineDash([6, 4]);
@@ -4180,8 +4384,29 @@ export class MiniMotorwaysRenderer {
     ctx.font = "800 8.5px DM Sans, Inter, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+
+    const suppressedBadgeIds = new Set();
+    const sel = this.selectedEntity;
+    if (
+      sel &&
+      "zoneType" in sel &&
+      (sel.zoneType === "industrial" || sel.zoneType === "commercial")
+    ) {
+      suppressedBadgeIds.add(sel.id);
+      if (world.cargoLinks) {
+        for (const link of world.cargoLinks) {
+          if (link.from?.id === sel.id && link.to?.id != null) {
+            suppressedBadgeIds.add(link.to.id);
+          } else if (link.to?.id === sel.id && link.from?.id != null) {
+            suppressedBadgeIds.add(link.from.id);
+          }
+        }
+      }
+    }
+
     const badgeCandidates = [];
     for (const d of world.destinations) {
+      if (suppressedBadgeIds.has(d.id)) continue;
       if (d.zoneType === "industrial") {
         let tag = "RAW";
         let bg = "#d97706";
@@ -4200,10 +4425,10 @@ export class MiniMotorwaysRenderer {
             bg = "#d97706";
           } else if (d.resourceType === "FISHERY") {
             tag = "FISH";
-            bg = "#0284c7";
+            bg = "#0e7490";
           } else if (d.resourceType === "CHEM") {
             tag = "CHEM";
-            bg = "#0d9488";
+            bg = "#4d7c0f";
           } else {
             tag = "RAW";
             bg = "#d97706";
@@ -4242,8 +4467,9 @@ export class MiniMotorwaysRenderer {
     const placedBadgeRects = [];
     const zoom = this.camera.zoom || 1;
     for (const bc of badgeCandidates) {
+      const hT = bc.d.hTiles || 2;
       const cx = bc.d.x * ts + ox;
-      const cy = bc.d.y * ts + oy - ts * 1.25;
+      const cy = bc.d.y * ts + oy - (hT * 0.5 + 0.38) * ts;
       const sx = cx * zoom;
       const sy = cy * zoom;
       const halfW = (bc.bw * 0.5 + 2) * zoom;
@@ -4828,6 +5054,8 @@ export class MiniMotorwaysRenderer {
 
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
+      /** @type {Map<number, { partner: any, isOutbound: boolean, col: string, comms: string[] }>} */
+      const partnerGroups = new Map();
       for (const link of connectedLinks) {
         const pts = link.outboundTrack?.pts || link.points;
         if (!pts || pts.length < 2) continue;
@@ -4877,7 +5105,56 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
         ctx.restore();
 
-        // Highlight connected partner building pad + compact role badge
+        const commShort =
+          link.commodity === "CONSUMER_GOODS"
+            ? "GOODS"
+            : link.commodity === "GROCERIES"
+              ? "FOOD"
+              : link.commodity === "ELECTRONICS"
+                ? "TECH"
+                : link.commodity === "HARDWARE"
+                  ? "HDWR"
+                  : link.commodity === "B2B_PARCELS"
+                    ? "B2B"
+                    : link.commodity || "";
+        let grp = partnerGroups.get(partner.id);
+        if (!grp) {
+          grp = { partner, isOutbound, col, comms: [] };
+          partnerGroups.set(partner.id, grp);
+        }
+        if (commShort && !grp.comms.includes(commShort)) {
+          grp.comms.push(commShort);
+        }
+      }
+
+      // Compute selected building's floating pill first so partner pills avoid colliding with it
+      const selTag = entity.isGatewayProxy
+        ? entity.label || "AIR"
+        : entity.resourceType
+          ? `${entity.resourceType} · RAW`
+          : entity.zoneType === "commercial"
+            ? entity.isCircular
+              ? "CBD HUB"
+              : "COMMERCIAL"
+            : entity.mfgType
+              ? `${entity.mfgType} · MFG`
+              : entity.subType === "RAW"
+                ? "RAW"
+                : entity.subType || "MFG";
+      ctx.font = "800 9px Inter, sans-serif";
+      const sw = ctx.measureText(selTag).width + 12;
+      const sy = cy - boxH * 0.5 - 11;
+      /** @type {Array<{ x: number, y: number, hw: number, hh: number }>} */
+      const placedPartnerPills = [{ x: cx, y: sy, hw: sw * 0.5 + 3, hh: 8.5 }];
+
+      ctx.font = "800 8.5px Inter, sans-serif";
+      for (const {
+        partner,
+        isOutbound,
+        col,
+        comms,
+      } of partnerGroups.values()) {
+        // Highlight connected partner building pad once per unique partner
         const pwT = partner.wTiles || 2;
         const phT = partner.hTiles || 2;
         const pcx = partner.x * ts + ox;
@@ -4897,28 +5174,91 @@ export class MiniMotorwaysRenderer {
         ctx.roundRect(pcx - pBoxW * 0.5, pcy - pBoxH * 0.5, pBoxW, pBoxH, 5.5);
         ctx.stroke();
 
+        const rawTag = partner.isGatewayProxy
+          ? partner.label || "AIR"
+          : partner.resourceType ||
+            partner.mfgType ||
+            (partner.zoneType === "commercial"
+              ? partner.isCircular
+                ? "CBD"
+                : "COM"
+              : partner.subType || "MFG");
+        const commLabel = comms[0] || "";
         const pTag =
-          partner.resourceType ||
-          (partner.zoneType === "commercial"
-            ? "CBD"
-            : partner.subType || "MFG");
-        const badgeText = isOutbound ? `→ ${pTag}` : `← ${pTag}`;
-        ctx.font = "800 8.5px Inter, sans-serif";
-        const bw = ctx.measureText(badgeText).width + 10;
-        // Flip badge below `partner` if placing it above would collide with the selected building's frame
-        const placeBelow =
+          commLabel && commLabel === rawTag ? partner.subType || "MFG" : rawTag;
+        const arrow = isOutbound ? "→" : "←";
+        const fullText = commLabel
+          ? `${arrow} ${commLabel} · ${pTag}`
+          : `${arrow} ${pTag}`;
+        const compactText = `${arrow} ${commLabel || pTag}`;
+
+        const placeBelowFirst =
           pcy > cy &&
           Math.abs(pcx - cx) < (boxW + pBoxW) * 0.65 &&
           pcy - pBoxH * 0.5 - 16 < cy + boxH * 0.5;
-        const by = placeBelow ? pcy + pBoxH * 0.5 + 10 : pcy - pBoxH * 0.5 - 10;
-        ctx.fillStyle = col;
-        ctx.beginPath();
-        ctx.roundRect(pcx - bw * 0.5, by - 6.5, bw, 13, 3.5);
-        ctx.fill();
-        ctx.fillStyle = "#ffffff";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(badgeText, pcx, by + 0.5);
+        const topY = pcy - pBoxH * 0.5 - 10;
+        const botY = pcy + pBoxH * 0.5 + 10;
+        const candidateYs = placeBelowFirst
+          ? [botY, topY, pcy - pBoxH * 0.22, pcy + pBoxH * 0.22]
+          : [topY, botY, pcy - pBoxH * 0.22, pcy + pBoxH * 0.22];
+
+        // In dense commercial blocks (`pTag === "COM"`), prefer the concise commodity pill (`→ TECH`, `→ GOODS`)
+        // if another partner building is within 5.2 tiles horizontally so adjacent CBD pills never touch.
+        const hasCloseHorizontalPartner = Array.from(
+          partnerGroups.values(),
+        ).some(
+          (other) =>
+            other.partner.id !== partner.id &&
+            Math.abs(other.partner.x - partner.x) < 5.2 &&
+            Math.abs(other.partner.y - partner.y) < 4.5,
+        );
+        const textOptions =
+          pTag === "COM" && hasCloseHorizontalPartner
+            ? [compactText]
+            : [fullText, compactText];
+
+        let chosenText = textOptions[0];
+        let chosenW = ctx.measureText(chosenText).width + 8;
+        let chosenY = candidateYs[0];
+        let placed = false;
+
+        for (const textOpt of textOptions) {
+          const tw = ctx.measureText(textOpt).width + 8;
+          const hw = tw * 0.5 + 1.5;
+          const hh = 7.0;
+          for (const cyOpt of candidateYs) {
+            const overlaps = placedPartnerPills.some(
+              (r) =>
+                Math.abs(pcx - r.x) < hw + r.hw &&
+                Math.abs(cyOpt - r.y) < hh + r.hh,
+            );
+            if (!overlaps) {
+              chosenText = textOpt;
+              chosenW = tw;
+              chosenY = cyOpt;
+              placed = true;
+              break;
+            }
+          }
+          if (placed) break;
+        }
+
+        if (placed) {
+          placedPartnerPills.push({
+            x: pcx,
+            y: chosenY,
+            hw: chosenW * 0.5 + 1.5,
+            hh: 7.0,
+          });
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          ctx.roundRect(pcx - chosenW * 0.5, chosenY - 6.5, chosenW, 13, 3.5);
+          ctx.fill();
+          ctx.fillStyle = "#ffffff";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(chosenText, pcx, chosenY + 0.5);
+        }
       }
 
       // 1C. Precision double-cased selection frame around the selected building itself
@@ -4936,18 +5276,7 @@ export class MiniMotorwaysRenderer {
       ctx.stroke();
 
       // Floating Selected Facility Stage Pill above building
-      const selTag = entity.resourceType
-        ? `${entity.resourceType}`
-        : entity.zoneType === "commercial"
-          ? entity.isCircular
-            ? "CBD HUB"
-            : "COMMERCIAL"
-          : entity.subType === "RAW"
-            ? "CHEM · RAW"
-            : entity.subType;
       ctx.font = "800 9px Inter, sans-serif";
-      const sw = ctx.measureText(selTag).width + 12;
-      const sy = cy - boxH * 0.5 - 11;
       ctx.fillStyle = "#36383e";
       ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = 1.5;
