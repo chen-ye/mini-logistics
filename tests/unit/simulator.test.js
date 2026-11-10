@@ -8,6 +8,7 @@ import {
   canPushBackOntoTaxiway,
   maintainTaxiwayOrder,
 } from "../../src/simulator.js";
+import { computeTrumpetRampBeziers } from "../../src/vehicle-routing.js";
 import { SIM_CONFIG } from "../../src/constants.js";
 
 /**
@@ -36,7 +37,7 @@ function distToSegment(px, py, x1, y1, x2, y2) {
  * @param {any[]} interchanges
  * @returns {number}
  */
-function distToInterchangeRamps(mx, my, interchanges) {
+function distToInterchangeRamps(mx, my, interchanges, motorways = []) {
   let minD = Infinity;
   const sampleQuad = (x0, y0, cx, cy, x1, y1) => {
     for (let s = 0; s <= 16; s++) {
@@ -82,48 +83,44 @@ function distToInterchangeRamps(mx, my, interchanges) {
           const rBx = sB * uBx;
           const rBy = sB * uBy;
           sampleQuad(
-            ic.x + rAx * 2.95,
-            ic.y + rAy * 2.95,
-            ic.x + (rAx + rBx) * 1.05,
-            ic.y + (rAy + rBy) * 1.05,
-            ic.x + rBx * 2.95,
-            ic.y + rBy * 2.95,
+            ic.x + rAx * 3.65,
+            ic.y + rAy * 3.65,
+            ic.x + (rAx + rBx) * 1.75,
+            ic.y + (rAy + rBy) * 1.75,
+            ic.x + rBx * 3.65,
+            ic.y + rBy * 3.65,
           );
           sampleCubic(
             ic.x,
             ic.y,
-            ic.x + rAx * 3.1,
-            ic.y + rAy * 3.1,
-            ic.x + rBx * 3.1,
-            ic.y + rBy * 3.1,
+            ic.x + rAx * 4.85,
+            ic.y + rAy * 4.85,
+            ic.x + rBx * 4.85,
+            ic.y + rBy * 4.85,
             ic.x,
             ic.y,
           );
         }
       }
     } else if (ic.type === "trumpet") {
-      const cosM = Math.cos(ic.angleMain ?? 0);
-      const sinM = Math.sin(ic.angleMain ?? 0);
-      const sy = ic.sideSign || 1;
-      const oppSy = -sy;
-      const toW = (lx, ly) => [
-        ic.x + lx * cosM - ly * sinM,
-        ic.y + lx * sinM + ly * cosM,
-      ];
-      const [ox0, oy0] = toW(-2.15, 0);
-      const [ocx, ocy] = toW(-0.72, sy * 0.72);
-      const [ox1, oy1] = toW(0, sy * 2.15);
-      sampleQuad(ox0, oy0, ocx, ocy, ox1, oy1);
-
-      const [b0x, b0y] = toW(0, 0);
-      const [b1x, b1y] = toW(0, oppSy * 1.35);
-      const [b2x, b2y] = toW(0.38, oppSy * 1.85);
-      const [b3x, b3y] = toW(1.02, oppSy * 1.85);
-      const [b4x, b4y] = toW(1.92, oppSy * 1.85);
-      const [b5x, b5y] = toW(1.92, 0);
-      const [b6x, b6y] = toW(0.52, 0);
-      sampleCubic(b0x, b0y, b1x, b1y, b2x, b2y, b3x, b3y);
-      sampleCubic(b3x, b3y, b4x, b4y, b5x, b5y, b6x, b6y);
+      const ramps = computeTrumpetRampBeziers(ic, motorways);
+      for (const seg of [
+        ramps.yellow,
+        ramps.purple,
+        ...ramps.brown,
+        ...ramps.blue,
+      ]) {
+        sampleCubic(
+          seg.p0.x,
+          seg.p0.y,
+          seg.p1.x,
+          seg.p1.y,
+          seg.p2.x,
+          seg.p2.y,
+          seg.p3.x,
+          seg.p3.y,
+        );
+      }
     } else if (ic.type === "diamond-ramp" && ic.ramps) {
       for (const ramp of ic.ramps) {
         sampleCubic(
@@ -390,7 +387,12 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
 
           // Check interchange ramps
           if (minD > 0.55) {
-            const dRamp = distToInterchangeRamps(mx, my, interchanges);
+            const dRamp = distToInterchangeRamps(
+              mx,
+              my,
+              interchanges,
+              world.motorways,
+            );
             if (dRamp < minD) minD = dRamp;
           }
 
@@ -1143,4 +1145,94 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     }
     expect(plane.state).toBe("LANDING_ROLLOUT");
   });
+
+  test("All 4 directional Trumpet interchange movements route via slip-ramps without reversals and traverse onUpperBridge nodes", () => {
+    const pipeline = createWorldPipeline();
+    const world = pipeline({
+      seed: "VALLEY-618",
+      worldSize: "standard",
+      archetype: "inland",
+      terrainAlgo: "tectonic-fbm",
+      hydrologyAlgo: "thalweg-astar",
+      airportMix: "hub-regional",
+      includeIntermediateRamps: true,
+      waterCoverage: 48,
+      townCount: 20,
+      buildingDensity: 250,
+      airportCount: 3,
+      windAxis: -1,
+    });
+
+    const trumpet = world.interchanges.find((ic) => ic.type === "trumpet");
+    expect(trumpet).toBeDefined();
+    if (!trumpet || trumpet.type !== "trumpet") return;
+
+    const mainMw = world.motorways.find((m) => m.number === trumpet.mwayMain);
+    const spurMw = world.motorways.find((m) => m.number === trumpet.mwaySpur);
+    expect(mainMw).toBeDefined();
+    expect(spurMw).toBeDefined();
+    if (!mainMw || !spurMw) return;
+
+    const spurEndAtIc =
+      Math.hypot(spurMw.ex - trumpet.x, spurMw.ey - trumpet.y) <
+      Math.hypot(spurMw.sx - trumpet.x, spurMw.sy - trumpet.y);
+    const spurTerminal = spurEndAtIc
+      ? { x: spurMw.sx, y: spurMw.sy }
+      : { x: spurMw.ex, y: spurMw.ey };
+    const mainWest = { x: mainMw.sx, y: mainMw.sy };
+    const mainEast = { x: mainMw.ex, y: mainMw.ey };
+
+    const movements = [
+      [mainWest, spurTerminal],
+      [spurTerminal, mainWest],
+      [mainEast, spurTerminal],
+      [spurTerminal, mainEast],
+    ];
+
+    let traversedTrumpetUpperSlipRamp = false;
+    for (const [src, dst] of movements) {
+      const rawPath = world.findVehicleNetworkPath(src.x, src.y, dst.x, dst.y);
+      expect(rawPath).not.toBeNull();
+      if (!rawPath) continue;
+
+      const usesTrumpetRamp = rawPath.some(
+        (p) =>
+          p.isSlipRamp && Math.hypot(p.x - trumpet.x, p.y - trumpet.y) < 3.5,
+      );
+      expect(usesTrumpetRamp).toBe(true);
+
+      if (
+        rawPath.some(
+          (p) =>
+            p.isSlipRamp &&
+            p.onUpperBridge &&
+            Math.hypot(p.x - trumpet.x, p.y - trumpet.y) < 3.5,
+        )
+      ) {
+        traversedTrumpetUpperSlipRamp = true;
+      }
+
+      const track = world.buildDirectedLaneTrajectory(src, dst, rawPath);
+      expect(track).not.toBeNull();
+      if (!track) continue;
+
+      for (let i = 1; i < track.pts.length - 1; i++) {
+        const p0 = track.pts[i - 1];
+        const p1 = track.pts[i];
+        const p2 = track.pts[i + 1];
+        const dx0 = p1.x - p0.x;
+        const dy0 = p1.y - p0.y;
+        const dx1 = p2.x - p1.x;
+        const dy1 = p2.y - p1.y;
+        const l0 = Math.hypot(dx0, dy0);
+        const l1 = Math.hypot(dx1, dy1);
+        if (l0 > 0.05 && l1 > 0.05) {
+          const cosTurn = (dx0 * dx1 + dy0 * dy1) / (l0 * l1);
+          expect(cosTurn).toBeGreaterThanOrEqual(-0.5);
+        }
+      }
+    }
+
+    expect(traversedTrumpetUpperSlipRamp).toBe(true);
+  }, 15000);
 });

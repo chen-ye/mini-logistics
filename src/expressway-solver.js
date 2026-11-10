@@ -340,9 +340,9 @@ export function isCloverleafFootprintDry(
       const rBx = sB * uBx,
         rBy = sB * uBy;
       const checkPts = [
-        { px: x + rAx * 2.8, py: y + rAy * 2.8 },
-        { px: x + rBx * 2.8, py: y + rBy * 2.8 },
-        { px: x + (rAx + rBx) * 1.85, py: y + (rAy + rBy) * 1.85 },
+        { px: x + rAx * 3.3, py: y + rAy * 3.3 },
+        { px: x + rBx * 3.3, py: y + rBy * 3.3 },
+        { px: x + (rAx + rBx) * 2.05, py: y + (rAy + rBy) * 2.05 },
       ];
       for (const { px, py } of checkPts) {
         const rx = Math.round(px);
@@ -375,24 +375,21 @@ export function isTrumpetFootprintDry(world, x, y, angleMain, sideSign) {
   const nx = -uy * sideSign,
     ny = ux * sideSign;
 
-  // Check both the directional slip-ramps on the terminating highway side (+sideSign),
-  // the spur approach throat (+4.2..+5.8), the mainline ramp merge toes (±3.4),
-  // AND the 270° trumpet loop on the OPPOSITE side (-sideSign).
+  // Check both the Yellow/Purple outer slip-ramps on the terminating highway side (+sideSign),
+  // the spur approach throat (+2.45..+5.8), the mainline ramp merge toes (-2.85*sideSign, +2.45*sideSign),
+  // AND the concentric Brown 270° inner loop + Blue outer bell on the OPPOSITE side (-sideSign).
   const localPts = [
-    [-3.4, 0],
-    [3.4, 0],
-    [-2.8, 0.4],
-    [2.8, 0.4],
-    [0, 2.8],
-    [0, 4.2],
+    [-4.65 * sideSign, 0],
+    [-3.55 * sideSign, 0],
+    [3.55 * sideSign, 0],
+    [0, 3.55],
+    [0, 4.8],
     [0, 5.8],
-    [-1.8, 3.4],
-    [1.8, 3.4],
     [-1.4, 1.5],
     [1.4, 1.5],
-    [0, -2.2],
-    [1.8, -1.8],
-    [2.2, -1.0],
+    [0, -2.65],
+    [-1.1 * sideSign, -2.65],
+    [-2.5 * sideSign, -1.6],
   ];
   for (const [lu, lv] of localPts) {
     const px = x + ux * lu + nx * lv;
@@ -812,7 +809,8 @@ export function scoreMotorwaySamples(
       ) {
         return Infinity;
       }
-      for (let j = 2; j < other.samples.length - 2; j += 2) {
+      const jStride = Math.max(2, Math.round(other.samples.length / 22));
+      for (let j = 2; j < other.samples.length - 2; j += jStride) {
         const d = Math.hypot(
           pt.x - other.samples[j].x,
           pt.y - other.samples[j].y,
@@ -1319,62 +1317,19 @@ export function createMotorwayEntity(
   };
 }
 
-export function sampleMotorwayCurve(_world, waypoints) {
-  if (waypoints.length === 3) {
-    const [p0, p1, p2] = waypoints;
-    const out = [];
-    const steps = 42;
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const mt = 1 - t;
-      out.push({
-        x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
-        y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y,
-      });
-    }
-    return out;
-  }
-
-  if (waypoints.length === 4) {
-    const [p0, p1, p2, p3] = waypoints;
-    const out = [];
-    const steps = 44;
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const mt = 1 - t;
-      const c0 = mt * mt * mt;
-      const c1 = 3 * mt * mt * t;
-      const c2 = 3 * mt * t * t;
-      const c3 = t * t * t;
-      out.push({
-        x: c0 * p0.x + c1 * p1.x + c2 * p2.x + c3 * p3.x,
-        y: c0 * p0.y + c1 * p1.y + c2 * p2.y + c3 * p3.y,
-      });
-    }
-    return out;
-  }
-
-  let pts = waypoints.map((p) => ({ x: p.x, y: p.y }));
-  for (let iter = 0; iter < 3; iter++) {
-    const next = [pts[0]];
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i];
-      const p1 = pts[i + 1];
-      next.push({
-        x: 0.75 * p0.x + 0.25 * p1.x,
-        y: 0.75 * p0.y + 0.25 * p1.y,
-      });
-      next.push({
-        x: 0.25 * p0.x + 0.75 * p1.x,
-        y: 0.25 * p0.y + 0.75 * p1.y,
-      });
-    }
-    next.push(pts[pts.length - 1]);
-    pts = next;
-  }
-
-  // Resample Chaikin polyline to 45 uniform arc-length samples (matching cubic Bezier sample density)
-  // so `cosTurn` and `cosWide` evaluate consistent physical curvature radii!
+/**
+ * Resamples a polyline to uniform arc-length steps.
+ * @param {Point2D[]} pts
+ * @param {number} [targetDensity=1.25] samples per tile
+ * @param {number} [minSteps=64] minimum step count
+ * @returns {Point2D[]}
+ */
+export function resamplePolylineUniform(
+  pts,
+  targetDensity = 1.25,
+  minSteps = 64,
+) {
+  if (!pts || pts.length < 2) return pts || [];
   const cumLen = new Float32Array(pts.length);
   for (let i = 1; i < pts.length; i++) {
     cumLen[i] =
@@ -1384,7 +1339,7 @@ export function sampleMotorwayCurve(_world, waypoints) {
   const totalLen = cumLen[pts.length - 1];
   if (totalLen < 1e-3) return pts;
 
-  const steps = 44;
+  const steps = Math.max(minSteps, Math.ceil(totalLen * targetDensity));
   const resampled = [pts[0]];
   let segIdx = 0;
   for (let s = 1; s < steps; s++) {
@@ -1402,6 +1357,65 @@ export function sampleMotorwayCurve(_world, waypoints) {
   }
   resampled.push(pts[pts.length - 1]);
   return resampled;
+}
+
+export function sampleMotorwayCurve(_world, waypoints) {
+  if (waypoints.length === 3) {
+    const [p0, p1, p2] = waypoints;
+    const dense = [];
+    const denseSteps = 128;
+    for (let i = 0; i <= denseSteps; i++) {
+      const t = i / denseSteps;
+      const mt = 1 - t;
+      dense.push({
+        x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+        y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y,
+      });
+    }
+    return resamplePolylineUniform(dense);
+  }
+
+  if (waypoints.length === 4) {
+    const [p0, p1, p2, p3] = waypoints;
+    const dense = [];
+    const denseSteps = 128;
+    for (let i = 0; i <= denseSteps; i++) {
+      const t = i / denseSteps;
+      const mt = 1 - t;
+      const c0 = mt * mt * mt;
+      const c1 = 3 * mt * mt * t;
+      const c2 = 3 * mt * t * t;
+      const c3 = t * t * t;
+      dense.push({
+        x: c0 * p0.x + c1 * p1.x + c2 * p2.x + c3 * p3.x,
+        y: c0 * p0.y + c1 * p1.y + c2 * p2.y + c3 * p3.y,
+      });
+    }
+    return resamplePolylineUniform(dense);
+  }
+
+  let pts = waypoints.map((p) => ({ x: p.x, y: p.y }));
+  for (let iter = 0; iter < 4; iter++) {
+    const next = [pts[0]];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i];
+      const p1 = pts[i + 1];
+      next.push({
+        x: 0.75 * p0.x + 0.25 * p1.x,
+        y: 0.75 * p0.y + 0.25 * p1.y,
+      });
+      next.push({
+        x: 0.25 * p0.x + 0.75 * p1.x,
+        y: 0.25 * p0.y + 0.75 * p1.y,
+      });
+    }
+    next.push(pts[pts.length - 1]);
+    pts = next;
+  }
+
+  // Resample Chaikin polyline to uniform arc-length samples (~1.25 samples/tile, min 64)
+  // so `cosTurn` and `cosWide` evaluate consistent physical curvature radii!
+  return resamplePolylineUniform(pts);
 }
 
 export function polylineArcLength(_world, samples, i0, i1) {
@@ -1474,6 +1488,12 @@ export function tryBuildTrumpetSpurToTrunk(
 
   for (const trunk of world.motorways) {
     if (trunk.prunedStart || trunk.prunedEnd) continue;
+    if (
+      Math.hypot(originX - trunk.sx, originY - trunk.sy) < 28.0 ||
+      Math.hypot(originX - trunk.ex, originY - trunk.ey) < 28.0
+    ) {
+      continue;
+    }
     const tSamples = trunk.samples;
     if (!tSamples || tSamples.length < 14) continue;
     const trunkLen = world.polylineArcLength(tSamples, 0, tSamples.length - 1);
@@ -1481,8 +1501,9 @@ export function tryBuildTrumpetSpurToTrunk(
 
     const iStart = Math.floor(tSamples.length * 0.14);
     const iEnd = Math.ceil(tSamples.length * 0.86);
+    const iStride = Math.max(1, Math.round(tSamples.length / 44));
 
-    for (let i = iStart; i <= iEnd; i++) {
+    for (let i = iStart, stepNum = 0; i <= iEnd; i += iStride, stepNum++) {
       const hitPt = tSamples[i];
       if (Math.hypot(hitPt.x - trunk.sx, hitPt.y - trunk.sy) < 12.0) continue;
       if (Math.hypot(hitPt.x - trunk.ex, hitPt.y - trunk.ey) < 12.0) continue;
@@ -1600,7 +1621,7 @@ export function tryBuildTrumpetSpurToTrunk(
         }
         // For medium/long spurs (chord >= 24, every 2nd trunk sample), also test terrain-following Valley A* paths
         // terminating in a compact 8.5-tile perpendicular throat `p2Valley -> p3`!
-        if (chord >= 24 && i % 2 === 0) {
+        if (chord >= 24 && stepNum % 2 === 0) {
           const vStart = ap
             ? {
                 x: originX + ap.landNx * Math.min(8.5, chord * 0.14),
@@ -1612,8 +1633,12 @@ export function tryBuildTrumpetSpurToTrunk(
             y: hitPt.y + outNy * Math.min(11.0, Math.max(7.5, chord * 0.14)),
           };
           const p2Throat = {
-            x: hitPt.x + outNx * 4.2,
-            y: hitPt.y + outNy * 4.2,
+            x: hitPt.x + outNx * 5.6,
+            y: hitPt.y + outNy * 5.6,
+          };
+          const p2Collar = {
+            x: hitPt.x + outNx * 3.15,
+            y: hitPt.y + outNy * 3.15,
           };
           for (const bias of [0, 10, -10]) {
             const valleyWps = world.findValleyMotorwayWaypoints(
@@ -1626,8 +1651,8 @@ export function tryBuildTrumpetSpurToTrunk(
             );
             if (valleyWps && valleyWps.length >= 3) {
               const fullWps = ap
-                ? [p0, ...valleyWps, p2Throat, p3]
-                : [...valleyWps, p2Throat, p3];
+                ? [p0, ...valleyWps, p2Throat, p2Collar, p3]
+                : [...valleyWps, p2Throat, p2Collar, p3];
               spurCandidates.push({ waypoints: fullWps, isValley: true });
             }
           }
@@ -1732,7 +1757,7 @@ export function detectAndBuildCloverleafs(world) {
       );
       if (tooClose) continue;
 
-      world.displaceBuildingsInRadius(hit.x, hit.y, 5.6);
+      world.displaceBuildingsInRadius(hit.x, hit.y, 6.0);
       /** @type {CloverleafInterchange} */
       const cloverIc = {
         type: "cloverleaf",
@@ -1756,6 +1781,33 @@ export function detectAndBuildCloverleafs(world) {
 export function findPolylineIntersection(world, samplesA, samplesB) {
   if (!samplesA || !samplesB || samplesA.length < 2 || samplesB.length < 2)
     return null;
+
+  let minAX = Infinity,
+    maxAX = -Infinity,
+    minAY = Infinity,
+    maxAY = -Infinity;
+  for (let i = 0; i < samplesA.length; i++) {
+    const p = samplesA[i];
+    if (p.x < minAX) minAX = p.x;
+    if (p.x > maxAX) maxAX = p.x;
+    if (p.y < minAY) minAY = p.y;
+    if (p.y > maxAY) maxAY = p.y;
+  }
+  let minBX = Infinity,
+    maxBX = -Infinity,
+    minBY = Infinity,
+    maxBY = -Infinity;
+  for (let j = 0; j < samplesB.length; j++) {
+    const p = samplesB[j];
+    if (p.x < minBX) minBX = p.x;
+    if (p.x > maxBX) maxBX = p.x;
+    if (p.y < minBY) minBY = p.y;
+    if (p.y > maxBY) maxBY = p.y;
+  }
+  if (maxAX < minBX || minAX > maxBX || maxAY < minBY || minAY > maxBY) {
+    return null;
+  }
+
   const aStart = samplesA[0];
   const aEnd = samplesA[samplesA.length - 1];
   const bStart = samplesB[0];
@@ -1765,9 +1817,24 @@ export function findPolylineIntersection(world, samplesA, samplesB) {
   for (let i = 0; i < samplesA.length - 1; i++) {
     const a1 = samplesA[i];
     const a2 = samplesA[i + 1];
+    const sMinX = a1.x < a2.x ? a1.x : a2.x;
+    const sMaxX = a1.x > a2.x ? a1.x : a2.x;
+    const sMinY = a1.y < a2.y ? a1.y : a2.y;
+    const sMaxY = a1.y > a2.y ? a1.y : a2.y;
+    if (sMaxX < minBX || sMinX > maxBX || sMaxY < minBY || sMinY > maxBY) {
+      continue;
+    }
     for (let j = 0; j < samplesB.length - 1; j++) {
       const b1 = samplesB[j];
       const b2 = samplesB[j + 1];
+      if (
+        (b1.x < sMinX && b2.x < sMinX) ||
+        (b1.x > sMaxX && b2.x > sMaxX) ||
+        (b1.y < sMinY && b2.y < sMinY) ||
+        (b1.y > sMaxY && b2.y > sMaxY)
+      ) {
+        continue;
+      }
       const pt = world.segmentIntersection(
         a1.x,
         a1.y,
@@ -1942,18 +2009,19 @@ export function displaceAndRerouteRoadsAtInterchange(
 ) {
   let isInsideCore;
   if (ic.type === "cloverleaf") {
-    isInsideCore = (px, py) => Math.hypot(px - ic.x, py - ic.y) <= 3.6;
+    isInsideCore = (px, py) => Math.hypot(px - ic.x, py - ic.y) <= 4.0;
   } else if (ic.type === "trumpet") {
+    const sy = ic.sideSign || 1;
     const cosA = Math.cos(ic.angleMain);
     const sinA = Math.sin(ic.angleMain);
-    const nx = -sinA * (ic.sideSign || 1);
-    const ny = cosA * (ic.sideSign || 1);
+    const nx = -sinA * sy;
+    const ny = cosA * sy;
     isInsideCore = (px, py) => {
       const dx = px - ic.x;
       const dy = py - ic.y;
-      const u = dx * cosA + dy * sinA;
+      const u = (dx * cosA + dy * sinA) * sy;
       const v = dx * nx + dy * ny;
-      return Math.abs(u) <= 3.3 && v >= -2.4 && v <= 3.3;
+      return u >= -5.85 && u <= 4.05 && v >= -3.45 && v <= 4.05;
     };
   } else if (ic.type === "diamond-ramp") {
     const cosA = Math.cos(ic.angleRad);
@@ -1974,7 +2042,7 @@ export function displaceAndRerouteRoadsAtInterchange(
       const dy = py - ic.y;
       const u = dx * cosA + dy * sinA;
       const v = dx * nx + dy * ny;
-      return Math.abs(u) <= 3.5 && Math.abs(v) < 2.55;
+      return Math.abs(u) <= 2.75 && Math.abs(v) < 1.85;
     };
   } else {
     return true;
@@ -2323,8 +2391,8 @@ export function displaceAndRerouteRoadsAtInterchange(
 export function intersectUnderpassWithMotorway(_world, samples, kHint, A, B) {
   const rdx = B.x - A.x;
   const rdy = B.y - A.y;
-  const kMin = Math.max(0, kHint - 6);
-  const kMax = Math.min(samples.length - 2, kHint + 6);
+  const kMin = Math.max(0, kHint - 8);
+  const kMax = Math.min(samples.length - 2, kHint + 8);
   let bestPt = samples[kHint];
   let bestAngle = 0;
   let bestDist = Infinity;
@@ -2386,8 +2454,8 @@ export function buildFlexibleDiamondRamps(
 
     let kProj = kCenter;
     let bestProjD = Infinity;
-    const kMin = Math.max(2, kCenter - 5);
-    const kMax = Math.min(samples.length - 3, kCenter + 5);
+    const kMin = Math.max(2, kCenter - 8);
+    const kMax = Math.min(samples.length - 3, kCenter + 8);
     for (let k = kMin; k <= kMax; k++) {
       const d = Math.hypot(samples[k].x - p3.x, samples[k].y - p3.y);
       if (d < bestProjD) {
@@ -2403,7 +2471,7 @@ export function buildFlexibleDiamondRamps(
       while (
         kRamp + sxSign >= 1 &&
         kRamp + sxSign < samples.length - 1 &&
-        walked < 3.15
+        walked < 2.35
       ) {
         const nextK = kRamp + sxSign;
         walked += Math.hypot(
@@ -2435,8 +2503,8 @@ export function buildFlexibleDiamondRamps(
       const uAxisY = -sxSign * rTanY;
       const vAxisX = sySign * rNormX;
       const vAxisY = sySign * rNormY;
-      const u3 = Math.max(1.8, dx * uAxisX + dy * uAxisY);
-      const v3 = Math.max(1.4, dx * vAxisX + dy * vAxisY);
+      const u3 = Math.max(1.35, dx * uAxisX + dy * uAxisY);
+      const v3 = Math.max(1.15, dx * vAxisX + dy * vAxisY);
 
       const p1 = {
         x: p0.x + uAxisX * (u3 * 0.52),
@@ -2474,6 +2542,122 @@ export function buildFlexibleDiamondRamps(
     }
   }
   return ramps;
+}
+
+/**
+ * Samples cubic Bezier slip-ramp curves (t = 0, 0.1, ..., 1.0) into discrete line segments.
+ * @param {DiamondSlipRamp[]} ramps
+ * @returns {Array<[Point2D, Point2D]>}
+ */
+export function extractDiamondRampSegments(ramps) {
+  /** @type {Array<[Point2D, Point2D]>} */
+  const segs = [];
+  for (const ramp of ramps) {
+    const { p0, p1, p2, p3 } = ramp;
+    let prev = p0;
+    for (let step = 1; step <= 10; step++) {
+      const t = step * 0.1;
+      const mt = 1 - t;
+      const c0 = mt * mt * mt;
+      const c1 = 3 * mt * mt * t;
+      const c2 = 3 * mt * t * t;
+      const c3 = t * t * t;
+      const curr = {
+        x: c0 * p0.x + c1 * p1.x + c2 * p2.x + c3 * p3.x,
+        y: c0 * p0.y + c1 * p1.y + c2 * p2.y + c3 * p3.y,
+      };
+      segs.push([prev, curr]);
+      prev = curr;
+    }
+  }
+  return segs;
+}
+
+/**
+ * Computes minimum squared distance from point (px, py) to a list of line segments.
+ * @param {Array<[Point2D, Point2D]>} segs
+ * @param {number} px
+ * @param {number} py
+ * @returns {number}
+ */
+export function distSqToSegments(segs, px, py) {
+  let minD2 = Infinity;
+  for (let i = 0; i < segs.length; i++) {
+    const [a, b] = segs[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    const t =
+      lenSq > 1e-6
+        ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / lenSq))
+        : 0;
+    const qx = a.x + t * dx;
+    const qy = a.y + t * dy;
+    const d2 = (px - qx) * (px - qx) + (py - qy) * (py - qy);
+    if (d2 < minD2) minD2 = d2;
+  }
+  return minD2;
+}
+
+/**
+ * Displaces houses (<= 1.55 tiles), non-rural destinations (<= rad), and filters trees (<= 1.35 tiles)
+ * along diamond interchange ramp curve segments.
+ * @param {ProceduralLogisticsWorld} world
+ * @param {Array<[Point2D, Point2D]>} rampSegs
+ */
+export function clearBuildingsAndTreesAlongDiamondRamps(world, rampSegs) {
+  if (!rampSegs || rampSegs.length === 0) return;
+
+  const houseR2 = 1.55 * 1.55;
+  const beforeHouses = world.houses.length;
+  world.houses = world.houses.filter((h) => {
+    if (distSqToSegments(rampSegs, h.x, h.y) <= houseR2) {
+      const hid = world.idx(h.x, h.y);
+      if (world.buildingMask[hid] === 1) world.buildingMask[hid] = 0;
+      const t = world.towns[h.townId];
+      if (t && t.housesCount > 0) t.housesCount--;
+      return false;
+    }
+    return true;
+  });
+
+  const beforeDest = world.destinations.length;
+  world.destinations = world.destinations.filter((d) => {
+    if (d.isRuralNiche) return true;
+    const wT = d.wTiles || 2;
+    const hT = d.hTiles || 2;
+    const cx = d.gx + (wT - 1) * 0.5;
+    const cy = d.gy + (hT - 1) * 0.5;
+    const rad = Math.max(wT, hT) * 0.5 + 1.25;
+    if (distSqToSegments(rampSegs, cx, cy) <= rad * rad) {
+      for (let dy = 0; dy < hT; dy++) {
+        for (let dx = 0; dx < wT; dx++) {
+          const lid = world.idx(d.gx + dx, d.gy + dy);
+          if (world.buildingMask[lid] === 2) world.buildingMask[lid] = 0;
+        }
+      }
+      const t = world.towns[d.townId];
+      if (t) {
+        if (t.destinationsCount > 0) t.destinationsCount--;
+        if (d.zoneType === "commercial" && t.commercialCount > 0)
+          t.commercialCount--;
+        if (d.zoneType === "industrial" && t.industrialCount > 0)
+          t.industrialCount--;
+      }
+      return false;
+    }
+    return true;
+  });
+
+  world.displacedBuildingsCount +=
+    beforeHouses -
+    world.houses.length +
+    (beforeDest - world.destinations.length);
+
+  const treeR2 = 1.35 * 1.35;
+  world.trees = world.trees.filter(
+    (tr) => distSqToSegments(rampSegs, tr.x, tr.y) > treeR2,
+  );
 }
 
 /**
@@ -2535,14 +2719,14 @@ export function findExistingOctilinearUnderpass(
           cx = nx2;
           cy = ny2;
           const v = (cx - pt.x) * nx + (cy - pt.y) * ny;
-          if (v >= 2.55 && v <= 4.1) {
-            const err = Math.abs(v - 3.0);
+          if (v >= 1.85 && v <= 3.1) {
+            const err = Math.abs(v - 2.15);
             if (err < bestPosErr) {
               bestPosErr = err;
               posTerm = { x: cx, y: cy };
             }
-          } else if (v <= -2.55 && v >= -4.1) {
-            const err = Math.abs(Math.abs(v) - 3.0);
+          } else if (v <= -1.85 && v >= -3.1) {
+            const err = Math.abs(Math.abs(v) - 2.15);
             if (err < bestNegErr) {
               bestNegErr = err;
               negTerm = { x: cx, y: cy };
@@ -2597,8 +2781,9 @@ export function buildIntermediateExpresswayRamps(world) {
 
       const iStart = Math.floor(samples.length * 0.2);
       const iEnd = Math.ceil(samples.length * 0.8);
+      const iStride = Math.max(1, Math.round(samples.length / 44));
 
-      for (let i = iStart; i <= iEnd; i++) {
+      for (let i = iStart; i <= iEnd; i += iStride) {
         const pt = samples[i];
         const gx = Math.round(pt.x);
         const gy = Math.round(pt.y);
@@ -2710,8 +2895,8 @@ export function buildIntermediateExpresswayRamps(world) {
         );
         const stepReach =
           sdx !== 0 && sdy !== 0
-            ? Math.max(2, Math.round(2.85 / (bestDir.len * alignCos)))
-            : Math.max(3, Math.round(2.85 / alignCos));
+            ? Math.max(2, Math.round(2.15 / (bestDir.len * alignCos)))
+            : Math.max(2, Math.round(2.15 / alignCos));
 
         const posTerm = { x: gx + sdx * stepReach, y: gy + sdy * stepReach };
         const negTerm = { x: gx - sdx * stepReach, y: gy - sdy * stepReach };
@@ -2958,6 +3143,9 @@ export function buildIntermediateExpresswayRamps(world) {
           isThroughDiamond,
         );
 
+        const rampSegs = extractDiamondRampSegments(ramps);
+        clearBuildingsAndTreesAlongDiamondRamps(world, rampSegs);
+
         /** @type {DiamondRampInterchange} */
         const diamondIc = {
           type: "diamond-ramp",
@@ -3190,7 +3378,8 @@ export function buildNumberedMotorways(world) {
       const crossAng = Math.atan2(ey - sy, ex - sx);
       const s0 = Math.floor(mw1.samples.length * 0.22);
       const s1 = Math.ceil(mw1.samples.length * 0.78);
-      for (let s = s0; s <= s1; s += 2) {
+      const sStride = Math.max(2, Math.round(mw1.samples.length / 22));
+      for (let s = s0; s <= s1; s += sStride) {
         const pt = mw1.samples[s];
         const pPrev = mw1.samples[Math.max(0, s - 1)];
         const pNext = mw1.samples[Math.min(mw1.samples.length - 1, s + 1)];
@@ -3209,7 +3398,7 @@ export function buildNumberedMotorways(world) {
           continue;
         const dMid =
           Math.hypot(pt.x - midX, pt.y - midY) +
-          world.interchangeRoadOverlapCost(pt.x, pt.y, 4.4) * 0.45;
+          world.interchangeRoadOverlapCost(pt.x, pt.y, 5.0) * 0.45;
         if (dMid < minViaDist) {
           minViaDist = dMid;
           bestViaPt = pt;
@@ -3762,6 +3951,16 @@ export function finalizeExpresswayRampsAndTunnels(world) {
  * so elevated expressway decks never overlap underlying building roofs in close-up zoom.
  */
 export function displaceBuildingsAlongMotorwayCorridors(world) {
+  const allDiamondRampSegs = [];
+  for (const ic of world.interchanges) {
+    if (ic.type === "diamond-ramp" && ic.ramps) {
+      allDiamondRampSegs.push(...extractDiamondRampSegments(ic.ramps));
+    }
+  }
+  if (allDiamondRampSegs.length > 0) {
+    clearBuildingsAndTreesAlongDiamondRamps(world, allDiamondRampSegs);
+  }
+
   const surfacePts = [];
   const surfaceSegs = [];
   for (const mw of world.motorways) {

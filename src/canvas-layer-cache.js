@@ -785,25 +785,25 @@ export function buildVignelliWaterPath(
   outStrokePath = null,
 ) {
   const path = new Path2DCtor();
-  const gw = W + 2;
-  const gh = H + 2;
+  const gw = W + 4;
+  const gh = H + 4;
   const flags = new Uint8Array(gw * gh);
 
   const isFn = typeof threshOrFn === "function";
   const isNum = typeof threshOrFn === "number";
 
-  for (let gy = 0; gy < gh; gy++) {
-    const cy = Math.max(0, Math.min(H - 1, gy - 1));
+  for (let gy = 1; gy <= H + 2; gy++) {
+    const cy = Math.max(0, Math.min(H - 1, gy - 2));
     const rowOff = gy * gw;
     const wRowOff = cy * W;
     if (isFn) {
-      for (let gx = 0; gx < gw; gx++) {
-        const cx = Math.max(0, Math.min(W - 1, gx - 1));
+      for (let gx = 1; gx <= W + 2; gx++) {
+        const cx = Math.max(0, Math.min(W - 1, gx - 2));
         flags[rowOff + gx] = threshOrFn(cx, cy) ? 1 : 0;
       }
     } else if (isNum) {
-      for (let gx = 0; gx < gw; gx++) {
-        const cx = Math.max(0, Math.min(W - 1, gx - 1));
+      for (let gx = 1; gx <= W + 2; gx++) {
+        const cx = Math.max(0, Math.min(W - 1, gx - 2));
         const id = wRowOff + cx;
         flags[rowOff + gx] =
           waterMask[id] === WATER_MASK.DRY && elevationField[id] >= threshOrFn
@@ -811,195 +811,288 @@ export function buildVignelliWaterPath(
             : 0;
       }
     } else {
-      for (let gx = 0; gx < gw; gx++) {
-        const cx = Math.max(0, Math.min(W - 1, gx - 1));
+      for (let gx = 1; gx <= W + 2; gx++) {
+        const cx = Math.max(0, Math.min(W - 1, gx - 2));
         flags[rowOff + gx] =
           waterMask[wRowOff + cx] === WATER_MASK.OPEN_WATER ? 1 : 0;
       }
     }
   }
 
-  const poly = (pts) => {
-    path.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0], pts[i][1]);
-    path.closePath();
-  };
-  const seg = (ax, ay, bx, by) => {
-    if (!outStrokePath) return;
-    outStrokePath.moveTo(ax, ay);
-    outStrokePath.lineTo(bx, by);
+  /** @type {Map<number, { p1: { hx: number, hy: number }, p2: { hx: number, hy: number }, k2: number }[]>} */
+  const outEdges = new Map();
+
+  /**
+   * @param {{ hx: number, hy: number }} p1
+   * @param {{ hx: number, hy: number }} p2
+   */
+  const addSeg = (p1, p2) => {
+    const k1 = ((p1.hy + 8) << 16) | ((p1.hx + 8) & 0xffff);
+    const k2 = ((p2.hy + 8) << 16) | ((p2.hx + 8) & 0xffff);
+    let arr = outEdges.get(k1);
+    if (!arr) {
+      arr = [];
+      outEdges.set(k1, arr);
+    }
+    arr.push({ p1, p2, k2 });
   };
 
-  for (let y = -1; y < H; y++) {
-    const r0 = (y + 1) * gw;
-    const r1 = (y + 2) * gw;
-    const y0 = (y + 0.5) * ts;
-    const y1 = (y + 1.5) * ts;
-    const ym = (y + 1.0) * ts;
-    /** @type {number | null} */
-    let runStart = null;
+  for (let y = -2; y <= H; y++) {
+    const r0 = (y + 2) * gw;
+    const r1 = (y + 3) * gw;
 
-    for (let x = -1; x < W; x++) {
-      const c = x + 1;
+    for (let x = -2; x <= W; x++) {
+      const c = x + 2;
       const mask =
         (flags[r0 + c] << 3) |
         (flags[r0 + c + 1] << 2) |
         (flags[r1 + c + 1] << 1) |
         flags[r1 + c];
 
-      if (mask === 15) {
-        if (runStart === null) runStart = x;
-        continue;
-      }
-      if (runStart !== null) {
-        path.rect((runStart + 0.5) * ts, y0, (x - runStart) * ts, ts);
-        runStart = null;
-      }
-      if (mask === 0) continue;
+      if (mask === 0 || mask === 15) continue;
 
-      const x0 = (x + 0.5) * ts;
-      const x1 = (x + 1.5) * ts;
-      const xm = (x + 1.0) * ts;
+      const hx = 2 * x + 2;
+      const hy = 2 * y + 2;
+      const T = { hx, hy: hy - 1 };
+      const R = { hx: hx + 1, hy };
+      const B = { hx, hy: hy + 1 };
+      const L = { hx: hx - 1, hy };
 
+      // Directed boundary segments with region 1 strictly on the right-hand (interior) side
       switch (mask) {
         case 1:
-          poly([
-            [x0, ym],
-            [xm, y1],
-            [x0, y1],
-          ]);
-          seg(x0, ym, xm, y1);
+          addSeg(L, B);
           break;
         case 2:
-          poly([
-            [xm, y1],
-            [x1, ym],
-            [x1, y1],
-          ]);
-          seg(xm, y1, x1, ym);
-          break;
-        case 4:
-          poly([
-            [xm, y0],
-            [x1, y0],
-            [x1, ym],
-          ]);
-          seg(xm, y0, x1, ym);
-          break;
-        case 8:
-          poly([
-            [x0, y0],
-            [xm, y0],
-            [x0, ym],
-          ]);
-          seg(x0, ym, xm, y0);
+          addSeg(B, R);
           break;
         case 3:
-          poly([
-            [x0, ym],
-            [x1, ym],
-            [x1, y1],
-            [x0, y1],
-          ]);
-          seg(x0, ym, x1, ym);
+          addSeg(L, R);
           break;
-        case 6:
-          poly([
-            [xm, y0],
-            [x1, y0],
-            [x1, y1],
-            [xm, y1],
-          ]);
-          seg(xm, y0, xm, y1);
-          break;
-        case 9:
-          poly([
-            [x0, y0],
-            [xm, y0],
-            [xm, y1],
-            [x0, y1],
-          ]);
-          seg(xm, y0, xm, y1);
-          break;
-        case 12:
-          poly([
-            [x0, y0],
-            [x1, y0],
-            [x1, ym],
-            [x0, ym],
-          ]);
-          seg(x0, ym, x1, ym);
+        case 4:
+          addSeg(R, T);
           break;
         case 5:
-          poly([
-            [x0, ym],
-            [xm, y0],
-            [x1, y0],
-            [x1, ym],
-            [xm, y1],
-            [x0, y1],
-          ]);
-          seg(x0, ym, xm, y0);
-          seg(xm, y1, x1, ym);
+          addSeg(L, T);
+          addSeg(R, B);
           break;
-        case 10:
-          poly([
-            [x0, y0],
-            [xm, y0],
-            [x1, ym],
-            [x1, y1],
-            [xm, y1],
-            [x0, ym],
-          ]);
-          seg(xm, y0, x1, ym);
-          seg(x0, ym, xm, y1);
+        case 6:
+          addSeg(B, T);
           break;
         case 7:
-          poly([
-            [x0, ym],
-            [xm, y0],
-            [x1, y0],
-            [x1, y1],
-            [x0, y1],
-          ]);
-          seg(x0, ym, xm, y0);
+          addSeg(L, T);
+          break;
+        case 8:
+          addSeg(T, L);
+          break;
+        case 9:
+          addSeg(T, B);
+          break;
+        case 10:
+          addSeg(T, R);
+          addSeg(B, L);
           break;
         case 11:
-          poly([
-            [x0, y0],
-            [xm, y0],
-            [x1, ym],
-            [x1, y1],
-            [x0, y1],
-          ]);
-          seg(xm, y0, x1, ym);
+          addSeg(T, R);
+          break;
+        case 12:
+          addSeg(R, L);
           break;
         case 13:
-          poly([
-            [x0, y0],
-            [x1, y0],
-            [x1, ym],
-            [xm, y1],
-            [x0, y1],
-          ]);
-          seg(xm, y1, x1, ym);
+          addSeg(R, B);
           break;
         case 14:
-          poly([
-            [x0, y0],
-            [x1, y0],
-            [x1, y1],
-            [xm, y1],
-            [x0, ym],
-          ]);
-          seg(x0, ym, xm, y1);
+          addSeg(B, L);
           break;
       }
     }
-    if (runStart !== null) {
-      path.rect((runStart + 0.5) * ts, y0, (W - runStart) * ts, ts);
+  }
+
+  // Chain directed segments into closed Jordan loops
+  /** @type {{ chain: { hx: number, hy: number }[], isClosed: boolean }[]} */
+  const chains = [];
+
+  while (outEdges.size > 0) {
+    const entry = outEdges.entries().next().value;
+    if (!entry) break;
+    const [startKey, list] = entry;
+    const edge = list.pop();
+    if (!edge) {
+      outEdges.delete(startKey);
+      continue;
+    }
+    if (list.length === 0) outEdges.delete(startKey);
+
+    const chain = [edge.p1, edge.p2];
+    let currKey = edge.k2;
+    let closed = false;
+
+    while (outEdges.has(currKey)) {
+      const nextList = outEdges.get(currKey);
+      const nextEdge = nextList ? nextList.pop() : null;
+      if (!nextEdge) break;
+      if (nextList && nextList.length === 0) outEdges.delete(currKey);
+
+      if (nextEdge.k2 === startKey) {
+        closed = true;
+        break;
+      }
+      chain.push(nextEdge.p2);
+      currKey = nextEdge.k2;
+    }
+    chains.push({ chain, isClosed: closed });
+  }
+
+  /**
+   * Collapse collinear vertices and 1-cell staircase teeth along a closed octilinear loop.
+   * @param {{ hx: number, hy: number }[]} rawChain
+   * @returns {{ hx: number, hy: number }[]}
+   */
+  const simplifyClosedLoop = (rawChain) => {
+    if (rawChain.length < 3) return rawChain;
+
+    const dropCollinear = (pts) => {
+      const n = pts.length;
+      if (n < 3) return pts;
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const pPrev = pts[(i - 1 + n) % n];
+        const pCur = pts[i];
+        const pNext = pts[(i + 1) % n];
+        const d1x = pCur.hx - pPrev.hx;
+        const d1y = pCur.hy - pPrev.hy;
+        const d2x = pNext.hx - pCur.hx;
+        const d2y = pNext.hy - pCur.hy;
+        if (d1x * d2y - d1y * d2x !== 0) {
+          out.push(pCur);
+        }
+      }
+      return out.length >= 3 ? out : pts;
+    };
+
+    let pts = dropCollinear(rawChain);
+
+    // Collapse alternating 1-cell diagonal teeth (where a single 1-cell diagonal jog returns to the same axis)
+    const n = pts.length;
+    if (n >= 4) {
+      const filtered = [];
+      for (let i = 0; i < n; i++) {
+        const pPrev =
+          filtered.length > 0
+            ? filtered[filtered.length - 1]
+            : pts[(i - 1 + n) % n];
+        const pCur = pts[i];
+        const pNext = pts[(i + 1) % n];
+        const d1x = pCur.hx - pPrev.hx;
+        const d1y = pCur.hy - pPrev.hy;
+        const d2x = pNext.hx - pCur.hx;
+        const d2y = pNext.hy - pCur.hy;
+        const isD1 = Math.abs(d1x) === 1 && Math.abs(d1y) === 1;
+        const isD2 = Math.abs(d2x) === 1 && Math.abs(d2y) === 1;
+        if (
+          isD1 &&
+          isD2 &&
+          ((d1x === d2x && d1y === -d2y) || (d1x === -d2x && d1y === d2y))
+        ) {
+          continue;
+        }
+        filtered.push(pCur);
+      }
+      if (filtered.length >= 3) {
+        pts = dropCollinear(filtered);
+      }
+    }
+    return pts;
+  };
+
+  /**
+   * Trace continuous smooth filleted curves along a contour polyline or loop.
+   * @param {Path2D} targetPath
+   * @param {{ x: number, y: number }[]} pts
+   * @param {boolean} isClosed
+   */
+  const traceFilletedContour = (targetPath, pts, isClosed) => {
+    const m = pts.length;
+    if (m < 2) return;
+    if (m === 2 || !isClosed) {
+      targetPath.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < m - 1; i++) {
+        const pPrev = pts[i - 1];
+        const pCur = pts[i];
+        const pNext = pts[i + 1];
+        const lenPrev = Math.hypot(pCur.x - pPrev.x, pCur.y - pPrev.y);
+        const lenNext = Math.hypot(pNext.x - pCur.x, pNext.y - pCur.y);
+        const rFillet = Math.min(0.28 * ts, lenPrev * 0.42, lenNext * 0.42);
+        if (lenPrev > 1e-3 && lenNext > 1e-3 && rFillet > 0.15) {
+          const entryX = pCur.x - ((pCur.x - pPrev.x) / lenPrev) * rFillet;
+          const entryY = pCur.y - ((pCur.y - pPrev.y) / lenPrev) * rFillet;
+          const exitX = pCur.x + ((pNext.x - pCur.x) / lenNext) * rFillet;
+          const exitY = pCur.y + ((pNext.y - pCur.y) / lenNext) * rFillet;
+          targetPath.lineTo(entryX, entryY);
+          targetPath.quadraticCurveTo(pCur.x, pCur.y, exitX, exitY);
+        } else {
+          targetPath.lineTo(pCur.x, pCur.y);
+        }
+      }
+      targetPath.lineTo(pts[m - 1].x, pts[m - 1].y);
+      return;
+    }
+
+    // Closed loop
+    const entries = [];
+    const exits = [];
+    const hasFillet = [];
+    for (let i = 0; i < m; i++) {
+      const pPrev = pts[(i - 1 + m) % m];
+      const pCur = pts[i];
+      const pNext = pts[(i + 1) % m];
+      const lenPrev = Math.hypot(pCur.x - pPrev.x, pCur.y - pPrev.y);
+      const lenNext = Math.hypot(pNext.x - pCur.x, pNext.y - pCur.y);
+      const rFillet = Math.min(0.28 * ts, lenPrev * 0.42, lenNext * 0.42);
+      if (lenPrev > 1e-3 && lenNext > 1e-3 && rFillet > 0.15) {
+        entries.push({
+          x: pCur.x - ((pCur.x - pPrev.x) / lenPrev) * rFillet,
+          y: pCur.y - ((pCur.y - pPrev.y) / lenPrev) * rFillet,
+        });
+        exits.push({
+          x: pCur.x + ((pNext.x - pCur.x) / lenNext) * rFillet,
+          y: pCur.y + ((pNext.y - pCur.y) / lenNext) * rFillet,
+        });
+        hasFillet.push(true);
+      } else {
+        entries.push(pCur);
+        exits.push(pCur);
+        hasFillet.push(false);
+      }
+    }
+
+    targetPath.moveTo(exits[0].x, exits[0].y);
+    for (let i = 1; i < m; i++) {
+      targetPath.lineTo(entries[i].x, entries[i].y);
+      if (hasFillet[i]) {
+        targetPath.quadraticCurveTo(pts[i].x, pts[i].y, exits[i].x, exits[i].y);
+      }
+    }
+    targetPath.lineTo(entries[0].x, entries[0].y);
+    if (hasFillet[0]) {
+      targetPath.quadraticCurveTo(pts[0].x, pts[0].y, exits[0].x, exits[0].y);
+    }
+    targetPath.closePath();
+  };
+
+  for (const { chain, isClosed } of chains) {
+    const collapsed = simplifyClosedLoop(chain);
+    if (collapsed.length < 3) continue;
+    const pixelPts = collapsed.map((p) => ({
+      x: p.hx * 0.5 * ts,
+      y: p.hy * 0.5 * ts,
+    }));
+    traceFilletedContour(path, pixelPts, isClosed);
+    if (outStrokePath) {
+      traceFilletedContour(outStrokePath, pixelPts, isClosed);
     }
   }
+
   return path;
 }
 
@@ -1027,12 +1120,162 @@ export function drawArchitectureGrid(ctx, pw, ph, ts) {
 }
 
 /**
+ * Extrudes a variable-width polyline into a clockwise-wound closed ribbon polygon on targetPath.
+ * @param {Path2D} targetPath
+ * @param {{ x: number, y: number, halfW: number }[]} pts
+ * @param {boolean} [roundCaps]
+ */
+export function extrudeRibbonToPath2D(targetPath, pts, roundCaps = true) {
+  if (!pts || pts.length < 2) return;
+
+  // Filter out consecutive duplicate points (Math.hypot(dx, dy) < 0.05)
+  const cleanPts = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (cleanPts.length === 0) {
+      cleanPts.push(p);
+    } else {
+      const prev = cleanPts[cleanPts.length - 1];
+      if (Math.hypot(p.x - prev.x, p.y - prev.y) >= 0.05) {
+        cleanPts.push(p);
+      }
+    }
+  }
+  const n = cleanPts.length;
+  if (n < 2) return;
+
+  // Compute segment tangents and normals
+  const segTx = new Float64Array(n - 1);
+  const segTy = new Float64Array(n - 1);
+  const segNx = new Float64Array(n - 1);
+  const segNy = new Float64Array(n - 1);
+
+  for (let i = 0; i < n - 1; i++) {
+    const dx = cleanPts[i + 1].x - cleanPts[i].x;
+    const dy = cleanPts[i + 1].y - cleanPts[i].y;
+    const len = Math.hypot(dx, dy) || 1;
+    segTx[i] = dx / len;
+    segTy[i] = dy / len;
+    segNx[i] = -segTy[i];
+    segNy[i] = segTx[i];
+  }
+
+  // Compute vertex tangents, normals, and miter scale
+  const tx = new Float64Array(n);
+  const ty = new Float64Array(n);
+  const nx = new Float64Array(n);
+  const ny = new Float64Array(n);
+  const miterScale = new Float64Array(n);
+
+  tx[0] = segTx[0];
+  ty[0] = segTy[0];
+  nx[0] = segNx[0];
+  ny[0] = segNy[0];
+  miterScale[0] = 1.0;
+
+  tx[n - 1] = segTx[n - 2];
+  ty[n - 1] = segTy[n - 2];
+  nx[n - 1] = segNx[n - 2];
+  ny[n - 1] = segNy[n - 2];
+  miterScale[n - 1] = 1.0;
+
+  for (let i = 1; i < n - 1; i++) {
+    const avgTx = 0.5 * (segTx[i - 1] + segTx[i]);
+    const avgTy = 0.5 * (segTy[i - 1] + segTy[i]);
+    const tLen = Math.hypot(avgTx, avgTy) || 1;
+    tx[i] = avgTx / tLen;
+    ty[i] = avgTy / tLen;
+
+    const avgNx = 0.5 * (segNx[i - 1] + segNx[i]);
+    const avgNy = 0.5 * (segNy[i - 1] + segNy[i]);
+    const nLen = Math.hypot(avgNx, avgNy);
+    if (nLen < 1e-4) {
+      nx[i] = segNx[i];
+      ny[i] = segNy[i];
+      miterScale[i] = 1.0;
+    } else {
+      nx[i] = avgNx / nLen;
+      ny[i] = avgNy / nLen;
+      const miter = 1.0 / Math.max(0.1, nLen);
+      miterScale[i] = Math.min(1.35, miter);
+    }
+  }
+
+  // Compute Left (L) and Right (R) boundary vertices
+  const Lx = new Float64Array(n);
+  const Ly = new Float64Array(n);
+  const Rx = new Float64Array(n);
+  const Ry = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const hw = cleanPts[i].halfW * miterScale[i];
+    Lx[i] = cleanPts[i].x + nx[i] * hw;
+    Ly[i] = cleanPts[i].y + ny[i] * hw;
+    Rx[i] = cleanPts[i].x - nx[i] * hw;
+    Ry[i] = cleanPts[i].y - ny[i] * hw;
+  }
+
+  // Trace clockwise-wound closed polygon on targetPath
+  targetPath.moveTo(Lx[0], Ly[0]);
+  for (let i = 1; i < n; i++) {
+    targetPath.lineTo(Lx[i], Ly[i]);
+  }
+
+  // End cap around pts[n - 1]
+  if (roundCaps) {
+    const pEnd = cleanPts[n - 1];
+    const hw = pEnd.halfW;
+    const enx = nx[n - 1];
+    const eny = ny[n - 1];
+    const etx = tx[n - 1];
+    const ety = ty[n - 1];
+    for (let k = 1; k <= 4; k++) {
+      const theta = (k * Math.PI) / 4;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const px = pEnd.x + hw * (cosT * enx + sinT * etx);
+      const py = pEnd.y + hw * (cosT * eny + sinT * ety);
+      targetPath.lineTo(px, py);
+    }
+  } else {
+    targetPath.lineTo(Rx[n - 1], Ry[n - 1]);
+  }
+
+  // Right edge from n - 1 down to 0
+  for (let i = n - 2; i >= 0; i--) {
+    targetPath.lineTo(Rx[i], Ry[i]);
+  }
+
+  // Start cap around pts[0]
+  if (roundCaps) {
+    const pStart = cleanPts[0];
+    const hw = pStart.halfW;
+    const snx = nx[0];
+    const sny = ny[0];
+    const stx = tx[0];
+    const sty = ty[0];
+    for (let k = 1; k <= 4; k++) {
+      const theta = (k * Math.PI) / 4;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const px = pStart.x + hw * (-cosT * snx - sinT * stx);
+      const py = pStart.y + hw * (-cosT * sny - sinT * sty);
+      targetPath.lineTo(px, py);
+    }
+  }
+
+  targetPath.closePath();
+}
+
+/**
  * Draws the two-pass ("bank", "water") tapering quadratic-curve river network.
  * @param {VectorLayerRecorder | CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D} ctx
  * @param {RiverRibbon[]} rivers
  * @param {number} ts
  */
 export function drawTaperingRivers(ctx, rivers, ts) {
+  if (!rivers || rivers.length === 0) return;
+
   const {
     mainStart,
     mainEnd,
@@ -1041,52 +1284,147 @@ export function drawTaperingRivers(ctx, rivers, ts) {
     bankExtra: bankExtraScale,
   } = WORLD_GEOMETRY.RIVER_RENDER_WIDTHS;
 
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  for (const pass of ["bank", "water"]) {
-    if (
-      pass === "water" &&
-      "nextLayerPass" in ctx &&
-      typeof ctx.nextLayerPass === "function"
-    ) {
-      ctx.nextLayerPass();
-    }
-    ctx.strokeStyle = pass === "bank" ? PALETTE.bgPaper : PALETTE.waterCyan;
-    const bankExtra = pass === "bank" ? ts * bankExtraScale : 0;
-    for (const rObj of rivers) {
-      const pts = Array.isArray(rObj) ? rObj : rObj.points;
-      const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
-      if (!pts || pts.length < 4) continue;
-      const startW = isMain ? mainStart : tribStart;
-      const endW = isMain ? mainEnd : tribEnd;
-      for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i];
-        const p1 = pts[i + 1];
-        const p2 = pts[Math.min(pts.length - 1, i + 2)];
-        const frac = i / (pts.length - 1);
-        const w = p1.width ?? startW + (endW - startW) * Math.pow(frac, 0.9);
-        ctx.lineWidth = Math.round((ts * w + bankExtra) * 2) * 0.5;
-        ctx.beginPath();
-        const x0 =
-          i === 0 ? (p0.x + 0.5) * ts : ((p0.x + p1.x) * 0.5 + 0.5) * ts;
-        const y0 =
-          i === 0 ? (p0.y + 0.5) * ts : ((p0.y + p1.y) * 0.5 + 0.5) * ts;
-        const x1 = (p1.x + 0.5) * ts;
-        const y1 = (p1.y + 0.5) * ts;
-        const x2 =
-          i === pts.length - 2
-            ? (p1.x + 0.5) * ts
-            : ((p1.x + p2.x) * 0.5 + 0.5) * ts;
-        const y2 =
-          i === pts.length - 2
-            ? (p1.y + 0.5) * ts
-            : ((p1.y + p2.y) * 0.5 + 0.5) * ts;
-        ctx.moveTo(x0, y0);
-        ctx.quadraticCurveTo(x1, y1, x2, y2);
-        ctx.stroke();
+  /** @type {{ x: number, y: number, w: number }[][]} */
+  const riverFillets = [];
+
+  for (const rObj of rivers) {
+    const pts = Array.isArray(rObj) ? rObj : rObj.points;
+    const isMain = !Array.isArray(rObj) && rObj.isMainOutflow;
+    if (!pts || pts.length < 4) continue;
+
+    const startW = isMain ? mainStart : tribStart;
+    const endW = isMain ? mainEnd : tribEnd;
+
+    // 1. Assign each point its interpolated width
+    const ptsWithW = pts.map((p, i) => {
+      const frac = i / (pts.length - 1);
+      const w = p.width ?? startW + (endW - startW) * Math.pow(frac, 0.9);
+      return { x: p.x, y: p.y, width: w };
+    });
+
+    // 2. Collapse collinear intermediate steps
+    const corners = [ptsWithW[0]];
+    for (let i = 1; i < ptsWithW.length - 1; i++) {
+      const pPrev = ptsWithW[i - 1];
+      const pCur = ptsWithW[i];
+      const pNext = ptsWithW[i + 1];
+      const d1x = pCur.x - pPrev.x;
+      const d1y = pCur.y - pPrev.y;
+      const d2x = pNext.x - pCur.x;
+      const d2y = pNext.y - pCur.y;
+      if (d1x * d2y - d1y * d2x !== 0 || d1x * d2x + d1y * d2y < 0) {
+        corners.push(pCur);
       }
     }
+    corners.push(ptsWithW[ptsWithW.length - 1]);
+
+    // 3. Collapse any micro-jogs < 2.2 tiles
+    let simplified = [corners[0]];
+    for (let i = 1; i < corners.length - 1; i++) {
+      const prev = simplified[simplified.length - 1];
+      const cur = corners[i];
+      const next = corners[i + 1];
+      const dPrev = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+      const dNext = Math.hypot(next.x - cur.x, next.y - cur.y);
+      if (dPrev < 2.2 && dNext < 2.2 && simplified.length > 1) {
+        continue;
+      }
+      simplified.push(cur);
+    }
+    simplified.push(corners[corners.length - 1]);
+
+    if (simplified.length < 2) {
+      simplified = [ptsWithW[0], ptsWithW[ptsWithW.length - 1]];
+    }
+
+    // 4. Sample filleted centerline in pixel coordinates
+    const V = simplified.map((p) => ({
+      x: (p.x + 0.5) * ts,
+      y: (p.y + 0.5) * ts,
+      w: p.width,
+    }));
+
+    const filleted = [{ x: V[0].x, y: V[0].y, w: V[0].w }];
+    for (let i = 1; i < V.length - 1; i++) {
+      const vPrev = V[i - 1];
+      const vCur = V[i];
+      const vNext = V[i + 1];
+      const lenPrev = Math.hypot(vCur.x - vPrev.x, vCur.y - vPrev.y);
+      const lenNext = Math.hypot(vNext.x - vCur.x, vNext.y - vCur.y);
+      if (lenPrev < 1e-3 || lenNext < 1e-3) continue;
+
+      const rFillet = Math.min(1.1 * ts, 0.42 * lenPrev, 0.42 * lenNext);
+      if (rFillet > 0.5) {
+        const uPrevX = (vCur.x - vPrev.x) / lenPrev;
+        const uPrevY = (vCur.y - vPrev.y) / lenPrev;
+        const uNextX = (vNext.x - vCur.x) / lenNext;
+        const uNextY = (vNext.y - vCur.y) / lenNext;
+
+        const pEntry = {
+          x: vCur.x - uPrevX * rFillet,
+          y: vCur.y - uPrevY * rFillet,
+          w: vCur.w - (rFillet / lenPrev) * (vCur.w - vPrev.w),
+        };
+        const pExit = {
+          x: vCur.x + uNextX * rFillet,
+          y: vCur.y + uNextY * rFillet,
+          w: vCur.w + (rFillet / lenNext) * (vNext.w - vCur.w),
+        };
+
+        filleted.push(pEntry);
+        for (let step = 1; step <= 3; step++) {
+          const u = step * 0.25;
+          const invU = 1 - u;
+          const bx =
+            invU * invU * pEntry.x + 2 * invU * u * vCur.x + u * u * pExit.x;
+          const by =
+            invU * invU * pEntry.y + 2 * invU * u * vCur.y + u * u * pExit.y;
+          const bw = invU * pEntry.w + u * pExit.w;
+          filleted.push({ x: bx, y: by, w: bw });
+        }
+        filleted.push(pExit);
+      } else {
+        filleted.push(vCur);
+      }
+    }
+    filleted.push({
+      x: V[V.length - 1].x,
+      y: V[V.length - 1].y,
+      w: V[V.length - 1].w,
+    });
+    riverFillets.push(filleted);
   }
+
+  // Pass 1: "bank"
+  const bankPath = new Path2DCtor();
+  for (const riverPts of riverFillets) {
+    const ribbonPts = riverPts.map((p) => ({
+      x: p.x,
+      y: p.y,
+      halfW: (ts * p.w + ts * bankExtraScale) * 0.5,
+    }));
+    extrudeRibbonToPath2D(bankPath, ribbonPts, true);
+  }
+  ctx.fillStyle = PALETTE.bgPaper;
+  // eslint-disable-next-line unicorn/no-array-fill-with-reference-type
+  ctx.fill(bankPath, "nonzero");
+
+  // Pass 2: "water"
+  if ("nextLayerPass" in ctx && typeof ctx.nextLayerPass === "function") {
+    ctx.nextLayerPass();
+  }
+  const waterRibbonPath = new Path2DCtor();
+  for (const riverPts of riverFillets) {
+    const ribbonPts = riverPts.map((p) => ({
+      x: p.x,
+      y: p.y,
+      halfW: ts * p.w * 0.5,
+    }));
+    extrudeRibbonToPath2D(waterRibbonPath, ribbonPts, true);
+  }
+  ctx.fillStyle = PALETTE.waterCyan;
+  // eslint-disable-next-line unicorn/no-array-fill-with-reference-type
+  ctx.fill(waterRibbonPath, "nonzero");
 }
 
 /**

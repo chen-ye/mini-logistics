@@ -51,6 +51,55 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
             0,
           );
 
+          // Smoothed-octilinear river run simplification: multi-tile octilinear runs without 1-tile H-V-H-V alternating chatter
+          const pts = river.points;
+          let runLen = 1;
+          const runLengths = [];
+          for (let i = 1; i < pts.length - 2; i++) {
+            const dx = pts[i + 1].x - pts[i].x;
+            const dy = pts[i + 1].y - pts[i].y;
+            const isOctilinearStep =
+              (Math.abs(dx) === 1 && dy === 0) ||
+              (dx === 0 && Math.abs(dy) === 1) ||
+              (Math.abs(dx) === 1 && Math.abs(dy) === 1);
+            expect(isOctilinearStep).toBe(true);
+
+            if (i > 1) {
+              const prevDx = pts[i].x - pts[i - 1].x;
+              const prevDy = pts[i].y - pts[i - 1].y;
+              if (dx === prevDx && dy === prevDy) {
+                runLen++;
+              } else {
+                runLengths.push(runLen);
+                runLen = 1;
+              }
+            }
+          }
+          runLengths.push(runLen);
+          const maxRun = Math.max(...runLengths);
+          const avgRun =
+            runLengths.reduce((sum, r) => sum + r, 0) / runLengths.length;
+          expect(maxRun).toBeGreaterThanOrEqual(3);
+          expect(avgRun).toBeGreaterThan(1.5);
+
+          for (let i = 0; i < pts.length - 3; i++) {
+            const s0x = pts[i + 1].x - pts[i].x;
+            const s0y = pts[i + 1].y - pts[i].y;
+            const s1x = pts[i + 2].x - pts[i + 1].x;
+            const s1y = pts[i + 2].y - pts[i + 1].y;
+            const s2x = pts[i + 3].x - pts[i + 2].x;
+            const s2y = pts[i + 3].y - pts[i + 2].y;
+            const isH0 = Math.abs(s0x) === 1 && s0y === 0;
+            const isV0 = s0x === 0 && Math.abs(s0y) === 1;
+            const isH1 = Math.abs(s1x) === 1 && s1y === 0;
+            const isV1 = s1x === 0 && Math.abs(s1y) === 1;
+            const isH2 = Math.abs(s2x) === 1 && s2y === 0;
+            const isV2 = s2x === 0 && Math.abs(s2y) === 1;
+            const isAlternatingHVHV =
+              (isH0 && isV1 && isH2) || (isV0 && isH1 && isV2);
+            expect(isAlternatingHVHV).toBe(false);
+          }
+
           // Interior highland springs maintain a 6-tile surface road exclusion buffer around headwaterPt
           if (river.headwaterPt) {
             const { x: hx, y: hy } = river.headwaterPt;
@@ -68,7 +117,7 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
         }
       }
     }
-  });
+  }, 15000);
 
   test("Benchmark seeds satisfy Road Graph Diagnostics, Bridge Span, Driveway, Expressway, Tunnel & Diamond Ramp invariants", () => {
     const pipeline = createWorldPipeline();
@@ -139,6 +188,18 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
           world.doesPolylineCrossAirport(mw.samples, 1.8, mw.airportId),
         ).toBe(false);
 
+        // Highway sample density: uniform arc-length sampling >= 64 samples, avg step <= 0.95 tiles
+        expect(mw.samples.length).toBeGreaterThanOrEqual(64);
+        let totalStepLen = 0;
+        for (let i = 1; i < mw.samples.length; i++) {
+          totalStepLen += Math.hypot(
+            mw.samples[i].x - mw.samples[i - 1].x,
+            mw.samples[i].y - mw.samples[i - 1].y,
+          );
+        }
+        const avgStepLen = totalStepLen / (mw.samples.length - 1);
+        expect(avgStepLen).toBeLessThanOrEqual(0.95);
+
         for (let i = 2; i < mw.samples.length; i++) {
           const prevDx = mw.samples[i - 1].x - mw.samples[i - 2].x;
           const prevDy = mw.samples[i - 1].y - mw.samples[i - 2].y;
@@ -187,6 +248,64 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
             expect(Number.isFinite(ramp.p1.x)).toBe(true);
             expect(Number.isFinite(ramp.p2.x)).toBe(true);
           }
+
+          // Compacted Diamond interchange bounds: reach from center <= 3.6 tiles
+          expect(
+            Math.hypot(ic.posTerm.x - ic.x, ic.posTerm.y - ic.y),
+          ).toBeLessThanOrEqual(3.6);
+
+          // House clearance along all 4 Diamond Bezier ramp curves: zero houses within 1.50 tiles
+          for (const ramp of ic.ramps) {
+            for (let step = 0; step < 10; step++) {
+              const t0 = step / 10;
+              const t1 = (step + 1) / 10;
+              const mt0 = 1 - t0;
+              const mt1 = 1 - t1;
+              const segA = {
+                x:
+                  mt0 * mt0 * mt0 * ramp.p0.x +
+                  3 * mt0 * mt0 * t0 * ramp.p1.x +
+                  3 * mt0 * t0 * t0 * ramp.p2.x +
+                  t0 * t0 * t0 * ramp.p3.x,
+                y:
+                  mt0 * mt0 * mt0 * ramp.p0.y +
+                  3 * mt0 * mt0 * t0 * ramp.p1.y +
+                  3 * mt0 * t0 * t0 * ramp.p2.y +
+                  t0 * t0 * t0 * ramp.p3.y,
+              };
+              const segB = {
+                x:
+                  mt1 * mt1 * mt1 * ramp.p0.x +
+                  3 * mt1 * mt1 * t1 * ramp.p1.x +
+                  3 * mt1 * t1 * t1 * ramp.p2.x +
+                  t1 * t1 * t1 * ramp.p3.x,
+                y:
+                  mt1 * mt1 * mt1 * ramp.p0.y +
+                  3 * mt1 * mt1 * t1 * ramp.p1.y +
+                  3 * mt1 * t1 * t1 * ramp.p2.y +
+                  t1 * t1 * t1 * ramp.p3.y,
+              };
+              const sDx = segB.x - segA.x;
+              const sDy = segB.y - segA.y;
+              const lenSq = sDx * sDx + sDy * sDy;
+              for (const h of world.houses) {
+                const u =
+                  lenSq > 1e-6
+                    ? Math.max(
+                        0,
+                        Math.min(
+                          1,
+                          ((h.x - segA.x) * sDx + (h.y - segA.y) * sDy) / lenSq,
+                        ),
+                      )
+                    : 0;
+                const qx = segA.x + u * sDx;
+                const qy = segA.y + u * sDy;
+                const d = Math.hypot(h.x - qx, h.y - qy);
+                expect(d).toBeGreaterThanOrEqual(1.5);
+              }
+            }
+          }
         }
       }
 
@@ -229,6 +348,15 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
       expect(
         renderer.surfaceNetworkDisplayList?.recorder.getStats().commandCount,
       ).toBeGreaterThan(0);
+      expect(renderer.overpassBridgeDisplayList).not.toBeNull();
+      const hasCloverleafOrTrumpet = world.interchanges.some(
+        (ic) => ic.type === "cloverleaf" || ic.type === "trumpet",
+      );
+      if (hasCloverleafOrTrumpet) {
+        expect(
+          renderer.overpassBridgeDisplayList?.recorder.getStats().commandCount,
+        ).toBeGreaterThan(0);
+      }
 
       const roadDiag = renderer.computeRoadGraphDiagnostics(world);
       expect(roadDiag.activeTracks).toBeGreaterThan(0);
@@ -287,6 +415,15 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
           }
         }
       }
+
+      // 8. Vehicle Routing Graph & Interchange Upper-Bridge Tagging:
+      // Whenever a Cloverleaf or Trumpet interchange is present, upper-deck bridge nodes are tagged with onUpperBridge
+      const routingGraph = world.ensureVehicleRoutingGraph();
+      if (hasCloverleafOrTrumpet) {
+        expect(routingGraph.nodes.some((n) => Boolean(n.onUpperBridge))).toBe(
+          true,
+        );
+      }
     }
-  });
+  }, 15000);
 });
