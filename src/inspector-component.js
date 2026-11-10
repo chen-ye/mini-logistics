@@ -35,6 +35,138 @@ export function compassSector(dx, dy) {
 }
 
 /**
+ * Derives a goods-specific commercial lot name, badge, short tag, and subtitle from `demandedGoods`.
+ *
+ * @param {string[] | null | undefined} demandedGoods
+ * @param {boolean} [isCircular=false]
+ * @returns {{ name: string, badge: string, shortTag: string, subtitle: string }}
+ */
+export function describeCommercialLotByGoods(
+  demandedGoods,
+  isCircular = false,
+) {
+  const goods = Array.isArray(demandedGoods)
+    ? demandedGoods.filter(Boolean)
+    : [];
+  if (goods.length === 1) {
+    const g = goods[0];
+    if (g === "GROCERIES") {
+      return {
+        name: isCircular ? "CBD Food Hall" : "Grocery Market",
+        badge: isCircular ? "CBD · FOOD HALL" : "COM · GROCERY",
+        shortTag: isCircular ? "CBD" : "GROC",
+        subtitle: "Fresh Groceries & Produce Retail Market",
+      };
+    }
+    if (g === "CONSUMER_GOODS") {
+      return {
+        name: isCircular ? "CBD Grand Galleria" : "Department Store",
+        badge: isCircular ? "CBD · GALLERIA" : "COM · RETAIL",
+        shortTag: isCircular ? "CBD" : "DEPT",
+        subtitle: "Consumer Goods & Household Merchandise Store",
+      };
+    }
+    if (g === "HARDWARE") {
+      return {
+        name: isCircular ? "CBD Builders Exchange" : "Hardware Depot",
+        badge: isCircular ? "CBD · HARDWARE" : "COM · HARDWARE",
+        shortTag: isCircular ? "CBD" : "HDWR",
+        subtitle: "Building Materials, Tools & Hardware Store",
+      };
+    }
+    if (g === "ELECTRONICS") {
+      return {
+        name: isCircular ? "CBD Tech Plaza" : "Tech Showroom",
+        badge: isCircular ? "CBD · TECH" : "COM · ELECTRONICS",
+        shortTag: isCircular ? "CBD" : "ELEC",
+        subtitle: "Consumer Electronics & Digital Retail Showroom",
+      };
+    }
+  }
+
+  if (goods.length >= 2) {
+    const set = new Set(goods);
+    if (set.has("GROCERIES") && set.has("CONSUMER_GOODS")) {
+      return {
+        name: isCircular
+          ? "CBD Food & Retail Rotunda"
+          : "Supermarket & Galleria",
+        badge: isCircular ? "CBD · FOOD & GOODS" : "COM · SUPERCENTER",
+        shortTag: isCircular ? "CBD" : "MART",
+        subtitle: isCircular
+          ? "Downtown High-Rise Food Hall & Retail Exchange"
+          : "Arterial Groceries & Consumer Goods Supercenter",
+      };
+    }
+    if (set.has("CONSUMER_GOODS") && set.has("HARDWARE")) {
+      return {
+        name: isCircular
+          ? "CBD Home & Commerce Rotunda"
+          : "Home & Lifestyle Mart",
+        badge: isCircular ? "CBD · HOME & GOODS" : "COM · HOME MART",
+        shortTag: isCircular ? "CBD" : "HOME",
+        subtitle: isCircular
+          ? "Downtown High-Rise Retail, Hardware & B2B Plaza"
+          : "Arterial Consumer Goods & Hardware Retail Plaza",
+      };
+    }
+    if (set.has("HARDWARE") && set.has("ELECTRONICS")) {
+      return {
+        name: isCircular ? "CBD Tech & Trade Tower" : "Tech & Hardware Mart",
+        badge: isCircular ? "CBD · TECH & HDWR" : "COM · TRADE MART",
+        shortTag: isCircular ? "CBD" : "TRDE",
+        subtitle: isCircular
+          ? "Downtown High-Rise Electronics, Hardware & B2B Hub"
+          : "Arterial Hardware, Tools & Electronics Retail Plaza",
+      };
+    }
+    if (set.has("ELECTRONICS") && set.has("GROCERIES")) {
+      return {
+        name: isCircular ? "CBD Metro Exchange" : "Metro Hypermarket",
+        badge: isCircular ? "CBD · FOOD & TECH" : "COM · HYPERMARKET",
+        shortTag: isCircular ? "CBD" : "HYPR",
+        subtitle: isCircular
+          ? "Downtown High-Rise Groceries, Electronics & B2B Hub"
+          : "Arterial Groceries & Electronics Hypermarket",
+      };
+    }
+    if (set.has("GROCERIES") && set.has("HARDWARE")) {
+      return {
+        name: isCircular
+          ? "CBD Provision & Trade Hall"
+          : "Farm & Builders Supply",
+        badge: isCircular ? "CBD · FOOD & HDWR" : "COM · SUPPLY MART",
+        shortTag: isCircular ? "CBD" : "SPLY",
+        subtitle: isCircular
+          ? "Downtown High-Rise Groceries, Hardware & B2B Hall"
+          : "Arterial Groceries & Hardware Supply Plaza",
+      };
+    }
+    if (set.has("CONSUMER_GOODS") && set.has("ELECTRONICS")) {
+      return {
+        name: isCircular
+          ? "CBD Lifestyle & Tech Plaza"
+          : "Lifestyle & Tech Galleria",
+        badge: isCircular ? "CBD · GOODS & TECH" : "COM · GALLERIA",
+        shortTag: isCircular ? "CBD" : "GALR",
+        subtitle: isCircular
+          ? "Downtown High-Rise Retail, Electronics & B2B Plaza"
+          : "Arterial Consumer Goods & Electronics Galleria",
+      };
+    }
+  }
+
+  return {
+    name: isCircular ? "CBD Plaza" : "Commercial",
+    badge: isCircular ? "CBD · LANDMARK" : "COM · ARTERIAL",
+    shortTag: isCircular ? "CBD" : "COM",
+    subtitle: isCircular
+      ? "Downtown High-Rise & Central Retail Sink"
+      : "Arterial Commercial Retail & Services",
+  };
+}
+
+/**
  * Describes building dossier metadata, badges, and display titles.
  *
  * @param {Destination} d
@@ -76,18 +208,15 @@ export function describeBuildingDossier(d, world = null) {
   }
 
   if (d.zoneType === "commercial") {
+    const comSpec = describeCommercialLotByGoods(d.demandedGoods, d.isCircular);
     return {
       stage: "COM",
-      badge: d.isCircular ? "CBD · LANDMARK" : "COM · ARTERIAL",
+      badge: comSpec.badge,
       badgeClass: "bg-blue-700 text-white",
-      shortTag: d.isCircular ? "CBD" : "COM",
-      typeLabel: d.isCircular ? `CBD Plaza (${sec})` : `Commercial (${sec})`,
-      title: d.isCircular
-        ? `${townName} CBD Plaza (${sec})`
-        : `${townName} Commercial (${sec})`,
-      subtitle: d.isCircular
-        ? "Downtown High-Rise & Central Retail Sink"
-        : "Arterial Commercial Retail & Services",
+      shortTag: comSpec.shortTag,
+      typeLabel: `${comSpec.name} (${sec})`,
+      title: `${townName} ${comSpec.name} (${sec})`,
+      subtitle: comSpec.subtitle,
       townName,
     };
   }

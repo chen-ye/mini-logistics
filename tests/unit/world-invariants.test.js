@@ -799,7 +799,16 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
         expect((link.commodity ?? "").length).toBeGreaterThan(0);
       }
 
-      // 3. LOG hub consolidation share: LOG->COM links represent a substantial share of retail COM supply
+      // 3. LOG hub consolidation share & STEEL mill footprint guard (never 2x1/1x2)
+      const steelMills = world.destinations.filter(
+        (d) => d.subType === "MFG" && d.mfgType === "STEEL",
+      );
+      expect(steelMills.length).toBeGreaterThanOrEqual(1);
+      for (const sm of steelMills) {
+        expect(sm.wTiles).toBeGreaterThanOrEqual(2);
+        expect(sm.hTiles).toBeGreaterThanOrEqual(2);
+      }
+
       const comRetailLinks = world.cargoLinks.filter(
         (l) =>
           l.stage === "LOG->COM" ||
@@ -863,5 +872,53 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
     );
     expect(getPartnerStageBadgeClass("COM")).toBe("bg-blue-100 text-blue-900");
     expect(getPartnerStageBadgeClass("AIR")).toBe("bg-teal-100 text-teal-900");
+
+    // 5. Commercial lot naming based on demandedGoods
+    const groceryCom = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 30,
+        townId: 0,
+        x: 54,
+        y: 50,
+        zoneType: "commercial",
+        isCircular: false,
+        demandedGoods: ["GROCERIES"],
+      }),
+      mockWorld,
+    );
+    expect(groceryCom.badge).toBe("COM · GROCERY");
+    expect(groceryCom.title).toContain("Harborview Grocery Market");
+
+    const techTradeMart = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 31,
+        townId: 0,
+        x: 54,
+        y: 50,
+        zoneType: "commercial",
+        isCircular: false,
+        demandedGoods: ["HARDWARE", "ELECTRONICS"],
+      }),
+      mockWorld,
+    );
+    expect(techTradeMart.badge).toBe("COM · TRADE MART");
+    expect(techTradeMart.title).toContain("Harborview Tech & Hardware Mart");
+
+    const cbdFoodRetail = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 32,
+        townId: 0,
+        x: 50,
+        y: 50,
+        zoneType: "commercial",
+        isCircular: true,
+        demandedGoods: ["GROCERIES", "CONSUMER_GOODS"],
+      }),
+      mockWorld,
+    );
+    expect(cbdFoodRetail.badge).toBe("CBD · FOOD & GOODS");
+    expect(cbdFoodRetail.title).toContain(
+      "Harborview CBD Food & Retail Rotunda",
+    );
   }, 20000);
 });

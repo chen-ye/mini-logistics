@@ -1867,8 +1867,15 @@ export function buildIndustrialCargoChain(world) {
 
   for (let i = 0; i < mfgNodes.length; i++) {
     const m = mfgNodes[i];
+    const isCompact = (m.wTiles || 2) < 2 || (m.hTiles || 2) < 2;
     if (!m.mfgType || !MFG_SPECS[m.mfgType]) {
-      m.mfgType = ALL_MFG_TYPES[(m.townId + i) % 4];
+      m.mfgType = isCompact
+        ? (m.townId + i) % 2 === 0
+          ? "FOOD"
+          : "GOODS"
+        : ALL_MFG_TYPES[(m.townId + i) % 4];
+    } else if (isCompact && (m.mfgType === "STEEL" || m.mfgType === "TECH")) {
+      m.mfgType = (m.townId + i) % 2 === 0 ? "FOOD" : "GOODS";
     }
   }
 
@@ -1881,9 +1888,19 @@ export function buildIndustrialCargoChain(world) {
       for (const m of mfgNodes) {
         typeCounts.set(m.mfgType, (typeCounts.get(m.mfgType) || 0) + 1);
       }
-      const duplicateNode = mfgNodes.find(
-        (m) => (typeCounts.get(m.mfgType) || 0) > 1,
-      );
+      const requiresFullPad = missing === "STEEL" || missing === "TECH";
+      const duplicateNode =
+        mfgNodes.find(
+          (m) =>
+            (typeCounts.get(m.mfgType) || 0) > 1 &&
+            (m.wTiles || 2) * (m.hTiles || 2) >= 6,
+        ) ||
+        mfgNodes.find(
+          (m) =>
+            (typeCounts.get(m.mfgType) || 0) > 1 &&
+            (!requiresFullPad ||
+              ((m.wTiles || 2) >= 2 && (m.hTiles || 2) >= 2)),
+        );
       if (duplicateNode) {
         duplicateNode.mfgType = missing;
       }
@@ -1919,6 +1936,44 @@ export function buildIndustrialCargoChain(world) {
       } else {
         com.demandedGoods = [g1];
       }
+      const isCirc = Boolean(com.isCircular);
+      if (com.demandedGoods.length === 1) {
+        const g = com.demandedGoods[0];
+        com.subType =
+          g === "GROCERIES"
+            ? isCirc
+              ? "CBD Food Hall"
+              : "Grocery Market"
+            : g === "CONSUMER_GOODS"
+              ? isCirc
+                ? "CBD Grand Galleria"
+                : "Department Store"
+              : g === "HARDWARE"
+                ? isCirc
+                  ? "CBD Builders Exchange"
+                  : "Hardware Depot"
+                : isCirc
+                  ? "CBD Tech Plaza"
+                  : "Tech Showroom";
+      } else {
+        const set = new Set(com.demandedGoods);
+        if (set.has("GROCERIES") && set.has("CONSUMER_GOODS")) {
+          com.subType = isCirc
+            ? "CBD Food & Retail Rotunda"
+            : "Supermarket & Galleria";
+        } else if (set.has("CONSUMER_GOODS") && set.has("HARDWARE")) {
+          com.subType = isCirc
+            ? "CBD Home & Commerce Rotunda"
+            : "Home & Lifestyle Mart";
+        } else if (set.has("HARDWARE") && set.has("ELECTRONICS")) {
+          com.subType = isCirc
+            ? "CBD Tech & Trade Tower"
+            : "Tech & Hardware Mart";
+        } else {
+          com.subType = isCirc ? "CBD Metro Exchange" : "Metro Hypermarket";
+        }
+      }
+      com.label = com.subType;
     }
   }
 
