@@ -31,6 +31,16 @@ function distToSegment(px, py, x1, y1, x2, y2) {
 }
 
 /**
+ * Shortest angular difference between two angles in radians.
+ * @param {number} a
+ * @param {number} b
+ * @returns {number}
+ */
+function angDiff(a, b) {
+  return Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+}
+
+/**
  * Determines closest distance from (mx, my) to interchange ramps or within interchange envelope.
  * @param {number} mx
  * @param {number} my
@@ -926,18 +936,17 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
               const parkedPlane = sim.planes.find(
                 (pl) => pl.id === g.occupiedBy,
               );
-              if (
-                parkedPlane &&
-                (parkedPlane.state === "GATE_LOADING" ||
-                  parkedPlane.state === "PUSHBACK_HOLD")
-              ) {
-                expect(
-                  Math.hypot(
-                    parkedPlane.x - g.worldX,
-                    parkedPlane.y - g.worldY,
-                  ),
-                ).toBeLessThan(1e-3);
-              }
+              expect(parkedPlane).toBeDefined();
+              expect(
+                parkedPlane?.state === "GATE_LOADING" ||
+                  parkedPlane?.state === "PUSHBACK_HOLD",
+              ).toBe(true);
+              expect(
+                Math.hypot(
+                  (parkedPlane?.x ?? 0) - g.worldX,
+                  (parkedPlane?.y ?? 0) - g.worldY,
+                ),
+              ).toBeLessThan(1e-3);
             }
             if (g.reservedBy !== null && g.reservedBy !== g.occupiedBy) {
               expect(seenGatePlanes.has(g.reservedBy)).toBe(false);
@@ -1235,4 +1244,133 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
 
     expect(traversedTrumpetUpperSlipRamp).toBe(true);
   }, 15000);
+
+  test("Single-Runway Deadlock Immunity & 60fps Smooth Ground Turns (Pushback, Docking & Taxi Corners)", () => {
+    const pipeline = createWorldPipeline();
+    const world = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainAlgo: "tectonic-fbm",
+      hydrologyAlgo: "thalweg-astar",
+      airportMix: "hub-reg-cargo",
+      includeIntermediateRamps: true,
+      waterCoverage: 48,
+      townCount: 14,
+      buildingDensity: 200,
+      airportCount: 3,
+      windAxis: -1,
+    });
+
+    // 1. Single-runway regional airport deadlock immunity:
+    // A departure in HOLD_SHORT_QUEUE and an arrival in APPROACH_QUEUE with runway clear
+    // must clear planeDep into TAKEOFF_ROLL instead of circular-waiting/deadlocking.
+    const regAp = world.airports.find((a) => !a.isHub);
+    expect(regAp).toBeDefined();
+    if (!regAp || !regAp.atc) return;
+
+    const otherAp = world.airports.find((a) => a.id !== regAp.id);
+    expect(otherAp).toBeDefined();
+    if (!otherAp || !otherAp.atc) return;
+
+    const sim = new LogisticsSimulator(world);
+    sim.cars = [];
+
+    const trackDep = buildFlightTrack(regAp, otherAp, { gateIndex: 0 });
+    const sDep = sampleFlightTrack(trackDep, trackDep.holdShortDist);
+    /** @type {any} */
+    const planeDep = {
+      id: 101,
+      origin: regAp,
+      dest: otherAp,
+      track: trackDep,
+      dist: trackDep.holdShortDist,
+      segIdx: sDep.segIdx,
+      phase: "TAXI_OUT",
+      state: "HOLD_SHORT_QUEUE",
+      holdingShort: true,
+      taxiS: regAp.atc.holdShortS,
+      altitude: 0,
+      x: sDep.x,
+      y: sDep.y,
+      ang: sDep.ang,
+      speed: 0,
+      dwellTimer: 0,
+      isCargoFreighter: false,
+      color: "#e65100",
+      progress: trackDep.holdShortDist / trackDep.totalLength,
+    };
+
+    const trackArr = buildFlightTrack(otherAp, regAp, { gateIndex: 1 });
+    let arrLandDist = trackArr.totalLength;
+    for (let i = 0; i < trackArr.pts.length; i++) {
+      if (trackArr.pts[i].phase === "LANDING") {
+        arrLandDist = trackArr.cumLen[i];
+        break;
+      }
+    }
+    const sArr = sampleFlightTrack(trackArr, arrLandDist);
+    /** @type {any} */
+    const planeArr = {
+      id: 102,
+      origin: otherAp,
+      dest: regAp,
+      track: trackArr,
+      dist: arrLandDist,
+      segIdx: sArr.segIdx,
+      phase: "CRUISE",
+      state: "APPROACH_QUEUE",
+      holdingShort: false,
+      holdingPatternAngle: 0,
+      altitude: 0.8,
+      x: sArr.x,
+      y: sArr.y,
+      ang: sArr.ang,
+      speed: SIM_CONFIG.AVIATION.landingSpeed * 0.85,
+      dwellTimer: 0,
+      isCargoFreighter: false,
+      color: "#3b82f6",
+      progress: arrLandDist / trackArr.totalLength,
+    };
+
+    const atc = regAp.atc;
+    atc.runwayBusyBy = null;
+    atc.depRunwayBusyBy = null;
+    atc.arrRunwayBusyBy = null;
+    atc.holdShortQueue = [planeDep];
+    atc.approachQueue = [planeArr];
+    atc.taxiwayOccupants = [planeDep];
+
+    sim.planes = [planeDep, planeArr];
+
+    sim.update(0.2, 1.0);
+
+    expect(planeDep.state).toBe("TAKEOFF_ROLL");
+    expect(planeDep.holdingShort).toBe(false);
+    expect(atc.runwayBusyBy).toBe(planeDep.id);
+    expect(atc.holdShortQueue.length).toBe(0);
+
+    // 2. 60fps (dt = 1/60) smooth trajectory and ground-turn verification across 600 ticks on OTTD-METRO-84
+    const sim60 = new LogisticsSimulator(world);
+    sim60.cars = [];
+    expect(sim60.planes.length).toBeGreaterThan(0);
+
+    const maxDeltaPos = 0.35;
+    const maxDeltaAng = (10 * Math.PI) / 180 + 1e-4;
+
+    for (let tick = 0; tick < 600; tick++) {
+      const prevMap = new Map(
+        sim60.planes.map((p) => [p.id ?? -1, { x: p.x, y: p.y, ang: p.ang }]),
+      );
+      sim60.update(1 / 60, 1.0);
+      for (const p of sim60.planes) {
+        const prev = prevMap.get(p.id ?? -1);
+        if (!prev) continue;
+        const dPos = Math.hypot(p.x - prev.x, p.y - prev.y);
+        const dAng = angDiff(p.ang, prev.ang);
+        expect(dPos).toBeLessThanOrEqual(maxDeltaPos);
+        expect(dAng).toBeLessThanOrEqual(maxDeltaAng);
+      }
+    }
+  });
 });

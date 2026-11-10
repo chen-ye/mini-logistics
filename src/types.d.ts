@@ -804,9 +804,13 @@ export interface PlaneAgent {
   targetTaxiS?: number;
   pushbackTimer?: number;
   holdingPatternAngle?: number;
+  pushbackOriginGateId?: number | null;
+  pushbackOriginS?: number | null;
   _resX?: number;
   _resY?: number;
   _resAng?: number;
+  _holdRAlong?: number;
+  _holdRCross?: number;
   origin: Airport | PlaneEndpoint;
   dest: Airport | PlaneEndpoint;
   track: FlightTrack;
