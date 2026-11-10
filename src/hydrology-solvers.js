@@ -543,7 +543,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           const d = Math.hypot(sx - b.cx, sy - b.cy);
           if (d < minBasinD) minBasinD = d;
         }
-        if (minBasinD < 64) continue;
+        if (minBasinD < 48) continue;
 
         const score = el + Math.min(140, minBasinD) * 0.003;
         if (score > bestScore) {
@@ -552,6 +552,18 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         }
       }
       if (bestSp) springs.push(bestSp);
+    }
+    if (springs.length === 0) {
+      for (let attempt = 0; attempt < 45; attempt++) {
+        const sx = world.rng.int(24, W - 25);
+        const sy = world.rng.int(20, H - 21);
+        const id = world.idx(sx, sy);
+        if (world.waterMask[id] > WATER_MASK.DRY) continue;
+        const el = world.elevationField[id];
+        if (el < seaLevel + 0.08) continue;
+        springs.push({ x: sx, y: sy });
+        break;
+      }
     }
     return springs;
   };
@@ -564,16 +576,30 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
    */
   const pickMapBorderRiverEntries = (count = 2) => {
     const candidates = [];
-    const scanBorderPt = (x, y) => {
+    const minSinkDist = Math.min(105, Math.hypot(W, H) * 0.28);
+    const minBasinDist = Math.min(52, Math.hypot(W, H) * 0.16);
+
+    const scanBorderPt = (x, y, relaxed = false) => {
       // Avoid placing border river entries directly underneath the top-left Seed HUD or top-right Zoom/Playback HUD!
-      if ((x <= 105 && y <= 24) || (x >= W - 22 && y <= 88)) return;
+      if (!relaxed && ((x <= 105 && y <= 24) || (x >= W - 22 && y <= 88)))
+        return;
       const id = world.idx(x, y);
       if (world.waterMask[id] > WATER_MASK.DRY) return;
       for (const b of basins) {
-        if (Math.hypot(x - b.cx, y - b.cy) < 52) return;
+        if (Math.hypot(x - b.cx, y - b.cy) < (relaxed ? 24 : minBasinDist))
+          return;
       }
-      for (let dy = -14; dy <= 14; dy += 4) {
-        for (let dx = -14; dx <= 14; dx += 4) {
+      const waterCheckRadius = relaxed ? 6 : 14;
+      for (
+        let dy = -waterCheckRadius;
+        dy <= waterCheckRadius;
+        dy += relaxed ? 6 : 4
+      ) {
+        for (
+          let dx = -waterCheckRadius;
+          dx <= waterCheckRadius;
+          dx += relaxed ? 6 : 4
+        ) {
           if (
             world.inBounds(x + dx, y + dy, 1) &&
             world.waterMask[world.idx(x + dx, y + dy)] > WATER_MASK.DRY
@@ -584,7 +610,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       const dSink = primarySink
         ? Math.hypot(x - primarySink.deepX, y - primarySink.deepY)
         : 999;
-      if (primarySink && dSink < 105) return;
+      if (primarySink && dSink < (relaxed ? 35 : minSinkDist)) return;
       const elev = world.elevationField[id];
       const valleyScore =
         1.0 -
@@ -601,6 +627,17 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     for (let y = 28; y < H - 28; y += 8) {
       scanBorderPt(2, y);
       scanBorderPt(W - 3, y);
+    }
+
+    if (candidates.length === 0) {
+      for (let x = 16; x < W - 16; x += 10) {
+        scanBorderPt(x, 2, true);
+        scanBorderPt(x, H - 3, true);
+      }
+      for (let y = 16; y < H - 16; y += 10) {
+        scanBorderPt(2, y, true);
+        scanBorderPt(W - 3, y, true);
+      }
     }
     candidates.sort((a, b) => b.score - a.score);
 
@@ -659,7 +696,7 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       path = applyMeanderingDisplacement(path, seedPhase, 0.42);
     }
 
-    // If an interior river approaches within 8 tiles of a map border before its final 12 points,
+    // If an interior river approaches within 22 tiles of a map border before its final 12 points,
     // interpolate 1-tile steps cleanly to the map border so it exits off-canvas without an uncarved jump!
     if (
       path[0].x > 3 &&
@@ -678,24 +715,25 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         }
         return bridge;
       };
+      const borderMargin = 22;
       for (let i = 0; i < path.length - 12; i++) {
         const pt = path[i];
-        if (pt.x >= W - 9) {
+        if (pt.x >= W - borderMargin - 1) {
           path = [
             ...buildBorderBridge(W - 1, pt.y, pt.x, pt.y),
             ...path.slice(i),
           ];
           break;
-        } else if (pt.x <= 8) {
+        } else if (pt.x <= borderMargin) {
           path = [...buildBorderBridge(0, pt.y, pt.x, pt.y), ...path.slice(i)];
           break;
-        } else if (pt.y >= H - 9) {
+        } else if (pt.y >= H - borderMargin - 1) {
           path = [
             ...buildBorderBridge(pt.x, H - 1, pt.x, pt.y),
             ...path.slice(i),
           ];
           break;
-        } else if (pt.y <= 8) {
+        } else if (pt.y <= borderMargin) {
           path = [...buildBorderBridge(pt.x, 0, pt.x, pt.y), ...path.slice(i)];
           break;
         }
@@ -1096,13 +1134,15 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
           ? { deepX: basins[0].deepX, deepY: basins[0].deepY }
           : { deepX: Math.round(W * 0.5), deepY: Math.round(H * 0.5) });
       let minSD = Infinity;
+      const minBasinSep = Math.min(65, Math.hypot(W, H) * 0.18);
       for (const b of basins) {
         const d = Math.hypot(entry.x - b.deepX, entry.y - b.deepY);
-        if (d >= 75 && d < minSD) {
+        if (d >= minBasinSep && d < minSD) {
           minSD = d;
           targetSink = b;
         }
       }
+      const isFirstOutflow = world.rivers.length === 0 || sPass === 0;
       const rPath = routeValleyThalwegAStar(
         entry.x,
         entry.y,
@@ -1110,9 +1150,44 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
         targetSink.deepY,
         true,
         sPass * 2.1,
-        58,
+        isFirstOutflow ? 18 : 45,
       );
-      carveTaperingRiverPath(rPath, sPass === 0, useMeanders, sPass * 1.9);
+      carveTaperingRiverPath(rPath, isFirstOutflow, useMeanders, sPass * 1.9);
+    }
+  }
+
+  // Guaranteed continental river safety net: ensure world.rivers.length >= 1 on all continental archetypes
+  if (arch !== "island-hopper" && world.rivers.length === 0) {
+    let bestX = Math.round(W * 0.2);
+    let bestY = Math.round(H * 0.2);
+    let maxElev = -1;
+    const destX = primarySink ? primarySink.deepX : Math.round(W * 0.5);
+    const destY = primarySink ? primarySink.deepY : Math.round(H * 0.5);
+    for (let y = 10; y < H - 10; y += 4) {
+      for (let x = 10; x < W - 10; x += 4) {
+        const id = world.idx(x, y);
+        if (world.waterMask[id] === WATER_MASK.DRY) {
+          const d = Math.hypot(x - destX, y - destY);
+          const el = world.elevationField[id];
+          if (d >= 35 && el > maxElev) {
+            maxElev = el;
+            bestX = x;
+            bestY = y;
+          }
+        }
+      }
+    }
+    const fallbackPath = routeValleyThalwegAStar(
+      bestX,
+      bestY,
+      destX,
+      destY,
+      false,
+      1.23,
+      12,
+    );
+    if (fallbackPath) {
+      carveTaperingRiverPath(fallbackPath, true, useMeanders, 0.5);
     }
   }
 

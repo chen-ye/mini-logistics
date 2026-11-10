@@ -16,7 +16,10 @@
  * } from './types.js'
  */
 
-import { DEFAULT_GENERATOR_CONFIG } from "./constants.js";
+import {
+  DEFAULT_GENERATOR_CONFIG,
+  ARCHETYPE_PARAMETER_PRESETS,
+} from "./constants.js";
 
 /** @type {ReadonlyArray<string>} */
 export const VALID_WORLD_SIZES = Object.freeze([
@@ -29,9 +32,13 @@ export const VALID_WORLD_SIZES = Object.freeze([
 /** @type {ReadonlyArray<string>} */
 export const VALID_ARCHETYPES = Object.freeze([
   "confluence",
-  "estuary",
-  "archipelago",
   "inland",
+  "alpine-passes",
+  "fjord-sound",
+  "isthmus-strait",
+  "caldera-basin",
+  "barrier-lagoon",
+  "canyon-gorge",
   "island-hopper",
 ]);
 
@@ -221,6 +228,66 @@ export function parseUrlState(search, isMobileViewport = false) {
     ? parsedWind
     : DEFAULT_GENERATOR_CONFIG.windAxis;
 
+  const archPreset =
+    ARCHETYPE_PARAMETER_PRESETS[archetype] ||
+    ARCHETYPE_PARAMETER_PRESETS.confluence;
+
+  const rawRelief = params.get("relief");
+  const terrainRelief =
+    rawRelief !== null
+      ? clampNumber(parseInt(rawRelief, 10), 20, 200, archPreset.terrainRelief)
+      : archPreset.terrainRelief;
+
+  const rawIncision = params.get("incision");
+  const valleyIncision =
+    rawIncision !== null
+      ? clampNumber(
+          parseInt(rawIncision, 10),
+          0,
+          200,
+          archPreset.valleyIncision,
+        )
+      : archPreset.valleyIncision;
+
+  const rawIndent = params.get("indent");
+  const coastalEmbayment =
+    rawIndent !== null
+      ? clampNumber(
+          parseInt(rawIndent, 10),
+          0,
+          200,
+          archPreset.coastalEmbayment,
+        )
+      : archPreset.coastalEmbayment;
+
+  const rawCaldera = params.get("caldera");
+  const calderaCurvature =
+    rawCaldera !== null
+      ? clampNumber(
+          parseInt(rawCaldera, 10),
+          0,
+          200,
+          archPreset.calderaCurvature,
+        )
+      : archPreset.calderaCurvature;
+
+  const rawBarrier = params.get("barrier");
+  const barrierFragmentation =
+    rawBarrier !== null
+      ? clampNumber(
+          parseInt(rawBarrier, 10),
+          0,
+          200,
+          archPreset.barrierFragmentation,
+        )
+      : archPreset.barrierFragmentation;
+
+  const rawBasins = params.get("basins");
+  const basinCount =
+    rawBasins !== null
+      ? clampNumber(parseInt(rawBasins, 10), 1, 6, archPreset.basinCount)
+      : archPreset.basinCount;
+
   /** @type {Readonly<Required<GeneratorConfig>>} */
   const config = Object.freeze({
     seed,
@@ -235,6 +302,12 @@ export function parseUrlState(search, isMobileViewport = false) {
     buildingDensity,
     airportCount,
     windAxis,
+    terrainRelief,
+    valleyIncision,
+    coastalEmbayment,
+    calderaCurvature,
+    barrierFragmentation,
+    basinCount,
   });
 
   // 4. View State
@@ -311,7 +384,7 @@ export function parseUrlState(search, isMobileViewport = false) {
 /**
  * Serializes AppState into a canonical query string.
  *
- * @param {Partial<AppState>} state
+ * @param {Partial<Omit<AppState, "config">> & { config?: Partial<GeneratorConfig> }} state
  * @param {{
  *   omitDefaults?: boolean,
  *   isMobileViewport?: boolean,
@@ -320,7 +393,21 @@ export function parseUrlState(search, isMobileViewport = false) {
  */
 export function serializeUrlState(state, options = {}) {
   const omitDefaults = options.omitDefaults ?? true;
-  const cfg = state.config || DEFAULT_GENERATOR_CONFIG;
+  const rawCfg = state.config || DEFAULT_GENERATOR_CONFIG;
+  const archPreset =
+    ARCHETYPE_PARAMETER_PRESETS[
+      rawCfg.archetype || DEFAULT_GENERATOR_CONFIG.archetype
+    ] || ARCHETYPE_PARAMETER_PRESETS.confluence;
+  const cfg = {
+    ...DEFAULT_GENERATOR_CONFIG,
+    terrainRelief: archPreset.terrainRelief,
+    valleyIncision: archPreset.valleyIncision,
+    coastalEmbayment: archPreset.coastalEmbayment,
+    calderaCurvature: archPreset.calderaCurvature,
+    barrierFragmentation: archPreset.barrierFragmentation,
+    basinCount: archPreset.basinCount,
+    ...rawCfg,
+  };
   const params = new URLSearchParams();
 
   // 1. Seed (always first)
@@ -388,6 +475,60 @@ export function serializeUrlState(state, options = {}) {
   }
   if (!omitDefaults || cfg.windAxis !== DEFAULT_GENERATOR_CONFIG.windAxis) {
     params.set("wind", String(cfg.windAxis));
+  }
+
+  const terrainRelief = cfg.terrainRelief ?? archPreset.terrainRelief;
+  if (
+    !omitDefaults ||
+    (Number.isFinite(terrainRelief) &&
+      terrainRelief !== archPreset.terrainRelief)
+  ) {
+    params.set("relief", String(terrainRelief));
+  }
+
+  const valleyIncision = cfg.valleyIncision ?? archPreset.valleyIncision;
+  if (
+    !omitDefaults ||
+    (Number.isFinite(valleyIncision) &&
+      valleyIncision !== archPreset.valleyIncision)
+  ) {
+    params.set("incision", String(valleyIncision));
+  }
+
+  const coastalEmbayment = cfg.coastalEmbayment ?? archPreset.coastalEmbayment;
+  if (
+    !omitDefaults ||
+    (Number.isFinite(coastalEmbayment) &&
+      coastalEmbayment !== archPreset.coastalEmbayment)
+  ) {
+    params.set("indent", String(coastalEmbayment));
+  }
+
+  const calderaCurvature = cfg.calderaCurvature ?? archPreset.calderaCurvature;
+  if (
+    !omitDefaults ||
+    (Number.isFinite(calderaCurvature) &&
+      calderaCurvature !== archPreset.calderaCurvature)
+  ) {
+    params.set("caldera", String(calderaCurvature));
+  }
+
+  const barrierFragmentation =
+    cfg.barrierFragmentation ?? archPreset.barrierFragmentation;
+  if (
+    !omitDefaults ||
+    (Number.isFinite(barrierFragmentation) &&
+      barrierFragmentation !== archPreset.barrierFragmentation)
+  ) {
+    params.set("barrier", String(barrierFragmentation));
+  }
+
+  const basinCount = cfg.basinCount ?? archPreset.basinCount;
+  if (
+    !omitDefaults ||
+    (Number.isFinite(basinCount) && basinCount !== archPreset.basinCount)
+  ) {
+    params.set("basins", String(basinCount));
   }
 
   // 3. View State

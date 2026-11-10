@@ -88,6 +88,9 @@ export const SIM_CONFIG = Object.freeze({
     takeoffSpeed: 13.5,
     cruiseSpeed: 16.5,
     landingSpeed: 12.5,
+    turbopropTakeoffSpeed: 10.6,
+    turbopropCruiseSpeed: 13.2,
+    turbopropLandingSpeed: 9.8,
     gateDwellSec: 1.2,
     holdShortLookaheadTiles: 12,
     climbOutAlt: 0.18,
@@ -162,6 +165,129 @@ export const WIND_AXES = Object.freeze([
   }),
 ]);
 
+export const FINISHED_GOODS_ORDER = Object.freeze([
+  "GROCERIES",
+  "CONSUMER_GOODS",
+  "HARDWARE",
+  "ELECTRONICS",
+]);
+
+export const MFG_ARCHETYPES = Object.freeze({
+  STEEL: Object.freeze({
+    key: "STEEL",
+    tier: 1,
+    requiredInputs: Object.freeze(["ORE", "WOOD"]),
+    outputGood: "HARDWARE",
+    label: "Steel & Hardware Foundry",
+  }),
+  FOOD: Object.freeze({
+    key: "FOOD",
+    tier: 1,
+    requiredInputs: Object.freeze(["AGRI", "CHEM"]),
+    outputGood: "GROCERIES",
+    label: "Food Processing Plant",
+  }),
+  GOODS: Object.freeze({
+    key: "GOODS",
+    tier: 2,
+    requiredInputs: Object.freeze(["WOOD", "HARDWARE"]),
+    outputGood: "CONSUMER_GOODS",
+    label: "Consumer Goods Factory",
+  }),
+  TECH: Object.freeze({
+    key: "TECH",
+    tier: 2,
+    requiredInputs: Object.freeze(["CHEM", "HARDWARE"]),
+    outputGood: "ELECTRONICS",
+    label: "Electronics Assembly",
+  }),
+});
+
+/** @type {Readonly<Record<string, import('./types.js').ArchetypePreset>>} */
+export const ARCHETYPE_PARAMETER_PRESETS = Object.freeze({
+  confluence: Object.freeze({
+    waterCoverage: 48,
+    terrainRelief: 100,
+    valleyIncision: 40,
+    coastalEmbayment: 100,
+    calderaCurvature: 0,
+    barrierFragmentation: 0,
+    basinCount: 2,
+  }),
+  inland: Object.freeze({
+    waterCoverage: 44,
+    terrainRelief: 110,
+    valleyIncision: 50,
+    coastalEmbayment: 0,
+    calderaCurvature: 0,
+    barrierFragmentation: 0,
+    basinCount: 3,
+  }),
+  "alpine-passes": Object.freeze({
+    waterCoverage: 36,
+    terrainRelief: 175,
+    valleyIncision: 160,
+    coastalEmbayment: 20,
+    calderaCurvature: 0,
+    barrierFragmentation: 0,
+    basinCount: 3,
+  }),
+  "fjord-sound": Object.freeze({
+    waterCoverage: 56,
+    terrainRelief: 150,
+    valleyIncision: 140,
+    coastalEmbayment: 170,
+    calderaCurvature: 0,
+    barrierFragmentation: 40,
+    basinCount: 4,
+  }),
+  "isthmus-strait": Object.freeze({
+    waterCoverage: 58,
+    terrainRelief: 95,
+    valleyIncision: 50,
+    coastalEmbayment: 180,
+    calderaCurvature: 0,
+    barrierFragmentation: 30,
+    basinCount: 2,
+  }),
+  "caldera-basin": Object.freeze({
+    waterCoverage: 52,
+    terrainRelief: 145,
+    valleyIncision: 90,
+    coastalEmbayment: 40,
+    calderaCurvature: 175,
+    barrierFragmentation: 30,
+    basinCount: 2,
+  }),
+  "barrier-lagoon": Object.freeze({
+    waterCoverage: 58,
+    terrainRelief: 70,
+    valleyIncision: 30,
+    coastalEmbayment: 130,
+    calderaCurvature: 20,
+    barrierFragmentation: 165,
+    basinCount: 3,
+  }),
+  "canyon-gorge": Object.freeze({
+    waterCoverage: 38,
+    terrainRelief: 135,
+    valleyIncision: 185,
+    coastalEmbayment: 10,
+    calderaCurvature: 0,
+    barrierFragmentation: 0,
+    basinCount: 3,
+  }),
+  "island-hopper": Object.freeze({
+    waterCoverage: 72,
+    terrainRelief: 125,
+    valleyIncision: 70,
+    coastalEmbayment: 160,
+    calderaCurvature: 85,
+    barrierFragmentation: 190,
+    basinCount: 4,
+  }),
+});
+
 /** @type {Readonly<Required<GeneratorConfig>>} */
 export const DEFAULT_GENERATOR_CONFIG = Object.freeze({
   seed: "OTTD-METRO-84",
@@ -176,4 +302,10 @@ export const DEFAULT_GENERATOR_CONFIG = Object.freeze({
   buildingDensity: 250,
   airportCount: 3,
   windAxis: -1,
+  terrainRelief: 100,
+  valleyIncision: 40,
+  coastalEmbayment: 100,
+  calderaCurvature: 0,
+  barrierFragmentation: 0,
+  basinCount: 2,
 });

@@ -1394,7 +1394,7 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
     spine.push(pt);
   };
 
-  if (srcPt) {
+  if (srcPt && !srcPt.isGatewayProxy) {
     const sx = srcPt.lotX ?? srcPt.x;
     const sy = srcPt.lotY ?? srcPt.y;
     if (Math.hypot(sx - rawPath[0].x, sy - rawPath[0].y) > 0.2) {
@@ -1468,7 +1468,7 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
   }
 
   const lastRaw = rawPath[rawPath.length - 1];
-  if (dstPt) {
+  if (dstPt && !dstPt.isGatewayProxy) {
     const dx = dstPt.lotX ?? dstPt.x;
     const dy = dstPt.lotY ?? dstPt.y;
     if (Math.hypot(dx - lastRaw.x, dy - lastRaw.y) > 0.2) {
@@ -1585,6 +1585,27 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
   }
   pts.push(shifted[shifted.length - 1]);
 
+  // Remove any inner-corner offset micro-backtracks (`cosTurn < -0.45`)
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = pts.length - 2; i >= 1; i--) {
+      const p0 = pts[i - 1];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const dx0 = p1.x - p0.x;
+      const dy0 = p1.y - p0.y;
+      const dx1 = p2.x - p1.x;
+      const dy1 = p2.y - p1.y;
+      const l0 = Math.hypot(dx0, dy0);
+      const l1 = Math.hypot(dx1, dy1);
+      if (
+        l0 < 0.02 ||
+        (l0 > 0.02 && l1 > 0.02 && (dx0 * dx1 + dy0 * dy1) / (l0 * l1) < -0.45)
+      ) {
+        pts.splice(i, 1);
+      }
+    }
+  }
+
   // 4. Precompute cumulative arc-length parameterization
   const cumLen = new Float32Array(pts.length);
   let acc = 0;
@@ -1683,13 +1704,20 @@ export function buildCommuterRoutes(world) {
 }
 
 /**
- * STAGE 8B: INTER-INDUSTRIAL CARGO SUPPLY CHAIN (`RAW -> MFG -> LOG -> COM`)
- * Links Primary Extraction (`RAW`), Secondary Manufacturing (`MFG`), Wholesale Logistics (`LOG`),
- * and CBD/Arterial Commercial Sinks (`COM`) into an active road-routed regional freight network.
+ * STAGE 8B: DEMAND-DRIVEN PULL SUPPLY-CHAIN SOLVER
+ *
+ * Implements the 5-phase Demand-Driven Pull Supply-Chain architecture:
+ * - Step 0: Post-Clearance Role Normalization (RAW, MFG, COM, LOG & Trade Gateway proxies)
+ * - Step 1: Commercial (COM) Distinct Goods Pull & LOG Relative-Demand Aggregation
+ * - Step 2: Direct Inter-CBD & Downtown Shipping (CBD->CBD)
+ * - Step 3: Tier 3 LOG Hub Pull Proportional to relativeDemand (MFG->LOG, IMPORT->LOG)
+ * - Step 4: Tier 2B (MFG->MFG) & Tier 2A (RAW->MFG / IMPORT->MFG) 2-Input Load-Balanced Pull
+ * - Step 5: TradeGateway Export Pull & 100% Connectivity Sweep
  */
 export function buildIndustrialCargoChain(world) {
   world._vehicleGraph = null;
   world.cargoLinks = [];
+
   const rawNodes = world.destinations.filter(
     (d) => d.zoneType === "industrial" && d.subType === "RAW",
   );
@@ -1703,21 +1731,56 @@ export function buildIndustrialCargoChain(world) {
     (d) => d.zoneType === "commercial",
   );
 
-  const tryAddFreightLink = (
+  /** @type {Map<number, number>} */
+  const outboundCount = new Map();
+  /** @type {Map<number, number>} */
+  const inboundCount = new Map();
+  const getOutbound = (id) => outboundCount.get(id) || 0;
+  const getInbound = (id) => inboundCount.get(id) || 0;
+
+  const getLandmassId = (d) =>
+    d.landmassId ?? world.towns[d.townId]?.landmassId ?? -1;
+
+  /**
+   * @param {import('./types.js').Destination} src
+   * @param {import('./types.js').Destination} dst
+   * @param {string} stage
+   * @param {string} label
+   * @param {string} color
+   * @param {number} [maxCrowDist=115]
+   * @param {string | null} [commodity]
+   * @param {number} [demandWeight=1]
+   * @returns {boolean}
+   */
+  const connectLink = (
     src,
     dst,
     stage,
     label,
     color,
     maxCrowDist = 115,
+    commodity = null,
+    demandWeight = 1,
   ) => {
+    if (src.id === dst.id) return false;
+    if (
+      world.cargoLinks.some(
+        (l) =>
+          l.from.id === src.id &&
+          l.to.id === dst.id &&
+          l.stage === stage &&
+          l.commodity === commodity,
+      )
+    ) {
+      return false;
+    }
     const crowD = Math.hypot(dst.x - src.x, dst.y - src.y);
     if (crowD < 2.5 || crowD > maxCrowDist) return false;
-    const sx = Math.round(src.roadX || src.x);
-    const sy = Math.round(src.roadY || src.y);
-    const ex = Math.round(dst.roadX || dst.x);
-    const ey = Math.round(dst.roadY || dst.y);
-    // Route freight trucks across the unified surface + expressway vehicle network!
+    const sx = Math.round(src.roadX ?? src.x);
+    const sy = Math.round(src.roadY ?? src.y);
+    const ex = Math.round(dst.roadX ?? dst.x);
+    const ey = Math.round(dst.roadY ?? dst.y);
+
     const roadPath = world.findVehicleNetworkPath(sx, sy, ex, ey);
     if (!roadPath || roadPath.length < 2) return false;
     let pathArcLen = 0;
@@ -1727,7 +1790,7 @@ export function buildIndustrialCargoChain(world) {
         roadPath[i].y - roadPath[i - 1].y,
       );
     }
-    if (pathArcLen > crowD * 3.4 + 35) return false;
+    if (pathArcLen > crowD * 3.6 + 45) return false;
 
     const outboundTrack = world.buildDirectedLaneTrajectory(src, dst, roadPath);
     const revRoadPath =
@@ -1737,85 +1800,447 @@ export function buildIndustrialCargoChain(world) {
       src,
       revRoadPath,
     );
+    if (!outboundTrack || !inboundTrack) return false;
 
     world.cargoLinks.push({
       from: src,
       to: dst,
-      stage, // 'RAW->MFG' | 'MFG->LOG' | 'MFG->COM' | 'LOG->COM'
+      stage,
       label,
       color,
+      commodity,
+      demandWeight,
+      modality: "highway",
       points: roadPath,
       usesMotorway: roadPath.some((p) => p.onMotorway),
       outboundTrack,
       inboundTrack,
     });
+    outboundCount.set(src.id, getOutbound(src.id) + 1);
+    inboundCount.set(dst.id, getInbound(dst.id) + 1);
     return true;
   };
 
-  // 1. Stage 1: Raw Materials (`RAW`) -> Nearest Road-Connected Manufacturing Plant (`MFG`)
-  const rankByLandmassAndDist = (src, list) =>
-    [...list]
-      .filter((item) => item.id !== src.id)
-      .sort((a, b) => {
-        const sameA =
-          world.towns[a.townId]?.landmassId ===
-          world.towns[src.townId]?.landmassId
-            ? 0
-            : 90;
-        const sameB =
-          world.towns[b.townId]?.landmassId ===
-          world.towns[src.townId]?.landmassId
-            ? 0
-            : 90;
-        return (
-          Math.hypot(a.x - src.x, a.y - src.y) +
-          sameA -
-          (Math.hypot(b.x - src.x, b.y - src.y) + sameB)
-        );
-      });
+  // ---------------------------------------------------------------------------
+  // Step 0 — Post-Clearance Role Normalization
+  // ---------------------------------------------------------------------------
 
-  const rankComTargets = (src) =>
-    [...comNodes].sort((a, b) => {
-      const bonusA =
-        (a.isCircular ? -16 : 0) - (a.wTiles || 2) * (a.hTiles || 2);
-      const bonusB =
-        (b.isCircular ? -16 : 0) - (b.wTiles || 2) * (b.hTiles || 2);
-      return (
-        Math.hypot(a.x - src.x, a.y - src.y) +
-        bonusA -
-        (Math.hypot(b.x - src.x, b.y - src.y) + bonusB)
+  // 0A. Normalize RAW destinations
+  const RAW_OUTPUTS = {
+    MINE: "ORE",
+    TIMBER: "WOOD",
+    FARM: "AGRI",
+    FISHERY: "AGRI",
+    CHEM: "CHEM",
+  };
+  for (const r of rawNodes) {
+    if (!r.resourceType || !RAW_OUTPUTS[r.resourceType]) {
+      r.resourceType = "CHEM";
+    }
+    r.outputGood = RAW_OUTPUTS[r.resourceType];
+  }
+
+  // 0B. Normalize MFG destinations
+  const MFG_SPECS = {
+    STEEL: {
+      mfgTier: 1,
+      requiredInputs: ["ORE", "WOOD"],
+      outputGood: "HARDWARE",
+    },
+    FOOD: {
+      mfgTier: 1,
+      requiredInputs: ["AGRI", "CHEM"],
+      outputGood: "GROCERIES",
+    },
+    GOODS: {
+      mfgTier: 2,
+      requiredInputs: ["WOOD", "HARDWARE"],
+      outputGood: "CONSUMER_GOODS",
+    },
+    TECH: {
+      mfgTier: 2,
+      requiredInputs: ["CHEM", "HARDWARE"],
+      outputGood: "ELECTRONICS",
+    },
+  };
+  const ALL_MFG_TYPES = ["STEEL", "FOOD", "GOODS", "TECH"];
+
+  for (let i = 0; i < mfgNodes.length; i++) {
+    const m = mfgNodes[i];
+    if (!m.mfgType || !MFG_SPECS[m.mfgType]) {
+      m.mfgType = ALL_MFG_TYPES[(m.townId + i) % 4];
+    }
+  }
+
+  if (mfgNodes.length >= 4) {
+    const missingTypes = ALL_MFG_TYPES.filter(
+      (t) => !mfgNodes.some((m) => m.mfgType === t),
+    );
+    for (const missing of missingTypes) {
+      const typeCounts = new Map();
+      for (const m of mfgNodes) {
+        typeCounts.set(m.mfgType, (typeCounts.get(m.mfgType) || 0) + 1);
+      }
+      const duplicateNode = mfgNodes.find(
+        (m) => (typeCounts.get(m.mfgType) || 0) > 1,
       );
-    });
-
-  for (const raw of rawNodes) {
-    const candidates = rankByLandmassAndDist(raw, mfgNodes).slice(0, 4);
-    let linked = false;
-    for (const mfg of candidates) {
-      if (
-        tryAddFreightLink(
-          raw,
-          mfg,
-          "RAW->MFG",
-          "Raw Materials → Factory",
-          "#d97706",
-          120,
-        )
-      ) {
-        linked = true;
-        break;
+      if (duplicateNode) {
+        duplicateNode.mfgType = missing;
       }
     }
-    // Fallback for isolated rural/island RAW extractors: ship bulk materials to nearest LOG hub
-    if (!linked) {
-      for (const lg of rankByLandmassAndDist(raw, logNodes).slice(0, 3)) {
+  }
+
+  for (const m of mfgNodes) {
+    const spec = MFG_SPECS[m.mfgType] || MFG_SPECS.STEEL;
+    m.mfgTier = spec.mfgTier;
+    m.requiredInputs = [...spec.requiredInputs];
+    m.outputGood = spec.outputGood;
+  }
+
+  // 0C. Group surviving COM destinations by townId and assign demandedGoods without replacement
+  const ALL_COMMERCIAL_GOODS = [
+    "GROCERIES",
+    "CONSUMER_GOODS",
+    "HARDWARE",
+    "ELECTRONICS",
+  ];
+  const comsByTown = new Map();
+  for (const c of comNodes) {
+    if (!comsByTown.has(c.townId)) comsByTown.set(c.townId, []);
+    comsByTown.get(c.townId).push(c);
+  }
+  for (const [townId, townComs] of comsByTown) {
+    for (let idx = 0; idx < townComs.length; idx++) {
+      const com = townComs[idx];
+      const g1 = ALL_COMMERCIAL_GOODS[(townId + idx) % 4];
+      const g2 = ALL_COMMERCIAL_GOODS[(townId + idx + 1) % 4];
+      if (com.isCircular || (com.pinsCount || 0) >= 4) {
+        com.demandedGoods = [g1, g2];
+      } else {
+        com.demandedGoods = [g1];
+      }
+    }
+  }
+
+  // 0D. Initialize LOG destination demand profiles
+  for (const lg of logNodes) {
+    lg.demandProfile = {};
+    lg.relativeDemand = 0.2;
+  }
+
+  // 0E. Build virtual TradeGateway proxy Destination nodes
+  const rawGateways =
+    world.tradeGateways && world.tradeGateways.length > 0
+      ? world.tradeGateways
+      : (world.airports || []).map((ap) => {
+          const isHub = ap.isHub || ap.airportClass === "HUB";
+          const isCrg = ap.airportClass === "CRG";
+          const cap = isHub ? 3 : isCrg ? 4 : 2;
+          return {
+            id: "GW-AIR-" + ap.id,
+            entityId: ap.id,
+            modality: "air",
+            name: ap.code || `Airport ${ap.id}`,
+            code: ap.code || `AP${ap.id}`,
+            townId: ap.townId ?? 0,
+            landmassId:
+              ap.landmassId ?? world.towns[ap.townId]?.landmassId ?? 0,
+            x: ap.x,
+            y: ap.y,
+            lotX: ap.x,
+            lotY: ap.y,
+            roadX: ap.curbX ?? ap.x,
+            roadY: ap.curbY ?? ap.y,
+            importCapacity: cap,
+            exportCapacity: cap,
+            importedGoods: [
+              "ELECTRONICS",
+              "HARDWARE",
+              "GROCERIES",
+              "CONSUMER_GOODS",
+              "CHEM",
+            ],
+            exportedGoods: [
+              "ELECTRONICS",
+              "CONSUMER_GOODS",
+              "HARDWARE",
+              "ORE",
+              "WOOD",
+              "AGRI",
+            ],
+            corridors: ap.externalCorridors || [],
+            colorIdx: ap.colorIdx ?? 0,
+            palette: ap.palette,
+          };
+        });
+
+  const gatewayProxies = rawGateways.map((gw) => ({
+    isGatewayProxy: true,
+    id: 10000 + gw.entityId,
+    airportId: gw.entityId,
+    gatewayId: gw.id,
+    x: gw.x,
+    y: gw.y,
+    gx: Math.round(gw.x),
+    gy: Math.round(gw.y),
+    wTiles: 2,
+    hTiles: 2,
+    lotX: gw.lotX,
+    lotY: gw.lotY,
+    roadX: gw.roadX,
+    roadY: gw.roadY,
+    townId: gw.townId,
+    zoneType: /** @type {const} */ ("industrial"),
+    subType: /** @type {const} */ ("LOG"),
+    label: gw.code,
+    colorIdx: gw.colorIdx,
+    palette: gw.palette,
+    isCircular: false,
+    pinsCount: (gw.importCapacity || 2) + (gw.exportCapacity || 2),
+    rawGateway: gw,
+  }));
+
+  // ---------------------------------------------------------------------------
+  // Step 1 — Commercial (COM) Distinct Goods Pull & LOG Relative-Demand Aggregation
+  // ---------------------------------------------------------------------------
+  for (const com of comNodes) {
+    const goodsToPull =
+      com.demandedGoods && com.demandedGoods.length > 0
+        ? com.demandedGoods.slice(0, 2)
+        : ["GROCERIES"];
+
+    for (const good of goodsToPull) {
+      const demandWeight = Math.max(
+        1,
+        Math.min(4, Math.round((com.pinsCount || 4) / 2)),
+      );
+
+      /** @type {Array<{ node: any, stage: string, color: string, label: string, score: number, isLog: boolean }>} */
+      const candidates = [];
+
+      for (const lg of logNodes) {
+        const crowD = Math.hypot(lg.x - com.x, lg.y - com.y);
+        const sameLandmass = getLandmassId(lg) === getLandmassId(com);
+        const score =
+          crowD +
+          (sameLandmass ? 0 : 35) +
+          (crowD <= 95 ? 0 : 45) +
+          10 * getOutbound(lg.id);
+        candidates.push({
+          node: lg,
+          stage: "LOG->COM",
+          color: "#2563eb",
+          label: "Wholesale Goods → Commercial Sink",
+          score,
+          isLog: true,
+        });
+      }
+
+      for (const mfg of mfgNodes) {
+        if (mfg.outputGood === good) {
+          const crowD = Math.hypot(mfg.x - com.x, mfg.y - com.y);
+          const sameLandmass = getLandmassId(mfg) === getLandmassId(com);
+          const score =
+            crowD + (sameLandmass ? 0 : 35) + 20 + 10 * getOutbound(mfg.id);
+          candidates.push({
+            node: mfg,
+            stage: "MFG->COM",
+            color: "#7c3aed",
+            label: "Factory Direct → Commercial CBD",
+            score,
+            isLog: false,
+          });
+        }
+      }
+
+      for (const gw of gatewayProxies) {
+        const crowD = Math.hypot(gw.x - com.x, gw.y - com.y);
+        const sameLandmass = getLandmassId(gw) === getLandmassId(com);
+        const score =
+          crowD + (sameLandmass ? 0 : 35) + 30 + 12 * getOutbound(gw.id);
+        candidates.push({
+          node: gw,
+          stage: "IMPORT->COM",
+          color: "#0d9488",
+          label: "Gateway Import → Commercial CBD",
+          score,
+          isLog: false,
+        });
+      }
+
+      candidates.sort((a, b) => a.score - b.score);
+
+      for (const cand of candidates) {
         if (
-          tryAddFreightLink(
-            raw,
+          connectLink(
+            cand.node,
+            com,
+            cand.stage,
+            cand.label,
+            cand.color,
+            120,
+            good,
+            demandWeight,
+          )
+        ) {
+          if (cand.isLog) {
+            cand.node.demandProfile[good] =
+              (cand.node.demandProfile[good] || 0) + (com.pinsCount || 4);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Aggregate totalLogDemand and compute relativeDemand
+  let totalLogDemand = 0;
+  for (const lg of logNodes) {
+    const lgSum = Object.values(lg.demandProfile || {}).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    totalLogDemand += lgSum;
+  }
+  for (const lg of logNodes) {
+    const lgSum = Object.values(lg.demandProfile || {}).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    lg.relativeDemand = Number(
+      (lgSum / Math.max(1, totalLogDemand)).toFixed(3),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 2 — Direct Inter-CBD & Downtown Shipping (CBD->CBD, color "#0284c7")
+  // ---------------------------------------------------------------------------
+  const primaryCbds = [];
+  for (const [townId, townComs] of comsByTown) {
+    const town = world.towns[townId];
+    const isEligibleTown =
+      !town ||
+      town.tier <= 2 ||
+      town.motorwayId != null ||
+      townComs.some((c) => c.isCircular);
+    if (!isEligibleTown && comsByTown.size > 2) continue;
+
+    const sortedComs = [...townComs].sort(
+      (a, b) =>
+        (b.isCircular ? 100 : 0) +
+        (b.pinsCount || 0) * 10 -
+        ((a.isCircular ? 100 : 0) + (a.pinsCount || 0) * 10),
+    );
+    if (sortedComs.length > 0) {
+      primaryCbds.push(sortedComs[0]);
+    }
+  }
+
+  for (const cbd of primaryCbds) {
+    const partners = primaryCbds
+      .filter((p) => p.townId !== cbd.townId)
+      .map((partner) => {
+        const crowD = Math.hypot(partner.x - cbd.x, partner.y - cbd.y);
+        const sameLandmass = getLandmassId(partner) === getLandmassId(cbd);
+        const score =
+          Math.abs(crowD - 75) +
+          (sameLandmass ? 0 : 25) +
+          10 * getOutbound(partner.id);
+        return { partner, crowD, score };
+      })
+      .filter((p) => p.crowD >= 18 && p.crowD <= 185)
+      .sort((a, b) => a.score - b.score);
+
+    let cbdLinks = 0;
+    for (const { partner } of partners) {
+      if (
+        connectLink(
+          cbd,
+          partner,
+          "CBD->CBD",
+          "Inter-CBD Courier & Wholesale",
+          "#0284c7",
+          185,
+          "B2B_PARCELS",
+          3,
+        )
+      ) {
+        cbdLinks++;
+        if (cbdLinks >= 2) break;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 3 — Tier 3 LOG Hub Pull Proportional to relativeDemand (MFG->LOG, IMPORT->LOG)
+  // ---------------------------------------------------------------------------
+  for (const lg of logNodes) {
+    const targetLinks = Math.max(
+      2,
+      Math.min(
+        5,
+        Math.round(2 + (lg.relativeDemand || 0.2) * logNodes.length * 1.8),
+      ),
+    );
+    const sortedGoods = Object.keys(lg.demandProfile || {}).sort(
+      (a, b) => (lg.demandProfile[b] || 0) - (lg.demandProfile[a] || 0),
+    );
+    const goodsPool =
+      sortedGoods.length > 0 ? sortedGoods : ALL_COMMERCIAL_GOODS;
+
+    let goodIdx = 0;
+    while (getInbound(lg.id) < targetLinks && goodIdx < goodsPool.length * 2) {
+      const good = goodsPool[goodIdx % goodsPool.length];
+      goodIdx++;
+
+      /** @type {Array<{ node: any, stage: string, color: string, label: string, score: number }>} */
+      const cands = [];
+      for (const mfg of mfgNodes) {
+        if (mfg.outputGood === good) {
+          const crowD = Math.hypot(mfg.x - lg.x, mfg.y - lg.y);
+          const sameLandmass = getLandmassId(mfg) === getLandmassId(lg);
+          const score =
+            crowD + (sameLandmass ? 0 : 35) + 12 * getOutbound(mfg.id);
+          cands.push({
+            node: mfg,
+            stage: "MFG->LOG",
+            color: "#ea580c",
+            label: "Factory Output → Distribution Hub",
+            score,
+          });
+        }
+      }
+      for (const gw of gatewayProxies) {
+        const crowD = Math.hypot(gw.x - lg.x, gw.y - lg.y);
+        const sameLandmass = getLandmassId(gw) === getLandmassId(lg);
+        const score =
+          crowD + (sameLandmass ? 0 : 35) + 15 + 12 * getOutbound(gw.id);
+        cands.push({
+          node: gw,
+          stage: "IMPORT->LOG",
+          color: "#0d9488",
+          label: "Imported Cargo → Logistics Hub",
+          score,
+        });
+      }
+
+      cands.sort((a, b) => a.score - b.score);
+      const demandWeight = Math.max(
+        1,
+        Math.min(5, Math.round(1 + (lg.relativeDemand || 0.2) * 3)),
+      );
+
+      for (const c of cands) {
+        if (
+          connectLink(
+            c.node,
             lg,
-            "RAW->LOG",
-            "Bulk Feedstock → Logistics Hub",
-            "#d97706",
-            110,
+            c.stage,
+            c.label,
+            c.color,
+            140,
+            good,
+            demandWeight,
           )
         ) {
           break;
@@ -1824,125 +2249,372 @@ export function buildIndustrialCargoChain(world) {
     }
   }
 
-  // Backfill Stage 1: Ensure every MFG factory has at least 1 inbound RAW supplier!
+  // ---------------------------------------------------------------------------
+  // Step 4 — Tier 2B (MFG->MFG) & Tier 2A (RAW->MFG / IMPORT->MFG) 2-Input Load-Balanced Pull
+  // ---------------------------------------------------------------------------
   for (const mfg of mfgNodes) {
-    if (world.cargoLinks.some((l) => l.to.id === mfg.id)) continue;
-    for (const raw of rankByLandmassAndDist(mfg, rawNodes).slice(0, 5)) {
-      if (
-        tryAddFreightLink(
-          raw,
-          mfg,
-          "RAW->MFG",
-          "Raw Materials → Factory",
-          "#d97706",
-          140,
-        )
-      ) {
-        break;
+    const required =
+      mfg.requiredInputs && mfg.requiredInputs.length > 0
+        ? mfg.requiredInputs
+        : ["ORE", "WOOD"];
+
+    for (const reqGood of required) {
+      /** @type {Array<{ sup: any, isHardware: boolean, isGateway: boolean }>} */
+      const candidates = [];
+
+      if (reqGood === "HARDWARE") {
+        for (const otherMfg of mfgNodes) {
+          if (otherMfg.id !== mfg.id && otherMfg.outputGood === "HARDWARE") {
+            candidates.push({
+              sup: otherMfg,
+              isHardware: true,
+              isGateway: false,
+            });
+          }
+        }
+        for (const gw of gatewayProxies) {
+          candidates.push({ sup: gw, isHardware: false, isGateway: true });
+        }
+      } else {
+        for (const raw of rawNodes) {
+          if (raw.outputGood === reqGood) {
+            candidates.push({ sup: raw, isHardware: false, isGateway: false });
+          }
+        }
+        for (const gw of gatewayProxies) {
+          candidates.push({ sup: gw, isHardware: false, isGateway: true });
+        }
+      }
+
+      // Score candidates using load-balanced formula:
+      // score = crowD + (sameLandmass ? 0 : 35) + 18 * outboundCount - (outboundCount === 0 ? 28 : 0) + (crowD < 14 ? 16 : 0) + (isGateway ? 24 : 0)
+      const scored = candidates.map(({ sup, isHardware, isGateway }) => {
+        const crowD = Math.hypot(sup.x - mfg.x, sup.y - mfg.y);
+        const sameLandmass = getLandmassId(sup) === getLandmassId(mfg);
+        const outCount = getOutbound(sup.id);
+        const score =
+          crowD +
+          (sameLandmass ? 0 : 35) +
+          18 * outCount -
+          (outCount === 0 ? 28 : 0) +
+          (crowD < 14 ? 16 : 0) +
+          (isGateway ? 24 : 0);
+        return { sup, isHardware, isGateway, score };
+      });
+
+      scored.sort((a, b) => a.score - b.score);
+
+      for (const { sup, isHardware, isGateway } of scored) {
+        const stage = isGateway
+          ? "IMPORT->MFG"
+          : isHardware
+            ? "MFG->MFG"
+            : "RAW->MFG";
+        const label = isGateway
+          ? "Raw/Intermediate Import → Factory"
+          : isHardware
+            ? "Intermediate Hardware & Steel"
+            : "Raw Materials → Factory";
+        const color = isGateway
+          ? "#0d9488"
+          : isHardware
+            ? "#e11d48"
+            : "#d97706";
+
+        if (connectLink(sup, mfg, stage, label, color, 145, reqGood, 2)) {
+          break;
+        }
+      }
+    }
+
+    // Fallback: If 0 inbound links, try reachable TradeGateway proxy or any reachable RAW/MFG
+    if (getInbound(mfg.id) === 0) {
+      const fallbackSuppliers = [...gatewayProxies, ...rawNodes, ...mfgNodes]
+        .filter((s) => s.id !== mfg.id)
+        .sort((a, b) => {
+          const sameA = getLandmassId(a) === getLandmassId(mfg) ? 0 : 40;
+          const sameB = getLandmassId(b) === getLandmassId(mfg) ? 0 : 40;
+          return (
+            Math.hypot(a.x - mfg.x, a.y - mfg.y) +
+            sameA -
+            (Math.hypot(b.x - mfg.x, b.y - mfg.y) + sameB)
+          );
+        });
+
+      for (const sup of fallbackSuppliers) {
+        const isGw = Boolean(sup.isGatewayProxy);
+        const isM = sup.subType === "MFG";
+        const stage = isGw ? "IMPORT->MFG" : isM ? "MFG->MFG" : "RAW->MFG";
+        const label = isGw
+          ? "Raw/Intermediate Import → Factory"
+          : isM
+            ? "Intermediate Hardware & Steel"
+            : "Raw Materials → Factory";
+        const color = isGw ? "#0d9488" : isM ? "#e11d48" : "#d97706";
+        const commodity = sup.outputGood || "ORE";
+
+        if (connectLink(sup, mfg, stage, label, color, 160, commodity, 2)) {
+          break;
+        }
       }
     }
   }
 
-  // 2. Stage 2: Manufacturing (`MFG`) -> Nearest Logistics Hub (`LOG`) or Local Commercial CBD (`COM`)
+  // ---------------------------------------------------------------------------
+  // Step 5 — TradeGateway Export Pull & 100% Connectivity Sweep
+  // ---------------------------------------------------------------------------
+  for (const gw of gatewayProxies) {
+    const maxExp = Math.max(1, Math.min(2, gw.rawGateway?.exportCapacity ?? 2));
+    const exportCands = [...rawNodes, ...mfgNodes, ...logNodes]
+      .map((cand) => {
+        const crowD = Math.hypot(cand.x - gw.x, cand.y - gw.y);
+        const sameLandmass = getLandmassId(cand) === getLandmassId(gw);
+        const outCount = getOutbound(cand.id);
+        const score =
+          (outCount === 0 ? -50 : 0) +
+          15 * outCount +
+          crowD +
+          (sameLandmass ? 0 : 30);
+        return { cand, score };
+      })
+      .sort((a, b) => a.score - b.score);
+
+    let expCount = 0;
+    for (const { cand } of exportCands) {
+      const stage =
+        cand.subType === "RAW"
+          ? "RAW->EXPORT"
+          : cand.subType === "MFG"
+            ? "MFG->EXPORT"
+            : "LOG->EXPORT";
+      const label =
+        cand.subType === "RAW"
+          ? "Raw Resource Export"
+          : cand.subType === "MFG"
+            ? "Manufactured Export"
+            : "Consolidated Freight Export";
+      const commodity =
+        cand.outputGood || (cand.subType === "RAW" ? "ORE" : "CONSUMER_GOODS");
+
+      if (connectLink(cand, gw, stage, label, "#0d9488", 140, commodity, 3)) {
+        expCount++;
+        if (expCount >= maxExp) break;
+      }
+    }
+  }
+
+  // 100% Connectivity Sweep:
+  // 1. Any RAW with outboundCount === 0:
+  for (const raw of rawNodes) {
+    if (getOutbound(raw.id) === 0) {
+      const targets = [...mfgNodes, ...logNodes, ...gatewayProxies].sort(
+        (a, b) => {
+          const sameA = getLandmassId(a) === getLandmassId(raw) ? 0 : 40;
+          const sameB = getLandmassId(b) === getLandmassId(raw) ? 0 : 40;
+          return (
+            Math.hypot(a.x - raw.x, a.y - raw.y) +
+            sameA -
+            (Math.hypot(b.x - raw.x, b.y - raw.y) + sameB)
+          );
+        },
+      );
+      for (const tgt of targets) {
+        const stage = tgt.isGatewayProxy
+          ? "RAW->EXPORT"
+          : tgt.subType === "LOG"
+            ? "RAW->LOG"
+            : "RAW->MFG";
+        const label = tgt.isGatewayProxy
+          ? "Raw Resource Export"
+          : tgt.subType === "LOG"
+            ? "Bulk Feedstock → Logistics Hub"
+            : "Raw Materials → Factory";
+        const color = tgt.isGatewayProxy ? "#0d9488" : "#d97706";
+        if (
+          connectLink(
+            raw,
+            tgt,
+            stage,
+            label,
+            color,
+            160,
+            raw.outputGood || "ORE",
+            2,
+          )
+        ) {
+          break;
+        }
+      }
+    }
+  }
+
+  // 2. Any MFG with outboundCount === 0:
   for (const mfg of mfgNodes) {
-    let linkedToLog = false;
-    const logCands = rankByLandmassAndDist(mfg, logNodes).slice(0, 3);
-    for (const lg of logCands) {
-      if (
-        tryAddFreightLink(
-          mfg,
-          lg,
-          "MFG->LOG",
-          "Factory Output → Distribution Hub",
-          "#ea580c",
-          85,
-        )
-      ) {
-        linkedToLog = true;
-        break;
-      }
-    }
-
-    // Also supply the flagship Commercial CBD sink in the factory's town (or nearest town)
-    const comCands = rankComTargets(mfg).slice(0, linkedToLog ? 2 : 3);
-    for (const com of comCands) {
-      if (
-        tryAddFreightLink(
-          mfg,
-          com,
-          "MFG->COM",
-          "Wholesale Goods → Commercial CBD",
-          "#2563eb",
-          65,
-        )
-      ) {
-        break;
+    if (getOutbound(mfg.id) === 0) {
+      const targets = [
+        ...logNodes,
+        ...mfgNodes.filter((m) => m.id !== mfg.id),
+        ...comNodes,
+        ...gatewayProxies,
+      ].sort((a, b) => {
+        const sameA = getLandmassId(a) === getLandmassId(mfg) ? 0 : 40;
+        const sameB = getLandmassId(b) === getLandmassId(mfg) ? 0 : 40;
+        return (
+          Math.hypot(a.x - mfg.x, a.y - mfg.y) +
+          sameA -
+          (Math.hypot(b.x - mfg.x, b.y - mfg.y) + sameB)
+        );
+      });
+      for (const tgt of targets) {
+        const stage = tgt.isGatewayProxy
+          ? "MFG->EXPORT"
+          : tgt.zoneType === "commercial"
+            ? "MFG->COM"
+            : tgt.subType === "MFG"
+              ? "MFG->MFG"
+              : "MFG->LOG";
+        const label = tgt.isGatewayProxy
+          ? "Manufactured Export"
+          : tgt.zoneType === "commercial"
+            ? "Factory Direct → Commercial CBD"
+            : tgt.subType === "MFG"
+              ? "Intermediate Hardware & Steel"
+              : "Factory Output → Distribution Hub";
+        const color = tgt.isGatewayProxy
+          ? "#0d9488"
+          : tgt.zoneType === "commercial"
+            ? "#7c3aed"
+            : tgt.subType === "MFG"
+              ? "#e11d48"
+              : "#ea580c";
+        if (
+          connectLink(
+            mfg,
+            tgt,
+            stage,
+            label,
+            color,
+            160,
+            mfg.outputGood || "CONSUMER_GOODS",
+            2,
+          )
+        ) {
+          break;
+        }
       }
     }
   }
 
-  // Backfill Stage 2: Ensure every LOG warehouse has at least 1 inbound MFG (or RAW) supplier!
+  // 3. Any LOG with inboundCount === 0 or outboundCount === 0:
   for (const lg of logNodes) {
-    if (world.cargoLinks.some((l) => l.to.id === lg.id)) continue;
-    for (const mfg of rankByLandmassAndDist(lg, mfgNodes).slice(0, 5)) {
-      if (
-        tryAddFreightLink(
-          mfg,
-          lg,
-          "MFG->LOG",
-          "Factory Output → Distribution Hub",
-          "#ea580c",
-          120,
-        )
-      ) {
-        break;
+    if (getInbound(lg.id) === 0) {
+      const suppliers = [...mfgNodes, ...rawNodes, ...gatewayProxies].sort(
+        (a, b) => {
+          const sameA = getLandmassId(a) === getLandmassId(lg) ? 0 : 40;
+          const sameB = getLandmassId(b) === getLandmassId(lg) ? 0 : 40;
+          return (
+            Math.hypot(a.x - lg.x, a.y - lg.y) +
+            sameA -
+            (Math.hypot(b.x - lg.x, b.y - lg.y) + sameB)
+          );
+        },
+      );
+      for (const sup of suppliers) {
+        const stage = sup.isGatewayProxy
+          ? "IMPORT->LOG"
+          : sup.subType === "RAW"
+            ? "RAW->LOG"
+            : "MFG->LOG";
+        const label = sup.isGatewayProxy
+          ? "Imported Cargo → Logistics Hub"
+          : sup.subType === "RAW"
+            ? "Bulk Feedstock → Logistics Hub"
+            : "Factory Output → Distribution Hub";
+        const color = sup.isGatewayProxy
+          ? "#0d9488"
+          : sup.subType === "RAW"
+            ? "#d97706"
+            : "#ea580c";
+        if (
+          connectLink(
+            sup,
+            lg,
+            stage,
+            label,
+            color,
+            160,
+            sup.outputGood || "CONSUMER_GOODS",
+            2,
+          )
+        ) {
+          break;
+        }
+      }
+    }
+    if (getOutbound(lg.id) === 0) {
+      const targets = [...comNodes, ...gatewayProxies].sort((a, b) => {
+        const sameA = getLandmassId(a) === getLandmassId(lg) ? 0 : 40;
+        const sameB = getLandmassId(b) === getLandmassId(lg) ? 0 : 40;
+        return (
+          Math.hypot(a.x - lg.x, a.y - lg.y) +
+          sameA -
+          (Math.hypot(b.x - lg.x, b.y - lg.y) + sameB)
+        );
+      });
+      for (const tgt of targets) {
+        const stage = tgt.isGatewayProxy ? "LOG->EXPORT" : "LOG->COM";
+        const label = tgt.isGatewayProxy
+          ? "Consolidated Freight Export"
+          : "Wholesale Goods → Commercial Sink";
+        const color = tgt.isGatewayProxy ? "#0d9488" : "#2563eb";
+        if (
+          connectLink(lg, tgt, stage, label, color, 160, "CONSUMER_GOODS", 2)
+        ) {
+          break;
+        }
       }
     }
   }
 
-  // 3. Stage 3: Logistics Warehouses (`LOG`) -> High-Demand Commercial CBD Sinks (`COM`) (local + inter-town regional)
-  for (const lg of logNodes) {
-    const nearComs = rankComTargets(lg).slice(0, 4);
-    let count = 0;
-    for (const com of nearComs) {
-      if (
-        tryAddFreightLink(
-          lg,
-          com,
-          "LOG->COM",
-          "Last-Mile Freight → Commercial Sink",
-          "#7c3aed",
-          65,
-        )
-      ) {
-        count++;
-        if (count >= 2) break;
-      }
-    }
-    // Regional inter-town wholesale corridor (`com.townId !== lg.townId`) across expressways/arterials
-    const regionalComs = rankComTargets(lg)
-      .filter(
-        (c) =>
-          c.townId !== lg.townId && Math.hypot(c.x - lg.x, c.y - lg.y) >= 30,
-      )
-      .slice(0, 4);
-    for (const rCom of regionalComs) {
-      if (
-        tryAddFreightLink(
-          lg,
-          rCom,
-          "LOG->COM",
-          "Regional Wholesale → Metro CBD",
-          "#7c3aed",
-          135,
-        )
-      ) {
-        break;
+  // 4. Any COM with inboundCount === 0:
+  for (const com of comNodes) {
+    if (getInbound(com.id) === 0) {
+      const suppliers = [...logNodes, ...mfgNodes, ...gatewayProxies].sort(
+        (a, b) => {
+          const sameA = getLandmassId(a) === getLandmassId(com) ? 0 : 40;
+          const sameB = getLandmassId(b) === getLandmassId(com) ? 0 : 40;
+          return (
+            Math.hypot(a.x - com.x, a.y - com.y) +
+            sameA -
+            (Math.hypot(b.x - com.x, b.y - com.y) + sameB)
+          );
+        },
+      );
+      for (const sup of suppliers) {
+        const stage = sup.isGatewayProxy
+          ? "IMPORT->COM"
+          : sup.subType === "MFG"
+            ? "MFG->COM"
+            : "LOG->COM";
+        const label = sup.isGatewayProxy
+          ? "Gateway Import → Commercial CBD"
+          : sup.subType === "MFG"
+            ? "Factory Direct → Commercial CBD"
+            : "Wholesale Goods → Commercial Sink";
+        const color = sup.isGatewayProxy
+          ? "#0d9488"
+          : sup.subType === "MFG"
+            ? "#7c3aed"
+            : "#2563eb";
+        const good = (com.demandedGoods && com.demandedGoods[0]) || "GROCERIES";
+        if (connectLink(sup, com, stage, label, color, 160, good, 2)) {
+          break;
+        }
       }
     }
   }
 
   world.logs.push(
-    `Zoned <b>${comNodes.length} Commercial</b> (CBD/Arterial) & <b>${rawNodes.length + mfgNodes.length + logNodes.length} Industrial</b> (${rawNodes.length} Raw, ${mfgNodes.length} Mfg, ${logNodes.length} Log) with <b>${world.cargoLinks.length} road freight chains</b>.`,
+    `Zoned <b>${comNodes.length} Commercial</b> (CBD/Arterial) & <b>${rawNodes.length + mfgNodes.length + logNodes.length} Industrial</b> (${rawNodes.length} Raw, ${mfgNodes.length} Mfg, ${logNodes.length} Log) with <b>${world.cargoLinks.length} pull-demand freight chains</b>.`,
   );
 }

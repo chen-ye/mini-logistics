@@ -218,9 +218,15 @@
                 class="w-full text-xs font-semibold bg-white/85 border border-stone-300/80 rounded-lg px-2.5 py-1.5 text-[#36383e] focus:outline-none focus:ring-2 focus:ring-stone-700"
               >
                 <option value="confluence">Confluence Basin</option>
-                <option value="estuary">Coastal Estuary</option>
-                <option value="archipelago">Twin-Channel Delta</option>
                 <option value="inland">Inland Valley Lakes</option>
+                <option value="alpine-passes">Alpine Cordillera</option>
+                <option value="fjord-sound">Glaciated Fjords</option>
+                <option value="isthmus-strait">Twin-Bay Isthmus</option>
+                <option value="caldera-basin">Volcanic Caldera</option>
+                <option value="barrier-lagoon">
+                  Barrier Lagoon &amp; Spit
+                </option>
+                <option value="canyon-gorge">Incised Canyon &amp; Mesas</option>
                 <option value="island-hopper">Island Hopper Chain</option>
               </select>
             </div>
@@ -274,6 +280,167 @@
               </select>
             </div>
           </div>
+
+          <details
+            id="advancedGeoDetails"
+            class="group rounded-xl bg-stone-200/45 border border-stone-300/70 px-2.5 py-2"
+          >
+            <summary
+              class="flex items-center justify-between cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden"
+            >
+              <span
+                class="text-xs font-bold text-[#36383e] flex items-center gap-1.5"
+              >
+                <svg
+                  class="w-3.5 h-3.5 text-stone-500 transition-transform duration-200 group-open:rotate-90"
+                  aria-hidden="true"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M9 5l7 7-7 7"
+                  />
+                </svg>
+                Geomorphology Scalars
+              </span>
+              <div class="flex items-center gap-1.5">
+                <span
+                  id="geoPresetBadge"
+                  class="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-stone-200/80 text-stone-600"
+                  >Preset</span
+                >
+                <button
+                  id="resetGeoScalarsBtn"
+                  type="button"
+                  class="hidden text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#e85c90]/15 text-[#d94376] hover:bg-[#e85c90] hover:text-white transition"
+                >
+                  Reset
+                </button>
+              </div>
+            </summary>
+            <div
+              class="grid grid-cols-2 gap-x-3 gap-y-2 pt-2 mt-1.5 border-t border-stone-300/60"
+            >
+              <div>
+                <div
+                  class="flex justify-between text-[11px] font-semibold mb-0.5 text-stone-600"
+                >
+                  <label for="sliderRelief">Ridge Relief</label>
+                  <span id="valRelief" class="mono font-bold tabular-nums"
+                    >100%</span
+                  >
+                </div>
+                <input
+                  id="sliderRelief"
+                  type="range"
+                  min="20"
+                  max="200"
+                  step="5"
+                  value="100"
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <div
+                  class="flex justify-between text-[11px] font-semibold mb-0.5 text-stone-600"
+                >
+                  <label for="sliderIncision">Gorge &amp; Pass Cut</label>
+                  <span id="valIncision" class="mono font-bold tabular-nums"
+                    >40%</span
+                  >
+                </div>
+                <input
+                  id="sliderIncision"
+                  type="range"
+                  min="0"
+                  max="200"
+                  step="5"
+                  value="40"
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <div
+                  class="flex justify-between text-[11px] font-semibold mb-0.5 text-stone-600"
+                >
+                  <label for="sliderEmbayment">Coast &amp; Fjord</label>
+                  <span id="valEmbayment" class="mono font-bold tabular-nums"
+                    >100%</span
+                  >
+                </div>
+                <input
+                  id="sliderEmbayment"
+                  type="range"
+                  min="0"
+                  max="200"
+                  step="5"
+                  value="100"
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <div
+                  class="flex justify-between text-[11px] font-semibold mb-0.5 text-stone-600"
+                >
+                  <label for="sliderCaldera">Caldera &amp; Ring</label>
+                  <span id="valCaldera" class="mono font-bold tabular-nums"
+                    >0%</span
+                  >
+                </div>
+                <input
+                  id="sliderCaldera"
+                  type="range"
+                  min="0"
+                  max="200"
+                  step="5"
+                  value="0"
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <div
+                  class="flex justify-between text-[11px] font-semibold mb-0.5 text-stone-600"
+                >
+                  <label for="sliderBarrier">Spit &amp; Islands</label>
+                  <span id="valBarrier" class="mono font-bold tabular-nums"
+                    >0%</span
+                  >
+                </div>
+                <input
+                  id="sliderBarrier"
+                  type="range"
+                  min="0"
+                  max="200"
+                  step="5"
+                  value="0"
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <div
+                  class="flex justify-between text-[11px] font-semibold mb-0.5 text-stone-600"
+                >
+                  <label for="sliderBasins">Basin / Pass Cnt</label>
+                  <span id="valBasins" class="mono font-bold tabular-nums"
+                    >2</span
+                  >
+                </div>
+                <input
+                  id="sliderBasins"
+                  type="range"
+                  min="1"
+                  max="6"
+                  step="1"
+                  value="2"
+                  class="w-full"
+                />
+              </div>
+            </div>
+          </details>
 
           <div>
             <label

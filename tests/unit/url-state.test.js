@@ -11,12 +11,26 @@ import {
   VALID_VIEW_LAYERS,
   VALID_SIM_SPEEDS,
 } from "../../src/url-state.js";
-import { DEFAULT_GENERATOR_CONFIG } from "../../src/constants.js";
+import {
+  DEFAULT_GENERATOR_CONFIG,
+  ARCHETYPE_PARAMETER_PRESETS,
+} from "../../src/constants.js";
 
 describe("URL State Pure Boundary Parser & Serializer", () => {
   test("Allowlists are frozen arrays with expected values", () => {
     expect(Object.isFrozen(VALID_WORLD_SIZES)).toBe(true);
     expect(Object.isFrozen(VALID_ARCHETYPES)).toBe(true);
+    expect(VALID_ARCHETYPES).toEqual([
+      "confluence",
+      "inland",
+      "alpine-passes",
+      "fjord-sound",
+      "isthmus-strait",
+      "caldera-basin",
+      "barrier-lagoon",
+      "canyon-gorge",
+      "island-hopper",
+    ]);
     expect(Object.isFrozen(VALID_TERRAIN_ALGOS)).toBe(true);
     expect(Object.isFrozen(VALID_HYDRO_ALGOS)).toBe(true);
     expect(Object.isFrozen(VALID_AIRPORT_MIXES)).toBe(true);
@@ -93,6 +107,20 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
       expect(state.simSpeed).toBe(1);
     });
 
+    test("falls back legacy estuary and archipelago archetypes to confluence", () => {
+      const stateEstuary = parseUrlState("?arch=estuary");
+      expect(stateEstuary.config.archetype).toBe("confluence");
+      expect(stateEstuary.config.terrainRelief).toBe(
+        ARCHETYPE_PARAMETER_PRESETS.confluence.terrainRelief,
+      );
+
+      const stateArchipelago = parseUrlState("?arch=archipelago");
+      expect(stateArchipelago.config.archetype).toBe("confluence");
+      expect(stateArchipelago.config.coastalEmbayment).toBe(
+        ARCHETYPE_PARAMETER_PRESETS.confluence.coastalEmbayment,
+      );
+    });
+
     test("falls back cleanly on invalid inspect param syntax", () => {
       expect(parseUrlState("?inspect=invalid").inspected).toEqual({
         type: null,
@@ -144,6 +172,45 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
       expect(parseUrlState("?airports=99").config.airportCount).toBe(8);
       expect(parseUrlState("?airports=0").config.airportCount).toBe(1);
       expect(parseUrlState("?airports=5").config.airportCount).toBe(5);
+    });
+
+    test("clamps geomorphology scalars to valid ranges", () => {
+      // relief: [20, 200]
+      expect(parseUrlState("?relief=999").config.terrainRelief).toBe(200);
+      expect(parseUrlState("?relief=-10").config.terrainRelief).toBe(20);
+      expect(parseUrlState("?relief=135").config.terrainRelief).toBe(135);
+      expect(parseUrlState("?relief=invalid").config.terrainRelief).toBe(
+        ARCHETYPE_PARAMETER_PRESETS.confluence.terrainRelief,
+      );
+
+      // incision: [0, 200]
+      expect(parseUrlState("?incision=999").config.valleyIncision).toBe(200);
+      expect(parseUrlState("?incision=-10").config.valleyIncision).toBe(0);
+      expect(parseUrlState("?incision=85").config.valleyIncision).toBe(85);
+
+      // indent: [0, 200]
+      expect(parseUrlState("?indent=999").config.coastalEmbayment).toBe(200);
+      expect(parseUrlState("?indent=-10").config.coastalEmbayment).toBe(0);
+      expect(parseUrlState("?indent=140").config.coastalEmbayment).toBe(140);
+
+      // caldera: [0, 200]
+      expect(parseUrlState("?caldera=999").config.calderaCurvature).toBe(200);
+      expect(parseUrlState("?caldera=-10").config.calderaCurvature).toBe(0);
+      expect(parseUrlState("?caldera=75").config.calderaCurvature).toBe(75);
+
+      // barrier: [0, 200]
+      expect(parseUrlState("?barrier=999").config.barrierFragmentation).toBe(
+        200,
+      );
+      expect(parseUrlState("?barrier=-10").config.barrierFragmentation).toBe(0);
+      expect(parseUrlState("?barrier=160").config.barrierFragmentation).toBe(
+        160,
+      );
+
+      // basins: [1, 6]
+      expect(parseUrlState("?basins=99").config.basinCount).toBe(6);
+      expect(parseUrlState("?basins=-5").config.basinCount).toBe(1);
+      expect(parseUrlState("?basins=4").config.basinCount).toBe(4);
     });
 
     test("clamps camera zoom to [0.16, 3.5] and rounds coordinates", () => {
@@ -235,6 +302,12 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
           buildingDensity: 180,
           airportCount: 5,
           windAxis: 2,
+          terrainRelief: 180,
+          valleyIncision: 140,
+          coastalEmbayment: 65,
+          calderaCurvature: 195,
+          barrierFragmentation: 55,
+          basinCount: 5,
         },
         activeLayer: /** @type {const} */ ("rci"),
         simSpeed: 2.5,
@@ -247,7 +320,7 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
       expect(query.startsWith("?seed=VALLEY-618")).toBe(true);
 
       // Verify deterministic key order:
-      // seed -> size -> arch -> terrain -> hydro -> airMix -> ramps -> water -> towns -> density -> airports -> wind -> layer -> drawer -> cx -> cy -> z -> speed -> inspect
+      // seed -> size -> arch -> terrain -> hydro -> airMix -> ramps -> water -> towns -> density -> airports -> wind -> relief -> incision -> indent -> caldera -> barrier -> basins -> layer -> drawer -> cx -> cy -> z -> speed -> inspect
       const params = Array.from(new URLSearchParams(query.slice(1)).keys());
       expect(params).toEqual([
         "seed",
@@ -262,6 +335,12 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
         "density",
         "airports",
         "wind",
+        "relief",
+        "incision",
+        "indent",
+        "caldera",
+        "barrier",
+        "basins",
         "layer",
         "drawer",
         "cx",
@@ -287,6 +366,12 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
       expect(params.get("size")).toBe("standard");
       expect(params.get("arch")).toBe("confluence");
       expect(params.get("water")).toBe("48");
+      expect(params.get("relief")).toBe("100");
+      expect(params.get("incision")).toBe("40");
+      expect(params.get("indent")).toBe("100");
+      expect(params.get("caldera")).toBe("0");
+      expect(params.get("barrier")).toBe("0");
+      expect(params.get("basins")).toBe("2");
       expect(params.get("layer")).toBe("aesthetic");
     });
   });
@@ -320,6 +405,12 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
           buildingDensity: 180,
           airportCount: 5,
           windAxis: 2,
+          terrainRelief: 180,
+          valleyIncision: 140,
+          coastalEmbayment: 65,
+          calderaCurvature: 195,
+          barrierFragmentation: 55,
+          basinCount: 5,
         },
         activeLayer: /** @type {const} */ ("rci"),
         simSpeed: 2.5,
@@ -372,6 +463,65 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
       const restoredBuilding = parseUrlState(serializeUrlState(buildingState));
       expect(restoredBuilding.inspected.type).toBe("building");
       expect(restoredBuilding.inspected.id).toBe(42);
+    });
+  });
+
+  describe("Archetype Presets & Geomorphology Scalar Serialization", () => {
+    test("hydrates canonical preset scalars for all 9 archetypes when omitted from URL", () => {
+      for (const arch of VALID_ARCHETYPES) {
+        const state = parseUrlState(`?arch=${arch}`);
+        expect(state.config.archetype).toBe(arch);
+        const preset = ARCHETYPE_PARAMETER_PRESETS[arch];
+        expect(state.config.terrainRelief).toBe(preset.terrainRelief);
+        expect(state.config.valleyIncision).toBe(preset.valleyIncision);
+        expect(state.config.coastalEmbayment).toBe(preset.coastalEmbayment);
+        expect(state.config.calderaCurvature).toBe(preset.calderaCurvature);
+        expect(state.config.barrierFragmentation).toBe(
+          preset.barrierFragmentation,
+        );
+        expect(state.config.basinCount).toBe(preset.basinCount);
+
+        // When serialized with defaults omitted, matching preset scalars are omitted
+        const query = serializeUrlState(state);
+        const params = new URLSearchParams(query.slice(1));
+        expect(params.has("relief")).toBe(false);
+        expect(params.has("incision")).toBe(false);
+        expect(params.has("indent")).toBe(false);
+        expect(params.has("caldera")).toBe(false);
+        expect(params.has("barrier")).toBe(false);
+        expect(params.has("basins")).toBe(false);
+      }
+    });
+
+    test("round-trips custom scalar overrides", () => {
+      const customUrl =
+        "?arch=caldera-basin&relief=180&incision=140&indent=65&caldera=195&barrier=55&basins=5";
+      const customState = parseUrlState(customUrl);
+      expect(customState.config.archetype).toBe("caldera-basin");
+      expect(customState.config.terrainRelief).toBe(180);
+      expect(customState.config.valleyIncision).toBe(140);
+      expect(customState.config.coastalEmbayment).toBe(65);
+      expect(customState.config.calderaCurvature).toBe(195);
+      expect(customState.config.barrierFragmentation).toBe(55);
+      expect(customState.config.basinCount).toBe(5);
+
+      const serialized = serializeUrlState(customState);
+      expect(serialized).toContain("arch=caldera-basin");
+      expect(serialized).toContain("relief=180");
+      expect(serialized).toContain("incision=140");
+      expect(serialized).toContain("indent=65");
+      expect(serialized).toContain("caldera=195");
+      expect(serialized).toContain("barrier=55");
+      expect(serialized).toContain("basins=5");
+
+      const restored = parseUrlState(serialized);
+      expect(restored.config.archetype).toBe("caldera-basin");
+      expect(restored.config.terrainRelief).toBe(180);
+      expect(restored.config.valleyIncision).toBe(140);
+      expect(restored.config.coastalEmbayment).toBe(65);
+      expect(restored.config.calderaCurvature).toBe(195);
+      expect(restored.config.barrierFragmentation).toBe(55);
+      expect(restored.config.basinCount).toBe(5);
     });
   });
 });

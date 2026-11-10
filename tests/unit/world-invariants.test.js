@@ -124,8 +124,9 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
     const renderer = new MiniMotorwaysRenderer(null);
     const benchmarks = [
       { seed: "OTTD-METRO-84", archetype: "confluence", worldSize: "compact" },
-      { seed: "DELTA-402", archetype: "estuary", worldSize: "compact" },
-      { seed: "HARBOR-305", archetype: "archipelago", worldSize: "compact" },
+      { seed: "DELTA-402", archetype: "fjord-sound", worldSize: "compact" },
+      { seed: "HARBOR-305", archetype: "isthmus-strait", worldSize: "compact" },
+      { seed: "LAGOON-714", archetype: "barrier-lagoon", worldSize: "compact" },
       { seed: "VALLEY-618", archetype: "inland", worldSize: "compact" },
       {
         seed: "ISLAND-HOP-101",
@@ -424,6 +425,308 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
           true,
         );
       }
+    }
+  }, 15000);
+
+  test("All 9 landform archetypes and custom geomorphology scalar overrides satisfy geographic & elevation invariants", () => {
+    const pipeline = createWorldPipeline();
+    const allArchetypes = [
+      "confluence",
+      "inland",
+      "alpine-passes",
+      "fjord-sound",
+      "isthmus-strait",
+      "caldera-basin",
+      "barrier-lagoon",
+      "canyon-gorge",
+      "island-hopper",
+    ];
+
+    const continentalArchetypes = allArchetypes.filter(
+      (a) => a !== "island-hopper",
+    );
+
+    for (const archetype of allArchetypes) {
+      const world = pipeline({
+        seed: "OTTD-METRO-84",
+        worldSize: "compact",
+        archetype,
+        terrainAlgo: "tectonic-fbm",
+        hydrologyAlgo: "thalweg-astar",
+        airportMix: "hub-regional",
+        includeIntermediateRamps: true,
+        townCount: 14,
+        buildingDensity: 200,
+        airportCount: 2,
+        windAxis: -1,
+      });
+
+      // Assert every continental archetype generates world.rivers.length >= 1, world.towns.length >= 8, and world.airports.length >= 1
+      if (continentalArchetypes.includes(archetype)) {
+        expect(world.rivers.length).toBeGreaterThanOrEqual(1);
+        expect(world.towns.length).toBeGreaterThanOrEqual(8);
+        expect(world.airports.length).toBeGreaterThanOrEqual(1);
+      } else {
+        expect(world.towns.length).toBeGreaterThanOrEqual(1);
+      }
+
+      // Assert "inland" produces zero border-touching sea basins
+      if (archetype === "inland") {
+        expect(world.hydroFeatures.some((f) => f.type === "bay")).toBe(false);
+        for (let x = 0; x < world.W; x++) {
+          expect(world.waterMask[world.idx(x, 0)]).not.toBe(2);
+          expect(world.waterMask[world.idx(x, world.H - 1)]).not.toBe(2);
+        }
+        for (let y = 0; y < world.H; y++) {
+          expect(world.waterMask[world.idx(0, y)]).not.toBe(2);
+          expect(world.waterMask[world.idx(world.W - 1, y)]).not.toBe(2);
+        }
+      }
+    }
+
+    // Assert explicit coastalEmbayment: 0 produces zero border-touching sea basins
+    const worldZeroEmbayment = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      coastalEmbayment: 0,
+      townCount: 14,
+      airportCount: 2,
+    });
+    expect(worldZeroEmbayment.hydroFeatures.some((f) => f.type === "bay")).toBe(
+      false,
+    );
+    for (let x = 0; x < worldZeroEmbayment.W; x++) {
+      expect(
+        worldZeroEmbayment.waterMask[worldZeroEmbayment.idx(x, 0)],
+      ).not.toBe(2);
+      expect(
+        worldZeroEmbayment.waterMask[
+          worldZeroEmbayment.idx(x, worldZeroEmbayment.H - 1)
+        ],
+      ).not.toBe(2);
+    }
+    for (let y = 0; y < worldZeroEmbayment.H; y++) {
+      expect(
+        worldZeroEmbayment.waterMask[worldZeroEmbayment.idx(0, y)],
+      ).not.toBe(2);
+      expect(
+        worldZeroEmbayment.waterMask[
+          worldZeroEmbayment.idx(worldZeroEmbayment.W - 1, y)
+        ],
+      ).not.toBe(2);
+    }
+
+    // Assert custom geomorphology scalar overrides (terrainRelief, valleyIncision, coastalEmbayment, calderaCurvature, barrierFragmentation, basinCount)
+    const customWorld = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainRelief: 150,
+      valleyIncision: 120,
+      coastalEmbayment: 80,
+      calderaCurvature: 60,
+      barrierFragmentation: 50,
+      basinCount: 4,
+      townCount: 14,
+      airportCount: 2,
+    });
+    expect(customWorld.rivers.length).toBeGreaterThanOrEqual(1);
+    expect(customWorld.towns.length).toBeGreaterThanOrEqual(8);
+    expect(customWorld.airports.length).toBeGreaterThanOrEqual(1);
+
+    // Assert changing a geomorphology scalar (terrainRelief: 180 vs terrainRelief: 40) invalidates Stage 2A and alters elevationField
+    const worldHighRelief = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainRelief: 180,
+      valleyIncision: 40,
+      coastalEmbayment: 100,
+      calderaCurvature: 0,
+      barrierFragmentation: 0,
+      basinCount: 2,
+      townCount: 14,
+      airportCount: 2,
+    });
+    const highReliefElev = new Float32Array(worldHighRelief.elevationField);
+
+    const worldLowRelief = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainRelief: 40,
+      valleyIncision: 40,
+      coastalEmbayment: 100,
+      calderaCurvature: 0,
+      barrierFragmentation: 0,
+      basinCount: 2,
+      townCount: 14,
+      airportCount: 2,
+    });
+
+    let alteredElevationCount = 0;
+    for (let i = 0; i < worldLowRelief.elevationField.length; i++) {
+      if (
+        Math.abs(worldLowRelief.elevationField[i] - highReliefElev[i]) > 0.005
+      ) {
+        alteredElevationCount++;
+      }
+    }
+    expect(alteredElevationCount).toBeGreaterThan(
+      worldLowRelief.elevationField.length * 0.5,
+    );
+  }, 15000);
+
+  test("Plan 2 Specialized Pull-Based Industrial Supply Chain & TradeGateway invariants on OTTD-METRO-84", () => {
+    const pipeline = createWorldPipeline();
+    const world = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainAlgo: "tectonic-fbm",
+      hydrologyAlgo: "thalweg-astar",
+      airportMix: "hub-regional",
+      includeIntermediateRamps: true,
+      waterCoverage: 48,
+      townCount: 14,
+      buildingDensity: 200,
+      airportCount: 2,
+      windAxis: -1,
+    });
+
+    const validRawTypes = new Set([
+      "MINE",
+      "TIMBER",
+      "FARM",
+      "FISHERY",
+      "CHEM",
+    ]);
+    const validRawOutputs = {
+      MINE: "ORE",
+      TIMBER: "WOOD",
+      FARM: "AGRI",
+      FISHERY: "AGRI",
+      CHEM: "CHEM",
+    };
+    const validMfgTypes = new Set(["STEEL", "FOOD", "GOODS", "TECH"]);
+    const expectedMfgSpecs = {
+      STEEL: { requiredInputs: ["ORE", "WOOD"], outputGood: "HARDWARE" },
+      FOOD: { requiredInputs: ["AGRI", "CHEM"], outputGood: "GROCERIES" },
+      GOODS: {
+        requiredInputs: ["WOOD", "HARDWARE"],
+        outputGood: "CONSUMER_GOODS",
+      },
+      TECH: {
+        requiredInputs: ["CHEM", "HARDWARE"],
+        outputGood: "ELECTRONICS",
+      },
+    };
+
+    // 1. Every RAW destination has a valid resourceType ("MINE" | "TIMBER" | "FARM" | "FISHERY" | "CHEM") and outputGood
+    const rawDestinations = world.destinations.filter(
+      (d) => d.subType === "RAW",
+    );
+    expect(rawDestinations.length).toBeGreaterThan(0);
+    for (const raw of rawDestinations) {
+      const rType = raw.resourceType ?? "";
+      expect(validRawTypes.has(rType)).toBe(true);
+      expect(raw.outputGood).toBe(
+        validRawOutputs[/** @type {keyof typeof validRawOutputs} */ (rType)],
+      );
+    }
+
+    // 2. Every MFG destination has a valid mfgType ("STEEL" | "FOOD" | "GOODS" | "TECH"), requiredInputs, and outputGood, and receives >= 1 inbound cargo link
+    const mfgDestinations = world.destinations.filter(
+      (d) => d.subType === "MFG",
+    );
+    expect(mfgDestinations.length).toBeGreaterThan(0);
+    for (const mfg of mfgDestinations) {
+      const mType = mfg.mfgType ?? "";
+      expect(validMfgTypes.has(mType)).toBe(true);
+      const spec =
+        expectedMfgSpecs[/** @type {keyof typeof expectedMfgSpecs} */ (mType)];
+      expect(mfg.requiredInputs).toEqual(spec.requiredInputs);
+      expect(mfg.outputGood).toBe(spec.outputGood);
+
+      const inbound = world.cargoLinks.filter((l) => l.to.id === mfg.id);
+      expect(inbound.length).toBeGreaterThanOrEqual(1);
+    }
+
+    // 3. Every LOG destination has relativeDemand > 0 and receives >= 1 inbound and >= 1 outbound cargo link
+    const logDestinations = world.destinations.filter(
+      (d) => d.subType === "LOG",
+    );
+    expect(logDestinations.length).toBeGreaterThan(0);
+    for (const log of logDestinations) {
+      expect(typeof log.relativeDemand).toBe("number");
+      expect(log.relativeDemand).toBeGreaterThan(0);
+
+      const inbound = world.cargoLinks.filter((l) => l.to.id === log.id);
+      expect(inbound.length).toBeGreaterThanOrEqual(1);
+
+      const outbound = world.cargoLinks.filter((l) => l.from.id === log.id);
+      expect(outbound.length).toBeGreaterThanOrEqual(1);
+    }
+
+    // 4. Every COM destination has demandedGoods.length >= 1 (with distinct goods within each town before repeats) and receives >= 1 inbound cargo link
+    const comDestinations = world.destinations.filter(
+      (d) => d.zoneType === "commercial",
+    );
+    expect(comDestinations.length).toBeGreaterThan(0);
+
+    const comsByTown = new Map();
+    for (const com of comDestinations) {
+      const goods = com.demandedGoods ?? [];
+      expect(Array.isArray(com.demandedGoods)).toBe(true);
+      expect(goods.length).toBeGreaterThanOrEqual(1);
+
+      const uniqueGoodsOnBuilding = new Set(goods);
+      expect(uniqueGoodsOnBuilding.size).toBe(goods.length);
+
+      const inbound = world.cargoLinks.filter((l) => l.to.id === com.id);
+      expect(inbound.length).toBeGreaterThanOrEqual(1);
+
+      if (!comsByTown.has(com.townId)) {
+        comsByTown.set(com.townId, []);
+      }
+      comsByTown.get(com.townId).push(com);
+    }
+
+    for (const [, townComs] of comsByTown) {
+      const firstGoods = townComs
+        .slice(0, 4)
+        .map((c) => (c.demandedGoods ?? [])[0]);
+      const uniqueFirstGoods = new Set(firstGoods);
+      expect(uniqueFirstGoods.size).toBe(firstGoods.length);
+    }
+
+    // 5. world.cargoLinks includes "MFG->MFG", "CBD->CBD", and TradeGateway "IMPORT->..." or "...->EXPORT" links, and world.tradeGateways.length === world.airports.length
+    const stages = new Set(world.cargoLinks.map((l) => l.stage));
+    expect(stages.has("MFG->MFG")).toBe(true);
+    expect(stages.has("CBD->CBD")).toBe(true);
+    const hasImportLink = world.cargoLinks.some((l) =>
+      l.stage.startsWith("IMPORT->"),
+    );
+    const hasExportLink = world.cargoLinks.some((l) =>
+      l.stage.endsWith("->EXPORT"),
+    );
+    expect(hasImportLink || hasExportLink).toBe(true);
+
+    expect(world.tradeGateways.length).toBe(world.airports.length);
+    expect(world.tradeGateways.length).toBeGreaterThan(0);
+
+    // 6. Every airport has typeof ap.acceptsWidebody === "boolean" (true for HUB/CRG, false for REG) and ap.externalCorridors.length >= 1
+    for (const ap of world.airports) {
+      expect(typeof ap.acceptsWidebody).toBe("boolean");
+      if (ap.isHub || ap.airportClass === "HUB" || ap.airportClass === "CRG") {
+        expect(ap.acceptsWidebody).toBe(true);
+      } else if (ap.airportClass === "REG") {
+        expect(ap.acceptsWidebody).toBe(false);
+      }
+      const corridors = ap.externalCorridors ?? [];
+      expect(Array.isArray(ap.externalCorridors)).toBe(true);
+      expect(corridors.length).toBeGreaterThanOrEqual(1);
     }
   }, 15000);
 });

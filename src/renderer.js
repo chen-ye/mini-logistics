@@ -575,7 +575,7 @@ export class MiniMotorwaysRenderer {
     }
     const leftSafe = drawerOpen ? 412 : 14;
     const rightSafe = inspOpen ? 428 : 14;
-    const boxW = Math.min(canvas.width - leftSafe - rightSafe, 745);
+    const boxW = Math.min(canvas.width - leftSafe - rightSafe, 960);
     if (boxW < 220) {
       ctx.restore();
       return;
@@ -592,17 +592,29 @@ export class MiniMotorwaysRenderer {
     ctx.fill();
     ctx.stroke();
 
+    const links = world.cargoLinks || [];
+    const cbdCount = links.filter((l) => l.stage === "CBD->CBD").length;
+    const tradeCount = links.filter(
+      (l) => l.stage?.includes("IMPORT") || l.stage?.includes("EXPORT"),
+    ).length;
+
     const items = [
       { col: "#16a34a", label: `R Residential (${world.houses.length})` },
       { col: "#2563eb", label: `C CBD/Arterial (${comCount})` },
       { col: "#d97706", label: `RAW Extract (${rawCount})` },
       { col: "#ea580c", label: `MFG Factory (${mfgCount})` },
       { col: "#7c3aed", label: `LOG Hub (${logCount})` },
-      {
-        col: "#36383e",
-        label: `${(world.cargoLinks || []).length} Freight Chains`,
-      },
     ];
+    if (cbdCount > 0) {
+      items.push({ col: "#0284c7", label: `CBD B2B (${cbdCount})` });
+    }
+    if (tradeCount > 0) {
+      items.push({ col: "#0d9488", label: `Trade Gateway (${tradeCount})` });
+    }
+    items.push({
+      col: "#36383e",
+      label: `${links.length} Freight Chains`,
+    });
 
     ctx.font = "700 11px Inter, sans-serif";
     ctx.textBaseline = "middle";
@@ -1504,10 +1516,24 @@ export class MiniMotorwaysRenderer {
           baseCol = "#1d4ed8";
           roofCol = "#3b82f6";
           pinCol = "#1e3a8a";
+        } else if (d.isGatewayProxy) {
+          baseCol = "#0f766e";
+          roofCol = "#0d9488";
+          pinCol = "#134e4a";
         } else if (d.subType === "RAW") {
-          baseCol = "#b45309";
-          roofCol = "#f59e0b";
-          pinCol = "#78350f";
+          if (d.resourceType === "FISHERY") {
+            baseCol = "#0369a1";
+            roofCol = "#0284c7";
+            pinCol = "#0c4a6e";
+          } else if (d.resourceType === "CHEM") {
+            baseCol = "#0f766e";
+            roofCol = "#0d9488";
+            pinCol = "#134e4a";
+          } else {
+            baseCol = "#b45309";
+            roofCol = "#f59e0b";
+            pinCol = "#78350f";
+          }
         } else if (d.subType === "LOG") {
           baseCol = "#6d28d9";
           roofCol = "#a855f7";
@@ -1874,6 +1900,88 @@ export class MiniMotorwaysRenderer {
             ctx.moveTo(ghX + ghW * 0.68, ghY + 1);
             ctx.lineTo(ghX + ghW * 0.68, ghY + ghH - 1);
             ctx.stroke();
+          } else if (d.resourceType === "FISHERY") {
+            // Coastal Cold-Storage Catch Wharf (`FISHERY`):
+            // Left half: Slate-blue cold-storage wharf hall (`baseCol` / `roofCol` with `#0284c7` maritime trim)
+            setSub(ctx, 3);
+            ctx.fillStyle = baseCol;
+            ctx.beginPath();
+            ctx.roundRect(
+              cx - bldW * 0.48,
+              cy - bldH * 0.44,
+              bldW * 0.48,
+              bldH * 0.84,
+              2.5,
+            );
+            ctx.fill();
+
+            setSub(ctx, 4);
+            ctx.fillStyle = roofCol;
+            ctx.beginPath();
+            ctx.roundRect(
+              cx - bldW * 0.44,
+              cy - bldH * 0.4,
+              bldW * 0.4,
+              bldH * 0.66,
+              2,
+            );
+            ctx.fill();
+
+            // Maritime blue roof eaves & trim
+            setSub(ctx, 5);
+            ctx.fillStyle = "#0284c7";
+            ctx.fillRect(cx - bldW * 0.44, cy - bldH * 0.4, bldW * 0.4, 1.8);
+            ctx.fillRect(cx - bldW * 0.44, cy + bldH * 0.24, bldW * 0.4, 1.4);
+
+            // Right half: Two parallel timber/concrete pier fingers extending across the right half
+            const pierW = bldW * 0.42;
+            const pierH = bldH * 0.22;
+            const pierX = cx + bldW * 0.04;
+            for (const pyOff of [-bldH * 0.22, bldH * 0.22]) {
+              setSub(ctx, 3);
+              ctx.fillStyle = "#78716c";
+              ctx.beginPath();
+              ctx.roundRect(pierX, cy + pyOff - pierH * 0.5, pierW, pierH, 1.5);
+              ctx.fill();
+
+              setSub(ctx, 4);
+              ctx.fillStyle = "#d6d3d1";
+              ctx.beginPath();
+              ctx.roundRect(
+                pierX + 1.2,
+                cy + pyOff - pierH * 0.5 + 1.0,
+                pierW - 2.4,
+                pierH - 2.0,
+                1,
+              );
+              ctx.fill();
+            }
+
+            // Two circular cyan/white cold-brine holding tanks
+            const tankR = Math.min(bldW, bldH) * 0.13;
+            const tankCoords = [
+              [cx + bldW * 0.16, cy],
+              [cx + bldW * 0.34, cy],
+            ];
+            for (const [tx, ty] of tankCoords) {
+              setSub(ctx, 4);
+              ctx.fillStyle = "#0284c7";
+              ctx.beginPath();
+              ctx.arc(tx, ty, tankR, 0, Math.PI * 2);
+              ctx.fill();
+
+              setSub(ctx, 5);
+              ctx.fillStyle = "#0ea5e9";
+              ctx.beginPath();
+              ctx.arc(tx, ty - 0.7, tankR * 0.8, 0, Math.PI * 2);
+              ctx.fill();
+
+              setSub(ctx, 6);
+              ctx.fillStyle = "#e0f2fe";
+              ctx.beginPath();
+              ctx.arc(tx - 0.5, ty - 1.0, tankR * 0.34, 0, Math.PI * 2);
+              ctx.fill();
+            }
           } else {
             // Urban Bulk Feedstock & Chemical Works (`RAW`):
             setSub(ctx, 3);
@@ -3449,6 +3557,42 @@ export class MiniMotorwaysRenderer {
       }
     }
 
+    // External trade airway corridors to map-border entry points
+    for (const ap of world.airports) {
+      for (const corr of ap.externalCorridors || []) {
+        const sx = ap.x;
+        const sy = ap.y;
+        const ex = corr.entryX;
+        const ey = corr.entryY;
+        const cdx = ex - sx;
+        const cdy = ey - sy;
+        const cDist = Math.hypot(cdx, cdy) || 1;
+        const ang = ap.angleRad ?? 0;
+        const cosAng = Math.cos(ang);
+        const sinAng = Math.sin(ang);
+        const dot = cdx * cosAng + cdy * sinAng;
+        const sign = dot >= 0 ? 1 : -1;
+        const pull = Math.min(24, Math.max(6, cDist * 0.35));
+        const c1x = sx + cosAng * sign * pull;
+        const c1y = sy + sinAng * sign * pull;
+        const corrAng = corr.angleRad ?? Math.atan2(cdy, cdx);
+        const c2x = ex - Math.cos(corrAng) * (pull * 0.7);
+        const c2y = ey - Math.sin(corrAng) * (pull * 0.7);
+
+        ctx.beginPath();
+        ctx.moveTo(sx * ts + halfTs, sy * ts + halfTs);
+        ctx.bezierCurveTo(
+          c1x * ts + halfTs,
+          c1y * ts + halfTs,
+          c2x * ts + halfTs,
+          c2y * ts + halfTs,
+          ex * ts + halfTs,
+          ey * ts + halfTs,
+        );
+        ctx.stroke();
+      }
+    }
+
     ctx.setLineDash([]);
     ctx.restore();
   }
@@ -3475,7 +3619,9 @@ export class MiniMotorwaysRenderer {
       const px = p.x * ts + ts * 0.5;
       const py = p.y * ts + ts * 0.5;
       const ang = p.ang ?? 0;
-      const isCargo = Boolean(p.isCargoFreighter);
+      const isCargo = Boolean(
+        p.isCargoFreighter || p.aircraftType === "WIDEBODY_FREIGHTER",
+      );
       const accent = p.color || null;
 
       const shadowOff = isGround ? 1.2 : 1.5 + alt * 22;
@@ -3493,6 +3639,7 @@ export class MiniMotorwaysRenderer {
         null,
         null,
         isCargo,
+        p.aircraftType || null,
       );
 
       // Crisp White & Color-Accented Minimalist Aircraft Body
@@ -3506,6 +3653,7 @@ export class MiniMotorwaysRenderer {
         "#36383e",
         accent,
         isCargo,
+        p.aircraftType || null,
       );
 
       // Active ATC hold indicator for grounded aircraft
@@ -3523,7 +3671,14 @@ export class MiniMotorwaysRenderer {
         ctx.save();
         ctx.translate(px, py);
         ctx.rotate(ang);
-        const noseX = (isCargo ? 12.2 : 11.0) * bodyScale + 2.8;
+        const noseX =
+          (p.aircraftType === "FEEDER_TURBOPROP"
+            ? 8.0
+            : isCargo
+              ? 14.0
+              : 11.0) *
+            bodyScale +
+          2.6;
 
         // Subtle amber hold-bar indicator perpendicular to heading
         ctx.strokeStyle = "#f59e0b";
@@ -3555,6 +3710,7 @@ export class MiniMotorwaysRenderer {
    * @param {string | null} [stroke=null]
    * @param {string | null} [accentColor=null]
    * @param {boolean} [isCargoFreighter=false]
+   * @param {string | null} [aircraftType=null]
    */
   drawAirplaneSilhouette(
     ctx,
@@ -3566,6 +3722,7 @@ export class MiniMotorwaysRenderer {
     stroke = null,
     accentColor = null,
     isCargoFreighter = false,
+    aircraftType = null,
   ) {
     ctx.save();
     ctx.translate(x, y);
@@ -3580,44 +3737,145 @@ export class MiniMotorwaysRenderer {
       ctx.lineWidth = 1.4;
     }
 
-    if (isCargoFreighter) {
+    if (aircraftType === "FEEDER_TURBOPROP") {
       // -------------------------------------------------------------
-      // Air Cargo Freighter (High-wing heavy hauler with 4 nacelles)
+      // Feeder Turboprop — Cessna 208 Caravan / Super Cargomaster
+      // Compact single-engine utility turboprop with visible nose propeller & spinner
       // -------------------------------------------------------------
+      // 1. Nose Propeller Assembly (compact ±2.05 span ahead of cowling stroke)
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.strokeStyle = isShadow ? fill : "#1f242d";
+      ctx.lineWidth = 1.15;
       ctx.beginPath();
-      ctx.moveTo(12.2, 0);
-      ctx.lineTo(5.2, 3.2);
-      ctx.lineTo(0.5, 12.8);
-      ctx.lineTo(-4.2, 12.8);
-      ctx.lineTo(-2.8, 3.2);
-      ctx.lineTo(-8.8, 2.6);
-      ctx.lineTo(-11.4, 6.2);
-      ctx.lineTo(-13.0, 6.2);
-      ctx.lineTo(-11.5, 0);
-      ctx.lineTo(-13.0, -6.2);
-      ctx.lineTo(-11.4, -6.2);
-      ctx.lineTo(-8.8, -2.6);
-      ctx.lineTo(-2.8, -3.2);
-      ctx.lineTo(-4.2, -12.8);
-      ctx.lineTo(0.5, -12.8);
-      ctx.lineTo(5.2, -3.2);
+      ctx.moveTo(7.55, -2.05);
+      ctx.lineTo(7.55, 2.05);
+      ctx.stroke();
+      ctx.restore();
+
+      // 2. Unified fuselage + utility Caravan wing (span ±7.4, sturdy chord) + horizontal tailplane
+      ctx.beginPath();
+      // Flat-shouldered PT6A turboprop cowling & cabin
+      ctx.moveTo(5.9, -0.9);
+      ctx.lineTo(5.9, 0.9);
+      ctx.quadraticCurveTo(5.8, 1.35, 4.5, 1.48);
+      ctx.lineTo(2.1, 1.52);
+      // Right utility straight wing (sturdy 5.2:1 aspect ratio, unswept leading edge + tapered outer trailing edge)
+      ctx.lineTo(2.1, 7.4);
+      ctx.lineTo(-0.05, 7.4);
+      ctx.lineTo(-1.05, 3.5);
+      ctx.lineTo(-1.05, 1.52);
+      // Tapered aft fuselage & horizontal tailplane
+      ctx.lineTo(-5.1, 1.05);
+      ctx.lineTo(-5.7, 3.35);
+      ctx.lineTo(-7.3, 3.35);
+      ctx.lineTo(-7.7, 0);
+      // Left horizontal tailplane & aft fuselage
+      ctx.lineTo(-7.3, -3.35);
+      ctx.lineTo(-5.7, -3.35);
+      ctx.lineTo(-5.1, -1.05);
+      // Left wing
+      ctx.lineTo(-1.05, -1.52);
+      ctx.lineTo(-1.05, -3.5);
+      ctx.lineTo(-0.05, -7.4);
+      ctx.lineTo(2.1, -7.4);
+      ctx.lineTo(2.1, -1.52);
+      // Left forward cabin & cowling shoulder
+      ctx.lineTo(4.5, -1.48);
+      ctx.quadraticCurveTo(5.8, -1.35, 5.9, -0.9);
       ctx.closePath();
       ctx.fill();
-
-      // 4 Wing-mounted quad engine nacelles
-      const nacelles = [
-        { x: -0.5, y: 5.8 },
-        { x: -1.8, y: 9.6 },
-        { x: -0.5, y: -5.8 },
-        { x: -1.8, y: -9.6 },
-      ];
-      for (const nac of nacelles) {
-        ctx.beginPath();
-        ctx.roundRect(nac.x - 1.6, nac.y - 0.9, 3.2, 1.8, 0.7);
-        ctx.fill();
-        if (stroke) ctx.stroke();
+      if (stroke) {
+        ctx.stroke();
       }
 
+      // 3. Center Nose Spinner Cone (projects from cowling x = 5.9 through prop hub to x = 8.35)
+      ctx.beginPath();
+      ctx.moveTo(8.35, 0);
+      ctx.quadraticCurveTo(7.7, 0.42, 5.9, 0.42);
+      ctx.lineTo(5.9, -0.42);
+      ctx.quadraticCurveTo(7.7, -0.42, 8.35, 0);
+      ctx.closePath();
+      ctx.fillStyle = isShadow ? fill : "#36383e";
+      ctx.fill();
+
+      // Caravan wingtip tabs & vertical tail fin livery accents
+      if (!isShadow) {
+        const propColor =
+          this && this.activeLayer === "rci"
+            ? "#0284c7"
+            : accentColor || "#0284c7";
+
+        ctx.fillStyle = propColor;
+        ctx.beginPath();
+        ctx.moveTo(2.1, 7.4);
+        ctx.lineTo(-0.05, 7.4);
+        ctx.lineTo(-0.28, 5.9);
+        ctx.lineTo(2.1, 5.9);
+        ctx.closePath();
+        ctx.moveTo(2.1, -7.4);
+        ctx.lineTo(-0.05, -7.4);
+        ctx.lineTo(-0.28, -5.9);
+        ctx.lineTo(2.1, -5.9);
+        ctx.closePath();
+        ctx.moveTo(-4.7, 0);
+        ctx.lineTo(-7.4, 0.82);
+        ctx.lineTo(-7.4, -0.82);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else if (isCargoFreighter || aircraftType === "WIDEBODY_FREIGHTER") {
+      // -------------------------------------------------------------
+      // Wide-Body Air Cargo Freighter — Boeing 767-300F
+      // Twin under-wing high-bypass turbofans (drawn UNDER the wing first) + wide-body cylindrical fuselage
+      // -------------------------------------------------------------
+      // 1. Under-wing twin high-bypass turbofan nacelles (Z-ordered underneath the wing!)
+      const nacelles = [-5.5, 5.5];
+      for (const ny of nacelles) {
+        ctx.beginPath();
+        ctx.roundRect(1.4, ny - 1.35, 4.4, 2.7, 0.95);
+        ctx.fill();
+        if (stroke) {
+          ctx.stroke();
+        }
+      }
+
+      // 2. Unified wide-body fuselage + swept wings + swept empennage silhouette
+      ctx.beginPath();
+      // Rounded 767 radome nose & cylindrical wide-body forward fuselage
+      ctx.moveTo(14.0, 0);
+      ctx.bezierCurveTo(14.0, 1.35, 12.4, 2.45, 9.6, 2.45);
+      ctx.lineTo(4.8, 2.45);
+      // Right swept wing (31.5° leading-edge sweep + Yehudi trailing-edge root fillet)
+      ctx.lineTo(-2.4, 13.8);
+      ctx.lineTo(-4.6, 13.8);
+      ctx.lineTo(-1.8, 5.8);
+      ctx.lineTo(-1.2, 2.45);
+      // Cylindrical rear wide-body fuselage & tapered tailcone
+      ctx.lineTo(-8.2, 2.3);
+      ctx.lineTo(-10.0, 1.65);
+      // Right swept horizontal stabilizer
+      ctx.lineTo(-13.0, 6.6);
+      ctx.lineTo(-14.4, 6.6);
+      ctx.lineTo(-12.8, 0.85);
+      ctx.lineTo(-14.0, 0);
+      // Left swept horizontal stabilizer
+      ctx.lineTo(-12.8, -0.85);
+      ctx.lineTo(-14.4, -6.6);
+      ctx.lineTo(-13.0, -6.6);
+      ctx.lineTo(-10.0, -1.65);
+      ctx.lineTo(-8.2, -2.3);
+      // Left swept wing
+      ctx.lineTo(-1.2, -2.45);
+      ctx.lineTo(-1.8, -5.8);
+      ctx.lineTo(-4.6, -13.8);
+      ctx.lineTo(-2.4, -13.8);
+      ctx.lineTo(4.8, -2.45);
+      // Left forward fuselage & rounded radome nose
+      ctx.lineTo(9.6, -2.45);
+      ctx.bezierCurveTo(12.4, -2.45, 14.0, -1.35, 14.0, 0);
+      ctx.closePath();
+      ctx.fill();
       if (stroke) {
         ctx.stroke();
       }
@@ -3630,61 +3888,81 @@ export class MiniMotorwaysRenderer {
             : accentColor || "#d97706";
         ctx.fillStyle = cargoColor;
 
-        // Wingtip cargo accents (left & right)
+        // Wingtip cargo winglets (left & right)
         ctx.beginPath();
-        ctx.moveTo(0.5, 12.8);
-        ctx.lineTo(-4.2, 12.8);
-        ctx.lineTo(-3.8, 10.8);
-        ctx.lineTo(0.2, 10.8);
+        ctx.moveTo(-2.4, 13.8);
+        ctx.lineTo(-4.6, 13.8);
+        ctx.lineTo(-4.0, 11.6);
+        ctx.lineTo(-1.9, 11.6);
         ctx.closePath();
-        ctx.moveTo(0.5, -12.8);
-        ctx.lineTo(-4.2, -12.8);
-        ctx.lineTo(-3.8, -10.8);
-        ctx.lineTo(0.2, -10.8);
+        ctx.moveTo(-2.4, -13.8);
+        ctx.lineTo(-4.6, -13.8);
+        ctx.lineTo(-4.0, -11.6);
+        ctx.lineTo(-1.9, -11.6);
         ctx.closePath();
         ctx.fill();
 
-        // Tail fin & horizontal stabilizer cargo accents
+        // Swept vertical tail fin & stabilizer tips
         ctx.beginPath();
-        ctx.moveTo(-8.8, 0);
-        ctx.lineTo(-11.5, 0);
-        ctx.lineTo(-13.0, 2.8);
-        ctx.lineTo(-13.0, -2.8);
+        ctx.moveTo(-8.4, 0);
+        ctx.lineTo(-13.6, 1.75);
+        ctx.lineTo(-13.6, -1.75);
         ctx.closePath();
-        ctx.moveTo(-11.4, 6.2);
-        ctx.lineTo(-13.0, 6.2);
-        ctx.lineTo(-12.4, 4.6);
-        ctx.lineTo(-11.0, 4.6);
+        ctx.moveTo(-13.0, 6.6);
+        ctx.lineTo(-14.4, 6.6);
+        ctx.lineTo(-13.8, 5.0);
+        ctx.lineTo(-12.4, 5.0);
         ctx.closePath();
-        ctx.moveTo(-11.4, -6.2);
-        ctx.lineTo(-13.0, -6.2);
-        ctx.lineTo(-12.4, -4.6);
-        ctx.lineTo(-11.0, -4.6);
+        ctx.moveTo(-13.0, -6.6);
+        ctx.lineTo(-14.4, -6.6);
+        ctx.lineTo(-13.8, -5.0);
+        ctx.lineTo(-12.4, -5.0);
         ctx.closePath();
         ctx.fill();
       }
     } else {
       // -------------------------------------------------------------
-      // Passenger Jet (Sleek swept-wing twin jet)
+      // Passenger Jet — Bombardier CRJ700 Regional Jet
+      // Slender stretched forward cabin + clean swept wings + twin rear fuselage-mounted CF34 engine pods
       // -------------------------------------------------------------
+      // 1. Twin Rear Fuselage-Mounted CF34 Turbofan Pods (Z-ordered behind fuselage, clear of wing & T-tail)
+      const rearPods = [-2.85, 2.85];
+      for (const py of rearPods) {
+        ctx.beginPath();
+        ctx.roundRect(-6.7, py - 1.05, 3.5, 2.1, 0.85);
+        ctx.fill();
+        if (stroke) {
+          ctx.stroke();
+        }
+      }
+
+      // 2. Unified CRJ700 slender fuselage + clean swept wing + swept T-tail silhouette
       ctx.beginPath();
-      // Minimalist geometric swept-wing jet
-      ctx.moveTo(11, 0);
-      ctx.lineTo(4, 2.2);
-      ctx.lineTo(-2, 10.5);
-      ctx.lineTo(-5, 10.5);
-      ctx.lineTo(-2.5, 2.2);
-      ctx.lineTo(-8.5, 2.0);
-      ctx.lineTo(-11, 5.5);
-      ctx.lineTo(-12.5, 5.5);
-      ctx.lineTo(-11, 0);
-      ctx.lineTo(-12.5, -5.5);
-      ctx.lineTo(-11, -5.5);
-      ctx.lineTo(-8.5, -2.0);
-      ctx.lineTo(-2.5, -2.2);
-      ctx.lineTo(-5, -10.5);
-      ctx.lineTo(-2, -10.5);
-      ctx.lineTo(4, -2.2);
+      // Pointed CRJ radome & long stretched forward cabin
+      ctx.moveTo(11.6, 0);
+      ctx.quadraticCurveTo(10.5, 1.25, 7.8, 1.52);
+      ctx.lineTo(2.2, 1.52);
+      // Right clean swept wing (canted CRJ winglet tip)
+      ctx.lineTo(-2.4, 9.6);
+      ctx.lineTo(-4.4, 9.6);
+      ctx.lineTo(-1.9, 1.52);
+      // Aft fuselage (flanked by the twin CF34 engine pods) & swept T-tail stabilizer
+      ctx.lineTo(-8.8, 1.28);
+      ctx.lineTo(-11.4, 4.8);
+      ctx.lineTo(-12.8, 4.8);
+      ctx.lineTo(-11.8, 0);
+      // Left swept T-tail stabilizer & aft fuselage
+      ctx.lineTo(-12.8, -4.8);
+      ctx.lineTo(-11.4, -4.8);
+      ctx.lineTo(-8.8, -1.28);
+      // Left clean swept wing
+      ctx.lineTo(-1.9, -1.52);
+      ctx.lineTo(-4.4, -9.6);
+      ctx.lineTo(-2.4, -9.6);
+      ctx.lineTo(2.2, -1.52);
+      // Left forward cabin & radome
+      ctx.lineTo(7.8, -1.52);
+      ctx.quadraticCurveTo(10.5, -1.25, 11.6, 0);
       ctx.closePath();
       ctx.fill();
       if (stroke) ctx.stroke();
@@ -3693,35 +3971,35 @@ export class MiniMotorwaysRenderer {
       if (!isShadow && accentColor) {
         ctx.fillStyle = accentColor;
 
-        // Wingtip winglets (left and right)
+        // Canted CRJ wingtip winglets (left and right)
         ctx.beginPath();
-        ctx.moveTo(-2, 10.5);
-        ctx.lineTo(-5, 10.5);
-        ctx.lineTo(-4.3, 8.8);
-        ctx.lineTo(-2.1, 8.8);
+        ctx.moveTo(-2.4, 9.6);
+        ctx.lineTo(-4.4, 9.6);
+        ctx.lineTo(-3.9, 8.0);
+        ctx.lineTo(-2.1, 8.0);
         ctx.closePath();
-        ctx.moveTo(-2, -10.5);
-        ctx.lineTo(-5, -10.5);
-        ctx.lineTo(-4.3, -8.8);
-        ctx.lineTo(-2.1, -8.8);
+        ctx.moveTo(-2.4, -9.6);
+        ctx.lineTo(-4.4, -9.6);
+        ctx.lineTo(-3.9, -8.0);
+        ctx.lineTo(-2.1, -8.0);
         ctx.closePath();
         ctx.fill();
 
-        // Swept tail fin / empennage accent
+        // Swept T-tail fin & horizontal stabilizer tips
         ctx.beginPath();
-        ctx.moveTo(-8.5, 0);
-        ctx.lineTo(-12.5, 2.4);
-        ctx.lineTo(-12.5, -2.4);
+        ctx.moveTo(-8.6, 0);
+        ctx.lineTo(-12.6, 1.55);
+        ctx.lineTo(-12.6, -1.55);
         ctx.closePath();
-        ctx.moveTo(-11, 5.5);
-        ctx.lineTo(-12.5, 5.5);
-        ctx.lineTo(-12.0, 4.2);
-        ctx.lineTo(-10.8, 4.2);
+        ctx.moveTo(-11.4, 4.8);
+        ctx.lineTo(-12.8, 4.8);
+        ctx.lineTo(-12.3, 3.5);
+        ctx.lineTo(-11.1, 3.5);
         ctx.closePath();
-        ctx.moveTo(-11, -5.5);
-        ctx.lineTo(-12.5, -5.5);
-        ctx.lineTo(-12.0, -4.2);
-        ctx.lineTo(-10.8, -4.2);
+        ctx.moveTo(-11.4, -4.8);
+        ctx.lineTo(-12.8, -4.8);
+        ctx.lineTo(-12.3, -3.5);
+        ctx.lineTo(-11.1, -3.5);
         ctx.closePath();
         ctx.fill();
       }
@@ -3850,7 +4128,20 @@ export class MiniMotorwaysRenderer {
       ctx.stroke();
 
       // Colored dashed supply chain corridor
-      ctx.strokeStyle = link.color;
+      const linkColor =
+        link.color ||
+        (link.stage === "CBD->CBD"
+          ? "#0284c7"
+          : link.stage?.includes("IMPORT") || link.stage?.includes("EXPORT")
+            ? "#0d9488"
+            : link.stage === "MFG->MFG"
+              ? "#e11d48"
+              : link.stage === "RAW->MFG"
+                ? "#d97706"
+                : link.stage === "LOG->COM"
+                  ? "#7c3aed"
+                  : "#ea580c");
+      ctx.strokeStyle = linkColor;
       ctx.lineWidth = 2.4;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -3871,7 +4162,7 @@ export class MiniMotorwaysRenderer {
       ctx.save();
       ctx.translate(ax, ay);
       ctx.rotate(ang);
-      ctx.fillStyle = link.color;
+      ctx.fillStyle = linkColor;
       ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -3892,33 +4183,54 @@ export class MiniMotorwaysRenderer {
     const badgeCandidates = [];
     for (const d of world.destinations) {
       if (d.zoneType === "industrial") {
-        const rawLabel =
-          d.resourceType === "MINE"
-            ? "MINE"
-            : d.resourceType === "TIMBER"
-              ? "WOOD"
-              : d.resourceType === "FARM"
-                ? "FARM"
-                : "RAW";
-        const tag = d.subType === "RAW" ? rawLabel : d.subType || "MFG";
-        const bg =
-          d.subType === "RAW"
-            ? "#d97706"
-            : tag === "LOG"
-              ? "#7c3aed"
-              : "#ea580c";
+        let tag = "RAW";
+        let bg = "#d97706";
+        if (d.isGatewayProxy) {
+          tag = d.label || "AIR";
+          bg = "#0d9488";
+        } else if (d.subType === "RAW") {
+          if (d.resourceType === "MINE") {
+            tag = "MINE";
+            bg = "#d97706";
+          } else if (d.resourceType === "TIMBER") {
+            tag = "WOOD";
+            bg = "#d97706";
+          } else if (d.resourceType === "FARM") {
+            tag = "FARM";
+            bg = "#d97706";
+          } else if (d.resourceType === "FISHERY") {
+            tag = "FISH";
+            bg = "#0284c7";
+          } else if (d.resourceType === "CHEM") {
+            tag = "CHEM";
+            bg = "#0d9488";
+          } else {
+            tag = "RAW";
+            bg = "#d97706";
+          }
+        } else if (d.subType === "LOG") {
+          tag = "LOG";
+          bg = "#7c3aed";
+        } else if (d.subType === "MFG") {
+          tag = d.mfgType || "MFG";
+          bg = "#ea580c";
+        } else {
+          tag = d.subType || "MFG";
+          bg = "#ea580c";
+        }
         const prio = d.isRuralNiche
           ? 1
-          : tag === "LOG"
+          : tag === "LOG" || tag === "AIR"
             ? 2
-            : tag === "MFG"
+            : d.subType === "MFG"
               ? 3
               : 5;
+        const bw = tag.length >= 5 ? 34 : tag.length >= 4 ? 30 : 26;
         badgeCandidates.push({
           d,
           tag,
           bg,
-          bw: tag.length >= 4 ? 30 : 26,
+          bw,
           prio,
         });
       } else if (d.isCircular) {

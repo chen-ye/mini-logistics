@@ -4,6 +4,39 @@
 import { ROAD_GRID, BUILDING_MASK } from "./constants.js";
 
 /**
+ * Projects a ray from (x, y) along angleRad to the map bounding box [minX..maxX, minY..maxY].
+ * @param {number} x
+ * @param {number} y
+ * @param {number} ang
+ * @param {number} minX
+ * @param {number} minY
+ * @param {number} maxX
+ * @param {number} maxY
+ * @returns {{ entryX: number, entryY: number }}
+ */
+function projectToBorder(x, y, ang, minX, minY, maxX, maxY) {
+  const cos = Math.cos(ang);
+  const sin = Math.sin(ang);
+  let tx = Infinity;
+  let ty = Infinity;
+  if (cos > 1e-6) {
+    tx = (maxX - x) / cos;
+  } else if (cos < -1e-6) {
+    tx = (minX - x) / cos;
+  }
+  if (sin > 1e-6) {
+    ty = (maxY - y) / sin;
+  } else if (sin < -1e-6) {
+    ty = (minY - y) / sin;
+  }
+  let t = Math.min(tx, ty);
+  if (!Number.isFinite(t) || t <= 0) t = 30;
+  const entryX = Math.round(Math.max(minX, Math.min(maxX, x + t * cos)));
+  const entryY = Math.round(Math.max(minY, Math.min(maxY, y + t * sin)));
+  return { entryX, entryY };
+}
+
+/**
  * @param {ProceduralLogisticsWorld} world
  * @param {number} aIdx
  */
@@ -19,6 +52,7 @@ export function getAirportTierSpec(world, aIdx) {
       halfWid: 3.8,
       approachLen: 15,
       demandPins: 7,
+      acceptsWidebody: true,
     };
   }
   if (mix === "hub-reg-cargo" && aIdx >= 2) {
@@ -27,10 +61,11 @@ export function getAirportTierSpec(world, aIdx) {
       classLabel: "Air Cargo & Logistics Airfield",
       isHub: false,
       runwayCount: 1,
-      halfLen: 4.6,
-      halfWid: 2.3,
+      halfLen: 5.6,
+      halfWid: 2.5,
       approachLen: 10,
       demandPins: 4,
+      acceptsWidebody: true,
     };
   }
   return {
@@ -42,11 +77,18 @@ export function getAirportTierSpec(world, aIdx) {
     halfWid: 2.6,
     approachLen: 12,
     demandPins: 4,
+    acceptsWidebody: false,
   };
 }
 
 export function solveAndPlaceAirports(world) {
   const isIslandHopper = world.config.archetype === "island-hopper";
+  const arch = world.config.archetype;
+  const isFlexibleArch =
+    isIslandHopper ||
+    arch === "barrier-lagoon" ||
+    arch === "fjord-sound" ||
+    arch === "isthmus-strait";
   const effectiveApCount = isIslandHopper
     ? Math.max(world.config.airportCount ?? 2, 5)
     : (world.config.airportCount ?? 2);
@@ -54,6 +96,7 @@ export function solveAndPlaceAirports(world) {
   const baseRad = world.windVector ? world.windVector.rad : 0;
 
   world.airportHeatmap.fill(0);
+  world.tradeGateways = [];
 
   // Sort candidate host cities by tier & population priority;
   // in `island-hopper`, prioritize placing 1 airport on each distinct island (`landmassId`) first!
@@ -108,7 +151,7 @@ export function solveAndPlaceAirports(world) {
     } = spec;
 
     // Allow regional & island airfields to align with local valley or coastal peninsula shelves
-    const angleCandidates = isIslandHopper
+    const angleCandidates = isFlexibleArch
       ? [
           baseRad,
           baseRad + Math.PI / 6,
@@ -151,7 +194,9 @@ export function solveAndPlaceAirports(world) {
     }));
     const minInscribedDistToWater = isIslandHopper
       ? 1.8
-      : Math.min(4.2, halfWid + 1.0);
+      : isFlexibleArch
+        ? 2.2
+        : Math.min(4.2, halfWid + 1.0);
     const maxCenterSlope = isIslandHopper ? 0.48 : 0.4;
     const idealDist = hostTown.urbanRadius + (isHub ? 7.5 : 5.5);
     const minHostDist = hostTown.urbanRadius * (isIslandHopper ? 0.72 : 0.82);
@@ -166,6 +211,13 @@ export function solveAndPlaceAirports(world) {
         if (cx < 88 && cy < 28) continue;
         const id = world.idx(cx, cy);
         if (world.waterMask[id] > 0) continue;
+        if (
+          hostTown.landmassId !== undefined &&
+          hostTown.landmassId >= 0 &&
+          world.landmassId[id] !== hostTown.landmassId
+        ) {
+          continue;
+        }
         if (
           world.slopeField[id] > maxCenterSlope ||
           world.distToWater[id] < minInscribedDistToWater
@@ -413,10 +465,93 @@ export function solveAndPlaceAirports(world) {
         colorIdx: hostTown.colorIdx,
         palette: hostTown.palette,
         demandPins,
+        acceptsWidebody: Boolean(
+          spec.acceptsWidebody ?? (isHub || airportClass === "CRG"),
+        ),
+        importsCompleted: 0,
+        exportsCompleted: 0,
+        /** @type {import('./types.js').ExternalCorridor[]} */
+        externalCorridors: [],
         motorwayId: null,
         landsideLoopPts: [],
         accessStubPts: [],
       };
+
+      const corridorCount = isHub || airportClass === "CRG" ? 2 : 1;
+      /** @type {import('./types.js').ExternalCorridor[]} */
+      const corridors = [];
+      for (let cIdx = 0; cIdx < corridorCount; cIdx++) {
+        const ang = siteRad + (cIdx === 1 ? Math.PI : 0);
+        const { entryX, entryY } = projectToBorder(
+          bestSite.cx,
+          bestSite.cy,
+          ang,
+          -42,
+          -42,
+          world.W + 42,
+          world.H + 42,
+        );
+        corridors.push({
+          id: `air-corr-${airport.id}-${cIdx}`,
+          modality: "air",
+          label: `${airport.iata} INTL-${cIdx + 1}`,
+          entryX,
+          entryY,
+          angleRad: ang,
+          tradeShare: cIdx === 0 ? 0.65 : 0.35,
+          acceptsWidebody: airport.acceptsWidebody,
+        });
+      }
+      airport.externalCorridors = corridors;
+
+      world.tradeGateways.push({
+        id: `gw-air-${airport.id}`,
+        modality: "air",
+        entityId: airport.id,
+        name: `${airport.name} Cargo Terminal`,
+        code: airport.iata,
+        townId: airport.hostTownId,
+        landmassId: hostTown.landmassId ?? 0,
+        x: airport.x,
+        y: airport.y,
+        lotX: airport.x,
+        lotY: airport.y,
+        roadX: airport.curbX,
+        roadY: airport.curbY,
+        importCapacity: airport.isHub
+          ? 3
+          : airport.airportClass === "CRG"
+            ? 4
+            : 2,
+        exportCapacity: airport.isHub
+          ? 3
+          : airport.airportClass === "CRG"
+            ? 4
+            : 2,
+        importedGoods: [
+          "ORE",
+          "WOOD",
+          "AGRI",
+          "CHEM",
+          "HARDWARE",
+          "GROCERIES",
+          "CONSUMER_GOODS",
+          "ELECTRONICS",
+        ],
+        exportedGoods: [
+          "ORE",
+          "WOOD",
+          "AGRI",
+          "CHEM",
+          "HARDWARE",
+          "GROCERIES",
+          "CONSUMER_GOODS",
+          "ELECTRONICS",
+        ],
+        corridors,
+        colorIdx: airport.colorIdx,
+        palette: airport.palette,
+      });
 
       hostTown.airportId = airport.id;
       world.airports.push(airport);

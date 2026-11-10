@@ -7,6 +7,8 @@ import {
   initAirportATC,
   canPushBackOntoTaxiway,
   maintainTaxiwayOrder,
+  canWidebodyServe,
+  createExternalEndpoint,
 } from "../../src/simulator.js";
 import { computeTrumpetRampBeziers } from "../../src/vehicle-routing.js";
 import { SIM_CONFIG } from "../../src/constants.js";
@@ -287,7 +289,7 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     const pipeline = createWorldPipeline();
     const benchmarkSeeds = [
       { seed: "OTTD-METRO-84", archetype: "confluence" },
-      { seed: "DELTA-402", archetype: "estuary" },
+      { seed: "DELTA-402", archetype: "barrier-lagoon" },
     ];
 
     for (const bm of benchmarkSeeds) {
@@ -1372,5 +1374,179 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
         expect(dAng).toBeLessThanOrEqual(maxDeltaAng);
       }
     }
+  });
+
+  test("Plan 2 Wave 2A Aviation Fleet & External Corridor Invariants", () => {
+    // 1. canWidebodyServe returns true for HUB, CRG, and external endpoints, and false for REG airports
+    expect(canWidebodyServe({ isHub: true, airportClass: "HUB" })).toBe(true);
+    expect(
+      canWidebodyServe({
+        isHub: false,
+        airportClass: "CRG",
+        acceptsWidebody: true,
+      }),
+    ).toBe(true);
+    expect(canWidebodyServe({ isExternal: true })).toBe(true);
+    expect(
+      canWidebodyServe({
+        isHub: false,
+        airportClass: "REG",
+        acceptsWidebody: false,
+      }),
+    ).toBe(false);
+    expect(canWidebodyServe(null)).toBe(false);
+    expect(canWidebodyServe(undefined)).toBe(false);
+
+    // 2. Setup OTTD-METRO-84 with airportMix: "hub-reg-cargo", airportCount: 3
+    const pipeline = createWorldPipeline();
+    const world = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainAlgo: "tectonic-fbm",
+      hydrologyAlgo: "thalweg-astar",
+      airportMix: "hub-reg-cargo",
+      includeIntermediateRamps: true,
+      waterCoverage: 48,
+      townCount: 14,
+      buildingDensity: 200,
+      airportCount: 3,
+      windAxis: -1,
+    });
+
+    expect(world.airports.length).toBe(3);
+    const hubAp = world.airports.find((a) => a.airportClass === "HUB");
+    const crgAp = world.airports.find((a) => a.airportClass === "CRG");
+    const regAp = world.airports.find((a) => a.airportClass === "REG");
+    expect(hubAp).toBeDefined();
+    expect(crgAp).toBeDefined();
+    expect(regAp).toBeDefined();
+    if (!hubAp || !crgAp || !regAp) return;
+
+    expect(canWidebodyServe(hubAp)).toBe(true);
+    expect(canWidebodyServe(crgAp)).toBe(true);
+    expect(canWidebodyServe(regAp)).toBe(false);
+
+    const sim = new LogisticsSimulator(world);
+    expect(sim.planes.length).toBeGreaterThan(0);
+
+    // Verify 3-class AircraftType fleet members exist
+    const fleetTypes = new Set(sim.planes.map((p) => p.aircraftType));
+    expect(fleetTypes.has("WIDEBODY_FREIGHTER")).toBe(true);
+    expect(fleetTypes.has("FEEDER_TURBOPROP")).toBe(true);
+    expect(fleetTypes.has("PASSENGER_JET")).toBe(true);
+
+    // Across 1,000 ticks, no plane with aircraftType === "WIDEBODY_FREIGHTER" ever has
+    // a REG airport (!canWidebodyServe(p.origin) or !canWidebodyServe(p.dest)) as origin or dest!
+    let widebodyObservedCount = 0;
+    for (let tick = 0; tick < 1000; tick++) {
+      sim.update(0.1, 1.0);
+      for (const p of sim.planes) {
+        if (p.aircraftType === "WIDEBODY_FREIGHTER") {
+          widebodyObservedCount++;
+          expect(canWidebodyServe(p.origin)).toBe(true);
+          expect(canWidebodyServe(p.dest)).toBe(true);
+          expect(p.origin?.airportClass).not.toBe("REG");
+          expect(p.dest?.airportClass).not.toBe("REG");
+        }
+      }
+    }
+    expect(widebodyObservedCount).toBeGreaterThan(0);
+
+    // 3. Verify FEEDER_TURBOPROP aircraft exist in fleet, serve REG airports,
+    // and buildFlightTrack uses SIM_CONFIG.AVIATION.turbopropCruiseSpeed (13.2 tiles/sec)
+    const servesReg = sim.planes.some(
+      (p) =>
+        p.aircraftType === "FEEDER_TURBOPROP" &&
+        (!canWidebodyServe(p.origin) || !canWidebodyServe(p.dest)),
+    );
+    expect(servesReg).toBe(true);
+
+    expect(SIM_CONFIG.AVIATION.turbopropCruiseSpeed).toBe(13.2);
+    const turbopropTrack = buildFlightTrack(regAp, hubAp, {
+      aircraftType: "FEEDER_TURBOPROP",
+    });
+    const turbopropCruisePts = turbopropTrack.pts.filter(
+      (pt) => pt.phase === "CRUISE",
+    );
+    expect(turbopropCruisePts.length).toBeGreaterThan(0);
+    for (const pt of turbopropCruisePts) {
+      expect(pt.speed).toBe(SIM_CONFIG.AVIATION.turbopropCruiseSpeed);
+    }
+
+    // 4. External corridor flight tracks & turnaround counters
+    const extEndpoint = createExternalEndpoint(hubAp);
+    expect(extEndpoint.isExternal).toBe(true);
+    expect(extEndpoint.acceptsWidebody).toBe(true);
+
+    // Outbound track (dest.isExternal = true): ends in "CRUISE" at cruiseAlt, omits LANDING/TAXI_IN
+    const outboundTrack = buildFlightTrack(hubAp, extEndpoint);
+    expect(outboundTrack.pts.length).toBeGreaterThan(0);
+    expect(outboundTrack.pts[0].phase).toBe("TAXI_OUT");
+    const lastOutPt = outboundTrack.pts[outboundTrack.pts.length - 1];
+    expect(lastOutPt.phase).toBe("CRUISE");
+    expect(lastOutPt.altitude).toBe(SIM_CONFIG.AVIATION.cruiseAlt);
+    expect(outboundTrack.pts.some((pt) => pt.phase === "LANDING")).toBe(false);
+    expect(outboundTrack.pts.some((pt) => pt.phase === "TAXI_IN")).toBe(false);
+
+    // Inbound track (origin.isExternal = true): starts directly in "CRUISE" at cruiseAlt, omits TAXI_OUT/TAKEOFF
+    const inboundTrack = buildFlightTrack(extEndpoint, hubAp);
+    expect(inboundTrack.pts.length).toBeGreaterThan(0);
+    const firstInPt = inboundTrack.pts[0];
+    expect(firstInPt.phase).toBe("CRUISE");
+    expect(firstInPt.altitude).toBe(SIM_CONFIG.AVIATION.cruiseAlt);
+    expect(inboundTrack.pts[inboundTrack.pts.length - 1].phase).toBe("TAXI_IN");
+    expect(inboundTrack.pts.some((pt) => pt.phase === "TAXI_OUT")).toBe(false);
+    expect(inboundTrack.pts.some((pt) => pt.phase === "TAKEOFF")).toBe(false);
+
+    // Outbound external flight reaching dest.isExternal during sim.update:
+    // increments exportsCompleted on origin airport and turns around as an inbound external flight
+    const simTurn = new LogisticsSimulator(world);
+    simTurn.cars = [];
+    hubAp.exportsCompleted = 0;
+    hubAp.importsCompleted = 0;
+
+    const planeOut = simTurn.planes[0];
+    planeOut.origin = hubAp;
+    planeOut.dest = extEndpoint;
+    planeOut.track = outboundTrack;
+    planeOut.state = "ENROUTE_CRUISE";
+    planeOut.phase = "CRUISE";
+    planeOut.dist = outboundTrack.totalLength - 0.4;
+    planeOut.isExternalFlight = true;
+
+    simTurn.planes = [planeOut];
+    simTurn.update(0.1, 1.0);
+
+    expect(hubAp.exportsCompleted).toBe(1);
+    expect(planeOut.origin?.isExternal).toBe(true);
+    expect(planeOut.dest).toBeDefined();
+    expect(planeOut.dest.id).toBeDefined();
+    expect(planeOut.state).toBe("ENROUTE_CRUISE");
+    expect(planeOut.phase).toBe("CRUISE");
+    expect(planeOut.isExternalFlight).toBe(true);
+
+    // Advance inbound flight to landing rollout exit and verify importsCompleted increments on dest airport
+    let taxiInDist = 0;
+    for (let i = 0; i < planeOut.track.pts.length; i++) {
+      if (planeOut.track.pts[i].phase === "TAXI_IN") {
+        taxiInDist = planeOut.track.cumLen[i];
+        break;
+      }
+    }
+    expect(taxiInDist).toBeGreaterThan(0);
+
+    planeOut.state = "LANDING_ROLLOUT";
+    planeOut.phase = "LANDING";
+    planeOut.dist = taxiInDist - 0.5;
+    planeOut._importRecorded = false;
+    const arrivalDest = planeOut.dest;
+    arrivalDest.importsCompleted = 0;
+
+    for (let step = 0; step < 20; step++) {
+      simTurn.update(0.1, 1.0);
+      if (arrivalDest.importsCompleted > 0) break;
+    }
+    expect(arrivalDest.importsCompleted).toBe(1);
   });
 });

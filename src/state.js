@@ -17,7 +17,11 @@
  * } from './types.js'
  */
 
-import { DEFAULT_GENERATOR_CONFIG, WIND_AXES } from "./constants.js";
+import {
+  DEFAULT_GENERATOR_CONFIG,
+  WIND_AXES,
+  ARCHETYPE_PARAMETER_PRESETS,
+} from "./constants.js";
 
 /**
  * Fast shallow equality check for objects, arrays/tuples, and primitives.
@@ -157,14 +161,42 @@ function formatWindLabel(windAxis) {
 
 const controlLabelsStage = createMemoStage(
   /** @param {GeneratorConfig} cfg */
-  (cfg) => [
-    cfg.waterCoverage,
-    cfg.townCount,
-    cfg.buildingDensity,
-    cfg.airportCount,
-    cfg.airportMix,
-    cfg.windAxis,
-  ],
+  (cfg) => {
+    const preset =
+      ARCHETYPE_PARAMETER_PRESETS[
+        cfg.archetype || DEFAULT_GENERATOR_CONFIG.archetype
+      ] || ARCHETYPE_PARAMETER_PRESETS.confluence;
+    const relief = cfg.terrainRelief ?? preset.terrainRelief;
+    const incision = cfg.valleyIncision ?? preset.valleyIncision;
+    const embayment = cfg.coastalEmbayment ?? preset.coastalEmbayment;
+    const caldera = cfg.calderaCurvature ?? preset.calderaCurvature;
+    const barrier = cfg.barrierFragmentation ?? preset.barrierFragmentation;
+    const basins = cfg.basinCount ?? preset.basinCount;
+
+    let geoModifiedCount = 0;
+    if (relief !== preset.terrainRelief) geoModifiedCount++;
+    if (incision !== preset.valleyIncision) geoModifiedCount++;
+    if (embayment !== preset.coastalEmbayment) geoModifiedCount++;
+    if (caldera !== preset.calderaCurvature) geoModifiedCount++;
+    if (barrier !== preset.barrierFragmentation) geoModifiedCount++;
+    if (basins !== preset.basinCount) geoModifiedCount++;
+
+    return [
+      cfg.waterCoverage,
+      cfg.townCount,
+      cfg.buildingDensity,
+      cfg.airportCount,
+      cfg.airportMix,
+      cfg.windAxis,
+      relief,
+      incision,
+      embayment,
+      caldera,
+      barrier,
+      basins,
+      geoModifiedCount,
+    ];
+  },
   (
     waterCoverage,
     townCount,
@@ -172,12 +204,26 @@ const controlLabelsStage = createMemoStage(
     airportCount,
     airportMix,
     windAxis,
+    relief,
+    incision,
+    embayment,
+    caldera,
+    barrier,
+    basins,
+    geoModifiedCount,
   ) => ({
     waterLabel: `${waterCoverage}%`,
     townsLabel: `${townCount} Towns`,
     densityLabel: `${buildingDensity}%`,
     airportsLabel: formatAirportBreakdown(airportCount, airportMix),
     windLabel: formatWindLabel(windAxis),
+    reliefLabel: `${relief}%`,
+    incisionLabel: `${incision}%`,
+    embaymentLabel: `${embayment}%`,
+    calderaLabel: `${caldera}%`,
+    barrierLabel: `${barrier}%`,
+    basinsLabel: `${basins}`,
+    geoModifiedCount,
   }),
   { maxSize: 3 },
 );
@@ -234,9 +280,20 @@ export function createAppStore(
   initialConfig = DEFAULT_GENERATOR_CONFIG,
   initialViewAndInteraction = {},
 ) {
+  const archKey = initialConfig.archetype || DEFAULT_GENERATOR_CONFIG.archetype;
+  const defaultArchPreset =
+    ARCHETYPE_PARAMETER_PRESETS[archKey] ||
+    ARCHETYPE_PARAMETER_PRESETS.confluence;
+
   /** @type {Readonly<Required<GeneratorConfig>>} */
   const config = Object.freeze({
     ...DEFAULT_GENERATOR_CONFIG,
+    terrainRelief: defaultArchPreset.terrainRelief,
+    valleyIncision: defaultArchPreset.valleyIncision,
+    coastalEmbayment: defaultArchPreset.coastalEmbayment,
+    calderaCurvature: defaultArchPreset.calderaCurvature,
+    barrierFragmentation: defaultArchPreset.barrierFragmentation,
+    basinCount: defaultArchPreset.basinCount,
     ...initialConfig,
   });
 
@@ -352,6 +409,52 @@ export function createAppStore(
       });
       notify();
       return true;
+    },
+
+    /**
+     * Sets geography archetype, updating preset geomorphology scalars and water coverage.
+     *
+     * @param {string} archetype
+     * @returns {boolean}
+     */
+    setArchetype(archetype) {
+      const preset =
+        ARCHETYPE_PARAMETER_PRESETS[archetype] ||
+        ARCHETYPE_PARAMETER_PRESETS.confluence;
+      /** @type {Partial<GeneratorConfig>} */
+      const patch = {
+        archetype,
+        waterCoverage: preset.waterCoverage,
+        terrainRelief: preset.terrainRelief,
+        valleyIncision: preset.valleyIncision,
+        coastalEmbayment: preset.coastalEmbayment,
+        calderaCurvature: preset.calderaCurvature,
+        barrierFragmentation: preset.barrierFragmentation,
+        basinCount: preset.basinCount,
+      };
+      if (archetype === "island-hopper") {
+        patch.airportCount = Math.max(state.config.airportCount, 5);
+      }
+      return this.patchConfig(patch);
+    },
+
+    /**
+     * Resets geomorphology scalars to canonical archetype preset values.
+     *
+     * @returns {boolean}
+     */
+    resetArchetypeScalars() {
+      const preset =
+        ARCHETYPE_PARAMETER_PRESETS[state.config.archetype] ||
+        ARCHETYPE_PARAMETER_PRESETS.confluence;
+      return this.patchConfig({
+        terrainRelief: preset.terrainRelief,
+        valleyIncision: preset.valleyIncision,
+        coastalEmbayment: preset.coastalEmbayment,
+        calderaCurvature: preset.calderaCurvature,
+        barrierFragmentation: preset.barrierFragmentation,
+        basinCount: preset.basinCount,
+      });
     },
 
     /**

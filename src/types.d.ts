@@ -6,7 +6,15 @@
 
 export type WorldSizeKey = "compact" | "standard" | "large" | "huge";
 export type ArchetypeKey =
-  "confluence" | "estuary" | "archipelago" | "inland" | "island-hopper";
+  | "confluence"
+  | "inland"
+  | "alpine-passes"
+  | "fjord-sound"
+  | "isthmus-strait"
+  | "caldera-basin"
+  | "barrier-lagoon"
+  | "canyon-gorge"
+  | "island-hopper";
 export type TerrainAlgoKey =
   "tectonic-fbm" | "quilez-erosion" | "voronoi-plates";
 export type HydrologyAlgoKey =
@@ -26,6 +34,16 @@ export interface WorldSizePreset {
   readonly label: string;
 }
 
+export interface ArchetypePreset {
+  waterCoverage: number;
+  terrainRelief: number;
+  valleyIncision: number;
+  coastalEmbayment: number;
+  calderaCurvature: number;
+  barrierFragmentation: number;
+  basinCount: number;
+}
+
 export interface GeneratorConfig {
   seed?: string;
   worldSize?: WorldSizeKey | (string & {});
@@ -39,6 +57,12 @@ export interface GeneratorConfig {
   buildingDensity?: number;
   airportCount?: number;
   windAxis?: number;
+  terrainRelief?: number;
+  valleyIncision?: number;
+  coastalEmbayment?: number;
+  calderaCurvature?: number;
+  barrierFragmentation?: number;
+  basinCount?: number;
 }
 
 export interface Point2D {
@@ -80,6 +104,49 @@ export interface Palette {
   motorwayCore: string;
   shadowColor: string;
   districtColors: DistrictColor[];
+}
+
+export type RawGood = "ORE" | "WOOD" | "AGRI" | "CHEM";
+export type FinishedGood =
+  "GROCERIES" | "CONSUMER_GOODS" | "HARDWARE" | "ELECTRONICS";
+export type TradeGood = RawGood | FinishedGood;
+export type MfgArchetypeKey = "FOOD" | "GOODS" | "STEEL" | "TECH";
+export type TradeModality = "air" | "sea" | "rail" | "highway";
+export type AircraftType =
+  "WIDEBODY_FREIGHTER" | "FEEDER_TURBOPROP" | "PASSENGER_JET";
+
+export interface ExternalCorridor {
+  id: string;
+  modality: TradeModality;
+  label: string;
+  entryX: number;
+  entryY: number;
+  angleRad: number;
+  tradeShare: number;
+  acceptsWidebody: boolean;
+}
+
+export interface TradeGateway {
+  id: string;
+  modality: TradeModality;
+  entityId: number;
+  name: string;
+  code: string;
+  townId: number;
+  landmassId: number;
+  x: number;
+  y: number;
+  lotX: number;
+  lotY: number;
+  roadX: number;
+  roadY: number;
+  importCapacity: number;
+  exportCapacity: number;
+  importedGoods: TradeGood[];
+  exportedGoods: TradeGood[];
+  corridors: ExternalCorridor[];
+  colorIdx: number;
+  palette: TownPalette;
 }
 
 export interface WaterBasin {
@@ -213,6 +280,11 @@ export interface Airport {
   demandSchedule?: AirportDemandSchedule;
   atc?: AirportATC;
   activeSign?: 1 | -1;
+  isExternal?: boolean;
+  acceptsWidebody?: boolean;
+  externalCorridors?: ExternalCorridor[];
+  importsCompleted?: number;
+  exportsCompleted?: number;
 }
 
 export interface RoadPoint {
@@ -303,7 +375,18 @@ export interface Destination {
   demandPins?: number[];
   zoneType: "commercial" | "industrial";
   subType: "CBD" | "RET" | "RAW" | "MFG" | "LOG" | (string & {});
-  resourceType?: "MINE" | "TIMBER" | "FARM" | null;
+  resourceType?:
+    "MINE" | "TIMBER" | "FARM" | "FISHERY" | "CHEM" | (string & {}) | null;
+  mfgType?: MfgArchetypeKey | null;
+  mfgTier?: 1 | 2;
+  requiredInputs?: TradeGood[];
+  outputGood?: TradeGood | null;
+  demandedGoods?: FinishedGood[];
+  demandProfile?: Partial<Record<FinishedGood, number>>;
+  relativeDemand?: number;
+  isGatewayProxy?: boolean;
+  gatewayId?: string | null;
+  airportId?: number | null;
   isRuralNiche?: boolean;
   bspParcels?: FarmParcel[];
   estateLoops?: [number, number][][];
@@ -549,11 +632,22 @@ export interface CargoLink {
   to: Destination;
   stage:
     | "RAW->MFG"
+    | "MFG->MFG"
     | "MFG->LOG"
     | "MFG->COM"
     | "LOG->COM"
     | "RAW->LOG"
+    | "CBD->CBD"
+    | "IMPORT->MFG"
+    | "IMPORT->LOG"
+    | "IMPORT->COM"
+    | "RAW->EXPORT"
+    | "MFG->EXPORT"
+    | "LOG->EXPORT"
     | (string & {});
+  commodity?: TradeGood | "B2B_PARCELS";
+  demandWeight?: number;
+  modality?: TradeModality;
   label: string;
   color: string;
   points: DirectedLanePoint[];
@@ -626,6 +720,7 @@ export interface Stage5AirportsState {
   buildingMask: Uint8Array;
   roads: RoadSegment[];
   airportLog: string;
+  tradeGateways?: TradeGateway[];
 }
 
 export interface Stage67UrbanState {
@@ -654,6 +749,7 @@ export interface Stage8MotorwaysState {
   motorways: Motorway[];
   interchanges: Interchange[];
   displacedBuildingsCount: number;
+  tradeGateways?: TradeGateway[];
 }
 
 export interface Stage9RampsAndCargoState {
@@ -681,6 +777,7 @@ export interface Stage9RampsAndCargoState {
   rciCounts: { com: number; raw: number; mfg: number; log: number };
   mwayLog: string;
   cargoLog: string;
+  tradeGateways?: TradeGateway[];
 }
 
 export interface CarAgent {
@@ -742,6 +839,13 @@ export interface PlaneEndpoint {
   palette?: TownPalette;
   atc?: AirportATC;
   activeSign?: 1 | -1;
+  isExternal?: boolean;
+  acceptsWidebody?: boolean;
+  corridorId?: string;
+  label?: string;
+  importsCompleted?: number;
+  exportsCompleted?: number;
+  externalCorridors?: ExternalCorridor[];
 }
 
 export type PlaneFSMState =
@@ -797,6 +901,8 @@ export interface AirportATC {
 
 export interface PlaneAgent {
   id?: number;
+  aircraftType?: AircraftType;
+  isExternalFlight?: boolean;
   state?: PlaneFSMState;
   gateId?: number | null;
   reservedGateId?: number | null;
@@ -811,6 +917,7 @@ export interface PlaneAgent {
   _resAng?: number;
   _holdRAlong?: number;
   _holdRCross?: number;
+  _importRecorded?: boolean;
   origin: Airport | PlaneEndpoint;
   dest: Airport | PlaneEndpoint;
   track: FlightTrack;
@@ -872,6 +979,13 @@ export interface ControlLabels {
   readonly densityLabel: string;
   readonly airportsLabel: string;
   readonly windLabel: string;
+  readonly reliefLabel?: string;
+  readonly incisionLabel?: string;
+  readonly embaymentLabel?: string;
+  readonly calderaLabel?: string;
+  readonly barrierLabel?: string;
+  readonly basinsLabel?: string;
+  readonly geoModifiedCount?: number;
 }
 
 export interface AppState {

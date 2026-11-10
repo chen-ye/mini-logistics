@@ -45,7 +45,9 @@ export function compassSector(dx, dy) {
  *   badgeClass: string,
  *   shortTag: string,
  *   typeLabel: string,
- *   title: string
+ *   title: string,
+ *   subtitle?: string,
+ *   townName?: string
  * }}
  */
 export function describeBuildingDossier(d, world = null) {
@@ -60,6 +62,19 @@ export function describeBuildingDossier(d, world = null) {
     ? compassSector(d.x - hostTown.x, d.y - hostTown.y)
     : `#${d.id}`;
 
+  if (d.isGatewayProxy) {
+    return {
+      stage: "LOG",
+      badge: "AIR · GATEWAY",
+      badgeClass: "bg-teal-700 text-white",
+      shortTag: d.label || "AIR",
+      typeLabel: "Trade Gateway",
+      title: `${d.label || "Airport"} Cargo Gateway`,
+      subtitle: "Multi-Modal Import/Export Terminal",
+      townName,
+    };
+  }
+
   if (d.zoneType === "commercial") {
     return {
       stage: "COM",
@@ -70,6 +85,10 @@ export function describeBuildingDossier(d, world = null) {
       title: d.isCircular
         ? `${townName} CBD Plaza (${sec})`
         : `${townName} Commercial (${sec})`,
+      subtitle: d.isCircular
+        ? "Downtown High-Rise & Central Retail Sink"
+        : "Arterial Commercial Retail & Services",
+      townName,
     };
   }
   if (d.subType === "RAW") {
@@ -81,6 +100,8 @@ export function describeBuildingDossier(d, world = null) {
         shortTag: "MINE",
         typeLabel: `Quarry (${sec})`,
         title: `${townName} Quarry (${sec})`,
+        subtitle: "Foothill Aggregate & Ore Extraction",
+        townName,
       };
     }
     if (d.resourceType === "TIMBER") {
@@ -91,6 +112,8 @@ export function describeBuildingDossier(d, world = null) {
         shortTag: "WOOD",
         typeLabel: `Sawmill (${sec})`,
         title: `${townName} Sawmill (${sec})`,
+        subtitle: "Forestry Timber Stand & Lumber Camp",
+        townName,
       };
     }
     if (d.resourceType === "FARM") {
@@ -101,6 +124,20 @@ export function describeBuildingDossier(d, world = null) {
         shortTag: "FARM",
         typeLabel: `Farm (${sec})`,
         title: `${townName} Farm (${sec})`,
+        subtitle: "Alluvial Grain Estate & Agricultural Silos",
+        townName,
+      };
+    }
+    if (d.resourceType === "FISHERY") {
+      return {
+        stage: "RAW",
+        badge: "RAW · FISHERY",
+        badgeClass: "bg-sky-700 text-white",
+        shortTag: "FISH",
+        typeLabel: `Fishery (${sec})`,
+        title: `${townName} Fishery (${sec})`,
+        subtitle: "Coastal Cold-Storage & Catch Wharf",
+        townName,
       };
     }
     return {
@@ -110,6 +147,8 @@ export function describeBuildingDossier(d, world = null) {
       shortTag: "CHEM",
       typeLabel: `Chem (${sec})`,
       title: `${townName} Chemical Plant (${sec})`,
+      subtitle: "Industrial Feedstock & Refining Works",
+      townName,
     };
   }
   if (d.subType === "LOG") {
@@ -120,6 +159,27 @@ export function describeBuildingDossier(d, world = null) {
       shortTag: "LOG",
       typeLabel: `Depot (${sec})`,
       title: `${townName} Logistics Hub (${sec})`,
+      subtitle: "Cross-Dock Freight Distribution Terminal",
+      townName,
+    };
+  }
+  if (d.mfgType) {
+    const mfgNames = {
+      STEEL: "Steel Mill",
+      FOOD: "Food Processing Plant",
+      GOODS: "Consumer Goods Factory",
+      TECH: "Tech Foundry",
+    };
+    const plantName = mfgNames[d.mfgType] || `${d.mfgType} Plant`;
+    return {
+      stage: "MFG",
+      badge: `MFG · ${d.mfgType}`,
+      badgeClass: "bg-orange-700 text-white",
+      shortTag: d.mfgType,
+      typeLabel: `${plantName} (${sec})`,
+      title: `${townName} ${plantName} (${sec})`,
+      subtitle: `${d.mfgType} Specialized Manufacturing Plant`,
+      townName,
     };
   }
   return {
@@ -129,6 +189,8 @@ export function describeBuildingDossier(d, world = null) {
     shortTag: "MFG",
     typeLabel: `Factory (${sec})`,
     title: `${townName} Factory (${sec})`,
+    subtitle: "Heavy & Light Manufacturing Plant",
+    townName,
   };
 }
 
@@ -494,6 +556,57 @@ export class EntityInspectorElement extends BaseElement {
           ? "Cargo Ramp"
           : "Apron";
 
+      const acceptsWide =
+        entity.acceptsWidebody ??
+        (entity.isHub || entity.airportClass === "CRG");
+      const fleetCapability = acceptsWide
+        ? "Wide-Body Freighter + Feeder + Jet"
+        : "Feeder Turboprop + Regional Jet (No Wide-Body)";
+      const intlTrade = `Intl Trade: ${entity.importsCompleted || 0} Imp · ${entity.exportsCompleted || 0} Exp`;
+
+      const gatewayLinks = (world?.cargoLinks || []).filter(
+        (l) => l.from?.airportId === entity.id || l.to?.airportId === entity.id,
+      );
+
+      let gatewayLinksHtml = "";
+      if (gatewayLinks.length > 0) {
+        const linkRows = gatewayLinks
+          .map((link) => {
+            const isOut = link.from?.airportId === entity.id;
+            const partner = isOut ? link.to : link.from;
+            const pInfo = describeBuildingDossier(partner, world);
+            const distTiles = (link.points || []).length;
+            const dirBadge = isOut
+              ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 shrink-0">EXPORT → ${pInfo.shortTag} #${partner.id}</span>`
+              : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 shrink-0">IMPORT ← ${pInfo.shortTag} #${partner.id}</span>`;
+            return `
+            <button type="button" data-jump-dest="${partner.id}" class="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
+              <div class="flex items-center gap-2 min-w-0">
+                ${dirBadge}
+                <span class="font-bold text-[#36383e] group-hover:text-[#e85c90] truncate">${pInfo.title}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <span class="mono text-[10px] font-bold text-stone-500 tabular-nums">${distTiles} tiles</span>
+                <svg class="w-3.5 h-3.5 text-stone-400 group-hover:text-[#36383e]" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+              </div>
+            </button>
+          `;
+          })
+          .join("");
+
+        gatewayLinksHtml = `
+        <div class="space-y-1.5 pt-2">
+          <div class="flex items-center justify-between text-[11px] font-bold text-stone-600">
+            <span>Landside Cargo Gateway (${gatewayLinks.length} Connections)</span>
+            <span class="text-[10px] font-normal text-stone-500">Click to jump</span>
+          </div>
+          <div class="space-y-1 max-h-36 overflow-y-auto drawer-scroll pr-0.5">
+            ${linkRows}
+          </div>
+        </div>
+      `;
+      }
+
       body.innerHTML = `
       <div class="divide-y divide-stone-300/60 border-y border-stone-300/60">
         <div class="flex items-center justify-between py-1.5">
@@ -516,6 +629,14 @@ export class EntityInspectorElement extends BaseElement {
           <span class="text-stone-500 font-medium">Expressway Spur</span>
           <span class="mono font-bold text-[#36383e] tabular-nums">Motorway ${entity.motorwayId || 1} (${entity.distToCBD} tiles to CBD)</span>
         </div>
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Fleet Capability</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums text-[11px]">${fleetCapability}</span>
+        </div>
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Gateway Trade</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums text-[11px]">${intlTrade}</span>
+        </div>
         ${
           hostTown
             ? `
@@ -529,6 +650,7 @@ export class EntityInspectorElement extends BaseElement {
             : ""
         }
       </div>
+      ${gatewayLinksHtml}
     `;
     }
   }
@@ -651,8 +773,14 @@ export class EntityInspectorElement extends BaseElement {
         dir === "in"
           ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 shrink-0">← ${pInfo.shortTag} #${partner.id}</span>`
           : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 shrink-0">→ ${pInfo.shortTag} #${partner.id}</span>`;
+      const isGateway = Boolean(
+        partner.isGatewayProxy && partner.airportId != null,
+      );
+      const jumpAttr = isGateway
+        ? `data-jump-ap="${partner.airportId}"`
+        : `data-jump-dest="${partner.id}"`;
       return `
-        <button type="button" data-jump-dest="${partner.id}" class="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
+        <button type="button" ${jumpAttr} class="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
           <div class="flex items-center gap-2 min-w-0">
             ${dirBadge}
             <span class="font-bold text-[#36383e] group-hover:text-[#e85c90] truncate">${pInfo.title}</span>
@@ -669,6 +797,37 @@ export class EntityInspectorElement extends BaseElement {
       ...inboundLinks.map((l) => renderLinkRow(l, "in")),
       ...outboundLinks.map((l) => renderLinkRow(l, "out")),
     ].join("");
+
+    let commodityRowHtml = "";
+    if (
+      entity.requiredInputs &&
+      entity.requiredInputs.length > 0 &&
+      entity.outputGood
+    ) {
+      commodityRowHtml = `
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Commodity Flow</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums text-[11px]">${entity.requiredInputs.join(" + ")} → ${entity.outputGood}</span>
+        </div>`;
+    } else if (entity.outputGood) {
+      commodityRowHtml = `
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Output Good</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums text-[11px]">${entity.outputGood}</span>
+        </div>`;
+    } else if (entity.demandedGoods && entity.demandedGoods.length > 0) {
+      commodityRowHtml = `
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Demanded Goods</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums text-[11px]">${entity.demandedGoods.join(", ")}</span>
+        </div>`;
+    } else if (entity.relativeDemand != null) {
+      commodityRowHtml = `
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Regional Demand Share</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums text-[11px]">${Math.round(entity.relativeDemand * 100)}%</span>
+        </div>`;
+    }
 
     if (body) {
       body.innerHTML = `
@@ -699,6 +858,7 @@ export class EntityInspectorElement extends BaseElement {
           <span class="text-stone-500 font-medium">${siteMetricLabel}</span>
           <span class="mono font-bold text-[#36383e] tabular-nums">${siteMetricVal}</span>
         </div>
+        ${commodityRowHtml}
       </div>
 
       ${

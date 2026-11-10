@@ -243,6 +243,8 @@ export class ProceduralLogisticsWorld {
     this.clusters = [];
     /** @type {Airport[]} */
     this.airports = [];
+    /** @type {import('./types.js').TradeGateway[]} */
+    this.tradeGateways = [];
     /** @type {RoadSegment[]} */
     this.roads = [];
     /** @type {Motorway[]} */
@@ -740,6 +742,8 @@ export class ProceduralLogisticsWorld {
         if (this.waterMask[id] > 0 || this.distToWater[id] < 2.8) continue;
         const lmId = this.landmassId[id];
         if (lmId < 0) continue;
+        const lmSize = this.landmasses[lmId]?.size ?? 0;
+        if (lmId > 0 && lmSize < (isIslandHopper ? 360 : 600)) continue;
         const slope = this.slopeField[id];
         if (slope > 0.48 || this.elevationField[id] > this.seaLevel + 0.42)
           continue;
@@ -1386,6 +1390,9 @@ const cloneRoad = (r) => ({
 const cloneAirport = (a) => ({
   ...a,
   demandSchedule: a.demandSchedule ? { ...a.demandSchedule } : undefined,
+  externalCorridors: a.externalCorridors
+    ? a.externalCorridors.map((c) => ({ ...c }))
+    : undefined,
 });
 
 /** @param {Destination['bspParcels']} list @returns {Destination['bspParcels']} */
@@ -1421,6 +1428,17 @@ const cloneDestination = (d) => ({
       )
     : undefined,
   estateBBox: d.estateBBox ? { ...d.estateBBox } : undefined,
+  requiredInputs: d.requiredInputs ? [...d.requiredInputs] : undefined,
+  demandedGoods: d.demandedGoods ? [...d.demandedGoods] : undefined,
+  demandProfile: d.demandProfile ? { ...d.demandProfile } : undefined,
+});
+
+/** @param {any} gw @returns {any} */
+const cloneTradeGateway = (gw) => ({
+  ...gw,
+  importedGoods: gw.importedGoods ? [...gw.importedGoods] : [],
+  exportedGoods: gw.exportedGoods ? [...gw.exportedGoods] : [],
+  corridors: gw.corridors ? gw.corridors.map((c) => ({ ...c })) : [],
 });
 
 /**
@@ -1470,19 +1488,50 @@ export function createWorldPipeline({
 
   // Stage 2A: Terrain Heightmap & Sea Basins
   const stage2a_terrain = createMemoStage(
-    /** @param {GeneratorConfig} cfg @param {FastNoise2D} noise @returns {[string | undefined, string, string | undefined, string | undefined, number | undefined, FastNoise2D]} */
+    /** @param {GeneratorConfig} cfg @param {FastNoise2D} noise @returns {[string | undefined, string, string | undefined, string | undefined, number | undefined, number | undefined, number | undefined, number | undefined, number | undefined, number | undefined, number | undefined, FastNoise2D]} */
     (cfg, noise) => [
       cfg.seed,
       cfg.worldSize || "standard",
       cfg.archetype,
       cfg.terrainAlgo,
       cfg.waterCoverage,
+      cfg.terrainRelief,
+      cfg.valleyIncision,
+      cfg.coastalEmbayment,
+      cfg.calderaCurvature,
+      cfg.barrierFragmentation,
+      cfg.basinCount,
       noise,
     ],
     /** @returns {Stage2ATerrainState} */
-    (seed, worldSize, archetype, terrainAlgo, waterCoverage, noise) => {
+    (
+      seed,
+      worldSize,
+      archetype,
+      terrainAlgo,
+      waterCoverage,
+      terrainRelief,
+      valleyIncision,
+      coastalEmbayment,
+      calderaCurvature,
+      barrierFragmentation,
+      basinCount,
+      noise,
+    ) => {
       w.ensureGridSize(worldSize);
-      w.config = { seed, worldSize, archetype, terrainAlgo, waterCoverage };
+      w.config = {
+        seed,
+        worldSize,
+        archetype,
+        terrainAlgo,
+        waterCoverage,
+        terrainRelief,
+        valleyIncision,
+        coastalEmbayment,
+        calderaCurvature,
+        barrierFragmentation,
+        basinCount,
+      };
       w.noise = noise;
       const size = w.W * w.H;
       w.elevationField = new Float32Array(size);
@@ -1513,18 +1562,49 @@ export function createWorldPipeline({
 
   // Stage 2B: Fluvial Hydrology (Rivers, Springs & Mouths)
   const stage2b_hydrology = createMemoStage(
-    /** @param {GeneratorConfig} cfg @param {FastNoise2D} noise @param {Readonly<Stage2ATerrainState>} s2a @returns {[string | undefined, string | undefined, string | undefined, string | undefined, FastNoise2D, Readonly<Stage2ATerrainState>]} */
+    /** @param {GeneratorConfig} cfg @param {FastNoise2D} noise @param {Readonly<Stage2ATerrainState>} s2a @returns {[string | undefined, string | undefined, string | undefined, string | undefined, number | undefined, number | undefined, number | undefined, number | undefined, number | undefined, number | undefined, FastNoise2D, Readonly<Stage2ATerrainState>]} */
     (cfg, noise, s2a) => [
       cfg.seed,
       cfg.archetype,
       cfg.terrainAlgo,
       cfg.hydrologyAlgo,
+      cfg.terrainRelief,
+      cfg.valleyIncision,
+      cfg.coastalEmbayment,
+      cfg.calderaCurvature,
+      cfg.barrierFragmentation,
+      cfg.basinCount,
       noise,
       s2a,
     ],
     /** @returns {Stage2BHydrologyState} */
-    (seed, archetype, terrainAlgo, hydrologyAlgo, noise, s2a, version) => {
-      w.config = { seed, archetype, terrainAlgo, hydrologyAlgo };
+    (
+      seed,
+      archetype,
+      terrainAlgo,
+      hydrologyAlgo,
+      terrainRelief,
+      valleyIncision,
+      coastalEmbayment,
+      calderaCurvature,
+      barrierFragmentation,
+      basinCount,
+      noise,
+      s2a,
+      version,
+    ) => {
+      w.config = {
+        seed,
+        archetype,
+        terrainAlgo,
+        hydrologyAlgo,
+        terrainRelief,
+        valleyIncision,
+        coastalEmbayment,
+        calderaCurvature,
+        barrierFragmentation,
+        basinCount,
+      };
       w.noise = noise;
       const size = s2a.W * s2a.H;
       w.elevationField = new Float32Array(s2a.elevationField);
@@ -1689,10 +1769,12 @@ export function createWorldPipeline({
       w.landmasses = s3.landmasses.map((l) => ({ ...l }));
       w.towns = s4.towns.map(cloneTown);
       w.clusters = s4.clusters.map(cloneTown);
+      w.tradeGateways = [];
       w.setStageRNG("stage5_airports");
       w.solveAndPlaceAirports();
       return {
         airports: w.airports.map(cloneAirport),
+        tradeGateways: (w.tradeGateways || []).map(cloneTradeGateway),
         towns: w.towns.map(cloneTown),
         airportHeatmap: new Float32Array(w.airportHeatmap),
         roadGrid: new Uint8Array(w.roadGrid),
@@ -1817,6 +1899,7 @@ export function createWorldPipeline({
       w.clusters = s4.clusters.map(cloneTown);
       w.towns = s67.towns.map(cloneTown);
       w.airports = s5.airports.map(cloneAirport);
+      w.tradeGateways = (s5.tradeGateways || []).map(cloneTradeGateway);
       w.roadGrid.set(s67.roadGrid);
       w.buildingMask.set(s67.buildingMask);
       w.zoneColorIdx = s67.zoneColorIdx;
@@ -1833,6 +1916,7 @@ export function createWorldPipeline({
       return {
         towns: w.towns.map(cloneTown),
         airports: w.airports.map(cloneAirport),
+        tradeGateways: (w.tradeGateways || []).map(cloneTradeGateway),
         roadGrid: new Uint8Array(w.roadGrid),
         buildingMask: new Uint8Array(w.buildingMask),
         roads: w.roads.map(cloneRoad),
@@ -1893,6 +1977,7 @@ export function createWorldPipeline({
       w.clusters = s4.clusters.map(cloneTown);
       w.towns = s8.towns.map(cloneTown);
       w.airports = s8.airports.map(cloneAirport);
+      w.tradeGateways = (s8.tradeGateways || []).map(cloneTradeGateway);
       w.roadGrid.set(s8.roadGrid);
       w.buildingMask.set(s8.buildingMask);
       w.zoneColorIdx = s67.zoneColorIdx;
@@ -1956,6 +2041,7 @@ export function createWorldPipeline({
       return {
         towns: w.towns,
         airports: w.airports,
+        tradeGateways: (w.tradeGateways || []).map(cloneTradeGateway),
         roadGrid: new Uint8Array(w.roadGrid),
         buildingMask: new Uint8Array(w.buildingMask),
         roads: w.roads,
@@ -2092,6 +2178,7 @@ export function createWorldPipeline({
     out.bridgeCount = s9.value.bridgeCount;
     out.towns = s9.value.towns;
     out.airports = s9.value.airports;
+    out.tradeGateways = s9.value.tradeGateways || [];
     out.roadGrid = s9.value.roadGrid;
     out.buildingMask = s9.value.buildingMask;
     out.roads = s9.value.roads;

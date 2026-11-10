@@ -33,6 +33,15 @@ export function buildRegionalRoadNetwork(world) {
   const connected = new Set([0]);
   const edges = [];
 
+  const isIslandHopper = world.config.archetype === "island-hopper";
+  const arch = world.config.archetype;
+  const isStraitOrIsland =
+    arch === "island-hopper" ||
+    arch === "isthmus-strait" ||
+    arch === "barrier-lagoon" ||
+    arch === "caldera-basin" ||
+    arch === "fjord-sound";
+
   const riverAwareEdgeCost = (a, b) => {
     const d = Math.hypot(b.x - a.x, b.y - a.y);
     let riverHits = 0;
@@ -58,7 +67,7 @@ export function buildRegionalRoadNetwork(world) {
     const waterCost =
       (riverHits > 0 ? 22 + riverHits * 3.5 : 0) +
       (seaHits > 0
-        ? world.config.archetype === "island-hopper"
+        ? isStraitOrIsland
           ? 28 + seaHits * 5.0
           : 85 + seaHits * 32.0
         : 0);
@@ -84,7 +93,6 @@ export function buildRegionalRoadNetwork(world) {
     edges.push(bestEdge);
   }
 
-  const isIslandHopper = world.config.archetype === "island-hopper";
   const scaleSpan = Math.max(1, world.W / 360);
 
   // Add up to `Math.max(2, Math.floor(nodes.length * 0.45))` regional valley loop chords
@@ -149,7 +157,7 @@ export function buildRegionalRoadNetwork(world) {
   }
 
   // Commit surface arterial roads within urban clusters or regional valley neighbors (<= 112 tiles);
-  // in `island-hopper`, only connect towns on the same island or across narrow straits (<= 54 tiles)
+  // in `island-hopper` and narrow strait archetypes, connect towns on the same island or across narrow straits (<= 54 tiles)
   // so deep ocean channels between outer islands are served by the aircraft fleet!
   const townRoadDegree = new Int8Array(nodes.length);
   const skippedEdges = [];
@@ -157,7 +165,7 @@ export function buildRegionalRoadNetwork(world) {
     const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
     const sameLandmass = nodes[i].ref.landmassId === nodes[j].ref.landmassId;
     const sameCluster = nodes[i].ref.clusterId === nodes[j].ref.clusterId;
-    if (isIslandHopper && !sameLandmass && d > 54 * scaleSpan) {
+    if (isStraitOrIsland && !sameLandmass && d > 54 * scaleSpan) {
       continue;
     }
     if (!sameCluster && d > 112 * scaleSpan) {
@@ -173,8 +181,8 @@ export function buildRegionalRoadNetwork(world) {
     );
     if (path) {
       const bridgeTiles = path.filter((pt) => pt.isBridge).length;
-      if (isIslandHopper && !sameLandmass && bridgeTiles > 20) continue;
-      if (!isIslandHopper && bridgeTiles > 11 && sameLandmass) continue;
+      if (isStraitOrIsland && !sameLandmass && bridgeTiles > 20) continue;
+      if (!isStraitOrIsland && bridgeTiles > 11 && sameLandmass) continue;
       world.commitRoadPath(path, "arterial");
       townRoadDegree[i]++;
       townRoadDegree[j]++;
@@ -293,6 +301,8 @@ export function seedSecondaryTownsAlongTrunks(world) {
       if (world.waterMask[id] > 0 || world.distToWater[id] < 2.8) continue;
       const lmId = world.landmassId[id];
       if (lmId < 0) continue;
+      const lmSize = world.landmasses[lmId]?.size ?? 0;
+      if (lmId > 0 && lmSize < (isIslandHopper ? 360 : 600)) continue;
       const slope = world.slopeField[id];
       if (slope > 0.44 || world.elevationField[id] > world.seaLevel + 0.36)
         continue;
@@ -367,6 +377,12 @@ export function seedSecondaryTownsAlongTrunks(world) {
       let nearTrunkPt = null;
       for (let k = 0; k < trunkRoadPts.length; k++) {
         const tp = trunkRoadPts[k];
+        if (
+          isIslandHopper &&
+          world.landmassId[world.idx(tp.x, tp.y)] !== lmId
+        ) {
+          continue;
+        }
         const d = Math.hypot(x - tp.x, y - tp.y);
         if (d < minTrunkD) {
           minTrunkD = d;
@@ -494,7 +510,11 @@ export function seedSecondaryTownsAlongTrunks(world) {
             );
           }
         }
-        if (path && path.length >= 2) {
+        if (
+          path &&
+          path.length >= 2 &&
+          path.filter((p) => p.isBridge).length <= (isIslandHopper ? 14 : 18)
+        ) {
           world.commitRoadPath(path, "arterial");
           for (let pIdx = 0; pIdx < path.length; pIdx += 2) {
             const pt = path[pIdx];
@@ -738,39 +758,53 @@ export function findRoadPathAStar(
           }
           stepCost *= crossesToBank ? 8.5 : 65.0;
         } else {
-          let crossesNarrowBay = false;
-          for (let s = 1; s <= 9; s++) {
-            const bx = nx + dx * s;
-            const by = ny + dy * s;
+          const isStraitOrIsland =
+            world.config.archetype === "island-hopper" ||
+            world.config.archetype === "isthmus-strait" ||
+            world.config.archetype === "barrier-lagoon" ||
+            world.config.archetype === "caldera-basin" ||
+            world.config.archetype === "fjord-sound";
+          const maxSpan = isStraitOrIsland ? 12 : 5;
+          let landAhead = false;
+          let landBehind = false;
+          for (let s = 1; s <= maxSpan; s++) {
+            const fx = nx + dx * s;
+            const fy = ny + dy * s;
+            if (
+              world.inBounds(fx, fy, 1) &&
+              world.waterMask[world.idx(fx, fy)] === 0
+            ) {
+              landAhead = true;
+            }
+            const bx = nx - dx * s;
+            const by = ny - dy * s;
             if (
               world.inBounds(bx, by, 1) &&
               world.waterMask[world.idx(bx, by)] === 0
             ) {
-              crossesNarrowBay = true;
-              break;
+              landBehind = true;
             }
           }
-          stepCost *= crossesNarrowBay
-            ? 24.0
-            : world.config.archetype === "island-hopper"
-              ? 38.0
-              : 95.0;
+          if (!landAhead || !landBehind) continue;
+          stepCost *= 24.0;
         }
         if (currIsWater && pid !== -1 && (dx !== prevDx || dy !== prevDy)) {
           stepCost += 85.0;
         }
       } else {
-        // Never wrap a road in a tight U-loop around an interior mountain spring headwater (`r.headwaterPt`)!
+        // Never wrap or route a road inside the 6-tile exclusion buffer around an interior mountain spring headwater (`r.headwaterPt`)!
+        let inHeadwaterBuffer = false;
         for (const rObj of world.rivers) {
           if (
             rObj.headwaterPt &&
             Math.hypot(nx - rObj.headwaterPt.x, ny - rObj.headwaterPt.y) <
               WORLD_GEOMETRY.ELEVATION_THRESHOLDS.headwaterRoadExclusion
           ) {
-            stepCost += 65.0;
+            inHeadwaterBuffer = true;
             break;
           }
         }
+        if (inHeadwaterBuffer) continue;
         // Keep dry-land arterials set back from the 1-tile cream riverbank border
         const dW = world.distToWater[nid];
         if (dW < 2.5 && !currIsWater) {
@@ -1140,12 +1174,15 @@ export function carveTownStreetGrids(world, filterFn = null) {
     // (producing varied 2×2, 2×3, 3×2, 3×3, and 2×4 rectangular blocks instead of a uniform 2×2 waffle!)
     const buildVariableOffsets = (maxRadius, isCBD) => {
       const offs = [];
+      const minMargin = maxRadius <= 11 ? 1 : 2;
       for (const dir of [-1, 1]) {
         let cur = 0;
         let idx = 0;
-        while (cur < maxRadius - 2) {
+        while (cur < maxRadius - minMargin) {
           let stepChoice;
-          if (idx === 0) {
+          if (maxRadius <= 11) {
+            stepChoice = 3;
+          } else if (idx === 0) {
             stepChoice = isCBD && world.rng.next() < 0.65 ? 3 : 4;
           } else if (idx === 1) {
             stepChoice = world.rng.next() < 0.5 ? 3 : 4;
@@ -1165,6 +1202,7 @@ export function carveTownStreetGrids(world, filterFn = null) {
     for (const br of boroughs) {
       const bR = br.r;
       const brElev = world.elevationField[world.idx(br.x, br.y)];
+      const modScale = Math.min(1.0, bR / 15.0);
 
       for (let dy = -bR - 2; dy <= bR + 2; dy++) {
         for (let dx = -bR - 2; dx <= bR + 2; dx++) {
@@ -1174,13 +1212,16 @@ export function carveTownStreetGrids(world, filterFn = null) {
           const id = world.idx(gx, gy);
           if (world.waterMask[id] > 0) continue;
           const isIH = world.config.archetype === "island-hopper";
+          const rawDist = Math.hypot(dx, dy);
           const elevPenalty =
-            Math.max(0, world.elevationField[id] - brElev) *
+            (Math.max(0, world.elevationField[id] - brElev) *
               (isIH ? 14.0 : 30.0) +
-            world.slopeField[id] * (isIH ? 5.0 : 11.0);
-          const nJitter = world.noise.fbm(gx * 0.11, gy * 0.11, 2) * 3.8;
-          const d = Math.hypot(dx, dy) + elevPenalty + nJitter;
-          if (d <= bR + 1.2) {
+              world.slopeField[id] * (isIH ? 5.0 : 11.0)) *
+            modScale;
+          const nJitter =
+            world.noise.fbm(gx * 0.11, gy * 0.11, 2) * 3.8 * modScale;
+          const d = rawDist + elevPenalty + nJitter;
+          if (d <= bR + 1.2 || rawDist <= Math.max(4.8, bR * 0.68)) {
             world.zoneColorIdx[id] = town.colorIdx;
           }
         }
@@ -1215,20 +1256,21 @@ export function carveTownStreetGrids(world, filterFn = null) {
 
       for (let pass = 0; pass < 2; pass++) {
         for (const dyOff of yOffsets) {
-          if (pass === 1 && world.rng.next() < 0.25) continue;
+          if (pass === 1 && bR > 11 && world.rng.next() < 0.25) continue;
           const chord = Math.sqrt(Math.max(0, bR * bR - dyOff * dyOff));
           // Asymmetric street spans & occasional one-sided T-intersections for organic neighborhood structure!
-          const oneSided = Math.abs(dyOff) > 4 && world.rng.next() < 0.28;
+          const oneSided =
+            bR > 11 && Math.abs(dyOff) > 4 && world.rng.next() < 0.28;
           const negSpan =
             oneSided && world.rng.next() < 0.5
               ? 0
-              : Math.floor(chord * world.rng.range(0.48, 0.96));
+              : Math.max(2, Math.floor(chord * world.rng.range(0.55, 0.96)));
           const posSpan =
             oneSided && negSpan > 0 && world.rng.next() < 0.5
               ? 0
-              : Math.floor(chord * world.rng.range(0.48, 0.96));
+              : Math.max(2, Math.floor(chord * world.rng.range(0.55, 0.96)));
           const yRow = br.y + dyOff;
-          for (const probeOff of [0, ...xOffsets]) {
+          for (const probeOff of [0, ...xOffsets, -1, 1, -2, 2]) {
             const probeX = br.x + probeOff;
             if (
               Math.abs(probeOff) <= Math.max(negSpan, posSpan) &&
@@ -1250,19 +1292,20 @@ export function carveTownStreetGrids(world, filterFn = null) {
         }
 
         for (const dxOff of xOffsets) {
-          if (pass === 1 && world.rng.next() < 0.25) continue;
+          if (pass === 1 && bR > 11 && world.rng.next() < 0.25) continue;
           const chord = Math.sqrt(Math.max(0, bR * bR - dxOff * dxOff));
-          const oneSided = Math.abs(dxOff) > 4 && world.rng.next() < 0.28;
+          const oneSided =
+            bR > 11 && Math.abs(dxOff) > 4 && world.rng.next() < 0.28;
           const negSpan =
             oneSided && world.rng.next() < 0.5
               ? 0
-              : Math.floor(chord * world.rng.range(0.48, 0.96));
+              : Math.max(2, Math.floor(chord * world.rng.range(0.55, 0.96)));
           const posSpan =
             oneSided && negSpan > 0 && world.rng.next() < 0.5
               ? 0
-              : Math.floor(chord * world.rng.range(0.48, 0.96));
+              : Math.max(2, Math.floor(chord * world.rng.range(0.55, 0.96)));
           const xCol = br.x + dxOff;
-          for (const probeOff of [0, ...yOffsets]) {
+          for (const probeOff of [0, ...yOffsets, -1, 1, -2, 2]) {
             const probeY = br.y + probeOff;
             if (
               Math.abs(probeOff) <= Math.max(negSpan, posSpan) &&
@@ -1373,7 +1416,7 @@ export function seedOutOfTownResourceNiches(world) {
             world.buildingMask[pid] > 0 ||
             world.roadGrid[pid] > 0 ||
             world.zoneColorIdx[pid] >= 0 ||
-            world.distToWater[pid] < 3.2
+            world.distToWater[pid] < 1.35
           ) {
             padOk = false;
             break;
@@ -1424,15 +1467,47 @@ export function seedOutOfTownResourceNiches(world) {
       const fert = world.fertilityField[id];
       const dW = world.distToWater[id];
 
-      // Evaluate fitness for the 3 geographic resource niches:
-      // 1. `MINE` (Foothill Quarry & Mine): elevated ridge toes & canyon mouths (`hAbove >= 0.115`)
-      // 2. `TIMBER` (Upland Forestry Camp): moist wooded hills (`hAbove >= 0.085`, high `fertilityField`)
-      // 3. `FARM` (Alluvial Agribusiness): flat fertile valley floors (`hAbove <= 0.085`, low `slope`)
-      /** @type {"MINE" | "TIMBER" | "FARM" | null} */
+      // Check if open water or river is within a 4-tile radius for coastal fishery
+      let hasWaterNearby = false;
+      for (let wy = gy - 4; wy <= gy + 5 && !hasWaterNearby; wy++) {
+        for (let wx = gx - 4; wx <= gx + 5; wx++) {
+          if (world.inBounds(wx, wy, 1)) {
+            const wm = world.waterMask[world.idx(wx, wy)];
+            if (wm === 1 || wm === 2) {
+              hasWaterNearby = true;
+              break;
+            }
+          }
+        }
+      }
+
+      // Evaluate fitness for the 5 geographic resource niches:
+      // 1. `FISHERY`: coastal shoreline wharf (`dW in [1.4, 3.8]`, `hAbove <= 0.068`, `slope <= 0.25`, water nearby)
+      // 2. `MINE`: foothill quarry & mine (`hAbove >= 0.115`, `dW >= 2.2`)
+      // 3. `TIMBER`: upland forestry camp (`hAbove >= 0.08`, high fertility, `dW >= 2.2`)
+      // 4. `FARM`: alluvial agribusiness (`hAbove <= 0.085`, low slope, `dW >= 3.5`)
+      // 5. `CHEM`: peri-urban chemical plant (`hAbove <= 0.115`, slope <= 0.22, `dW >= 2.2`, minRoadDist <= 14.5)
+      /** @type {"MINE" | "TIMBER" | "FARM" | "FISHERY" | "CHEM" | null} */
       let resourceType = null;
       let nicheScore = -1;
 
-      if (hAbove >= 0.115 && hAbove <= 0.28 && slope >= 0.06 && slope <= 0.36) {
+      if (
+        dW >= 1.4 &&
+        dW <= 3.8 &&
+        hAbove <= 0.068 &&
+        slope <= 0.25 &&
+        hasWaterNearby
+      ) {
+        resourceType = "FISHERY";
+        nicheScore =
+          0.96 + (3.8 - dW) * 0.22 + (0.25 - slope) * 1.8 - minRoadDist * 0.03;
+      } else if (
+        hAbove >= 0.115 &&
+        hAbove <= 0.28 &&
+        slope >= 0.06 &&
+        slope <= 0.36 &&
+        dW >= 2.2
+      ) {
         resourceType = "MINE";
         nicheScore =
           1.0 + (hAbove - 0.115) * 3.5 + slope * 1.4 - minRoadDist * 0.03;
@@ -1440,7 +1515,8 @@ export function seedOutOfTownResourceNiches(world) {
         hAbove >= 0.08 &&
         hAbove <= 0.22 &&
         fert >= 0.38 &&
-        slope <= 0.28
+        slope <= 0.28 &&
+        dW >= 2.2
       ) {
         resourceType = "TIMBER";
         nicheScore = 0.95 + fert * 0.85 + hAbove * 1.8 - minRoadDist * 0.03;
@@ -1454,6 +1530,18 @@ export function seedOutOfTownResourceNiches(world) {
         resourceType = "FARM";
         nicheScore =
           0.92 + fert * 0.95 + (0.1 - slope) * 2.5 - minRoadDist * 0.03;
+      } else if (
+        hAbove <= 0.115 &&
+        slope <= 0.22 &&
+        dW >= 2.2 &&
+        minRoadDist <= 14.5
+      ) {
+        resourceType = "CHEM";
+        nicheScore =
+          0.94 +
+          (0.115 - hAbove) * 2.2 +
+          (0.22 - slope) * 1.5 -
+          minRoadDist * 0.025;
       }
       if (!resourceType) continue;
 
@@ -1476,13 +1564,13 @@ export function seedOutOfTownResourceNiches(world) {
     "MINE",
     "TIMBER",
     "FARM",
+    "FISHERY",
+    "CHEM",
     "MINE",
     "TIMBER",
     "FARM",
-    "MINE",
-    "FARM",
-    "TIMBER",
-    "MINE",
+    "CHEM",
+    "FISHERY",
   ];
   const placedSites = [];
 
@@ -1606,6 +1694,15 @@ export function seedOutOfTownResourceNiches(world) {
       estateBBox = estate.estateBBox;
     }
 
+    const outputGoodMap = {
+      MINE: "ORE",
+      TIMBER: "WOOD",
+      FARM: "AGRI",
+      FISHERY: "AGRI",
+      CHEM: "CHEM",
+    };
+    const outputGood = outputGoodMap[chosenCand.resourceType] || "ORE";
+
     const hostTown = chosenCand.nearestTown;
     const colorIdx = (hostTown.colorIdx + 1) % PALETTE.districtColors.length;
     world.destinations.push({
@@ -1623,7 +1720,8 @@ export function seedOutOfTownResourceNiches(world) {
       townId: hostTown.id,
       zoneType: "industrial",
       subType: "RAW",
-      resourceType: chosenCand.resourceType, // 'MINE' | 'TIMBER' | 'FARM'
+      resourceType: chosenCand.resourceType, // 'MINE' | 'TIMBER' | 'FARM' | 'FISHERY' | 'CHEM'
+      outputGood,
       bspParcels,
       estateLoops,
       tractorTracks,
@@ -1892,15 +1990,13 @@ export function carveStreetFromCenter(
   const ny = ux;
 
   if (
+    !isMainBoulevard &&
     world.inBounds(cx + ux, cy + uy, 2) &&
     world.inBounds(cx - ux, cy - uy, 2) &&
     world.roadGrid[world.idx(cx, cy)] > 0 &&
     (world.roadGrid[world.idx(cx + ux, cy + uy)] > 0 ||
       world.roadGrid[world.idx(cx - ux, cy - uy)] > 0)
   ) {
-    if (isMainBoulevard) {
-      world.roadGrid[world.idx(cx, cy)] = 2;
-    }
     return;
   }
 
@@ -1933,7 +2029,7 @@ export function carveStreetFromCenter(
   };
 
   const isIH = world.config.archetype === "island-hopper";
-  const isPassable = (x, y) => {
+  const isPassable = (x, y, isOrigin = false) => {
     if (!world.inBounds(x, y, 3)) return false;
     const id = world.idx(x, y);
     if (
@@ -1947,10 +2043,19 @@ export function carveStreetFromCenter(
       world.elevationField[id] - baseElev > (isIH ? 0.22 : 0.14)
     )
       return false;
-    if (hasParallelNeighbor(x, y)) return false;
+    for (const rObj of world.rivers) {
+      if (
+        rObj.headwaterPt &&
+        Math.hypot(x - rObj.headwaterPt.x, y - rObj.headwaterPt.y) <
+          WORLD_GEOMETRY.ELEVATION_THRESHOLDS.headwaterRoadExclusion
+      ) {
+        return false;
+      }
+    }
+    if (!isOrigin && hasParallelNeighbor(x, y)) return false;
     return true;
   };
-  if (!isPassable(cx, cy)) return;
+  if (!isPassable(cx, cy, isMainBoulevard)) return;
 
   const negPts = [];
   for (let s = 1; s <= negSteps; s++) {
@@ -2006,17 +2111,30 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
   const isIH = world.config.archetype === "island-hopper";
   const ihScale = isIH ? 0.68 : 1.0;
   const baseCom =
-    town.tier === 1 ? 11 : town.tier === 2 ? 5 : town.tier === 3 ? 2 : 1;
+    town.tier === 1 ? 10 : town.tier === 2 ? 4 : town.tier === 3 ? 1.2 : 0.8;
   const baseInd =
-    town.tier === 1 ? 6 : town.tier === 2 ? 3 : town.tier === 3 ? 2 : 1;
-  const targetCom = Math.max(
-    1,
-    Math.round(baseCom * ihScale * Math.pow(densityMult, 0.7)),
-  );
-  const targetInd = Math.max(
-    1,
-    Math.round(baseInd * ihScale * Math.pow(densityMult, 0.66)),
-  );
+    town.tier === 1 ? 5 : town.tier === 2 ? 2.5 : town.tier === 3 ? 0.8 : 0.3;
+  const targetCom =
+    town.tier >= 3
+      ? Math.min(
+          town.tier === 3 ? 2 : 1,
+          Math.max(
+            1,
+            Math.round(baseCom * ihScale * Math.pow(densityMult, 0.45)),
+          ),
+        )
+      : Math.max(1, Math.round(baseCom * ihScale * Math.pow(densityMult, 0.7)));
+  const targetInd =
+    town.tier === 4
+      ? world.rng.next() < 0.35
+        ? 1
+        : 0
+      : town.tier === 3
+        ? 1
+        : Math.max(
+            1,
+            Math.round(baseInd * ihScale * Math.pow(densityMult, 0.62)),
+          );
 
   // Asymmetric directional sector angle for industrial zoning (so industrial districts form distinct clusters/yards)
   const indSectorAngle = world.rng.range(0, Math.PI * 2);
@@ -2178,7 +2296,14 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     return true;
   };
 
-  const commitLot = (cand, zoneType, subType, isCircular) => {
+  const commitLot = (
+    cand,
+    zoneType,
+    subType,
+    isCircular,
+    /** @type {Record<string, any> | null} */
+    extraProps = null,
+  ) => {
     for (let dy = 0; dy < cand.hTiles; dy++) {
       for (let dx = 0; dx < cand.wTiles; dx++) {
         const lid = world.idx(cand.gx + dx, cand.gy + dy);
@@ -2192,7 +2317,7 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
         : (town.colorIdx + 1) % PALETTE.districtColors.length;
     const area = cand.wTiles * cand.hTiles;
 
-    world.destinations.push({
+    const dest = {
       id: world.destinations.length,
       x: cand.cx,
       y: cand.cy,
@@ -2217,7 +2342,11 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
             : world.rng.int(2, 3),
       colorIdx,
       palette: PALETTE.districtColors[colorIdx],
-    });
+    };
+    if (extraProps) {
+      Object.assign(dest, extraProps);
+    }
+    world.destinations.push(dest);
     town.destinationsCount++;
     if (zoneType === "commercial") town.commercialCount++;
     else town.industrialCount++;
@@ -2236,8 +2365,12 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     (a, b) => b.cbdScore - a.cbdScore,
   );
 
+  const goodsOrder = ["GROCERIES", "CONSUMER_GOODS", "HARDWARE", "ELECTRONICS"];
+
   let placedCom = 0;
-  const largeTarget = Math.max(1, Math.round(targetCom * 0.64));
+  // Tier 3 Market Towns & Tier 4 Hamlets use compact 2×1/1×2 Corner Markets rather than 2×2/3×2 CBD plazas
+  const largeTarget =
+    town.tier >= 3 ? 0 : Math.max(1, Math.round(targetCom * 0.64));
   for (const cand of comLargePool) {
     if (placedCom >= largeTarget) break;
     // Give 2×2/3×2 buildings breathing room (`minSpacing = 3.6`) so they don't tile into a solid grid
@@ -2247,7 +2380,10 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
       is2x2 &&
       (placedCom === 0 || (cand.minBrDist < 4.5 && world.rng.next() < 0.45));
     const subType = isCBDLandmark ? "CBD High-Rise" : "Arterial Retail Plaza";
-    commitLot(cand, "commercial", subType, isCBDLandmark);
+    const g0 = goodsOrder[(town.id + placedCom) % 4];
+    const g1 = goodsOrder[(town.id + placedCom + 1) % 4];
+    const demandedGoods = [g0, g1];
+    commitLot(cand, "commercial", subType, isCBDLandmark, { demandedGoods });
     placedCom++;
   }
 
@@ -2255,36 +2391,97 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
   for (const cand of comCompactPool) {
     if (placedCom >= targetCom) break;
     if (!isLotFree(cand, 2.5)) continue;
-    commitLot(cand, "commercial", "Corner Market", false);
+    const g0 = goodsOrder[(town.id + placedCom) % 4];
+    const demandedGoods = [g0];
+    commitLot(cand, "commercial", "Corner Market", false, { demandedGoods });
     placedCom++;
+  }
+  // Fallback: if a Tier-3/4 town had no 2×1/1×2 lot free, place 1 small 2×2 Corner Market so it never has 0 commercial!
+  if (placedCom === 0) {
+    for (const cand of slots2x2) {
+      if (!isLotFree(cand, 2.5)) continue;
+      const g0 = goodsOrder[town.id % 4];
+      commitLot(cand, "commercial", "Corner Market", false, {
+        demandedGoods: [g0],
+      });
+      placedCom++;
+      break;
+    }
   }
 
   // 2. Place Industrial (`I`) Sinks & Producers (`3×2`/`2×3` MFG Factories & LOG Hubs + `2×2` RAW Silo Yards)
   const indRectSorted = [...slotsRect].sort((a, b) => b.indScore - a.indScore);
   const ind2x2Sorted = [...slots2x2].sort((a, b) => b.indScore - a.indScore);
-  const tier1Roles = ["MFG", "LOG", "RAW", "MFG", "LOG", "MFG"];
-  const tier2Roles = ["MFG", "LOG", "MFG", "RAW", "LOG"];
-  const tier3Roles = ["MFG", "LOG", "RAW"];
+  const indCompactSorted = [...slotsCompact].sort(
+    (a, b) => b.indScore - a.indScore,
+  );
+  // Restrict LOG distribution hubs strictly to Tier 1 Metropolises & half of Tier 2 Regional Cities!
+  // Tier 3 Market Towns and Tier 4 Hamlets never spawn LOG hubs.
+  const tier1Roles = ["MFG", "LOG", "MFG", "MFG", "RAW", "MFG"];
+  const tier2Roles =
+    town.id % 2 === 0
+      ? ["LOG", "MFG", "MFG", "RAW"]
+      : ["MFG", "MFG", "RAW", "MFG"];
+  const tier3Roles = ["MFG"];
+
+  const mfgArchetypes = ["STEEL", "FOOD", "GOODS", "TECH"];
+  const MFG_SPECS = {
+    STEEL: {
+      mfgTier: 1,
+      requiredInputs: ["ORE", "WOOD"],
+      outputGood: "HARDWARE",
+    },
+    FOOD: {
+      mfgTier: 1,
+      requiredInputs: ["AGRI", "CHEM"],
+      outputGood: "GROCERIES",
+    },
+    GOODS: {
+      mfgTier: 2,
+      requiredInputs: ["WOOD", "HARDWARE"],
+      outputGood: "CONSUMER_GOODS",
+    },
+    TECH: {
+      mfgTier: 2,
+      requiredInputs: ["CHEM", "HARDWARE"],
+      outputGood: "ELECTRONICS",
+    },
+  };
 
   let placedInd = 0;
+  let mfgCount = 0;
   let rectIdx = 0;
   let sqIdx = 0;
+  let compIdx = 0;
   while (
     placedInd < targetInd &&
-    (rectIdx < indRectSorted.length || sqIdx < ind2x2Sorted.length)
+    (rectIdx < indRectSorted.length ||
+      sqIdx < ind2x2Sorted.length ||
+      compIdx < indCompactSorted.length)
   ) {
-    let indRole = "RAW";
+    let indRole = "MFG";
     if (town.tier === 1) indRole = tier1Roles[placedInd % tier1Roles.length];
     else if (town.tier === 2)
       indRole = tier2Roles[placedInd % tier2Roles.length];
     else indRole = tier3Roles[placedInd % tier3Roles.length];
 
-    // `MFG` and `LOG` strongly prefer elongated `3×2` or `2×3` rectangular halls when available!
+    // Only Tier 1 & Tier 2 cities use elongated 3×2/2×3 industrial halls; Tier 3/4 towns use compact 2×1/1×2 or 2×2 workshops!
     const preferRect =
-      (indRole === "MFG" || indRole === "LOG") && world.rng.next() < 0.75;
+      town.tier <= 2 &&
+      (indRole === "MFG" || indRole === "LOG") &&
+      world.rng.next() < 0.75;
     let chosen = null;
 
-    if (preferRect) {
+    if (town.tier >= 3) {
+      while (compIdx < indCompactSorted.length) {
+        const c = indCompactSorted[compIdx++];
+        if (isLotFree(c, 2.8)) {
+          chosen = c;
+          break;
+        }
+      }
+    }
+    if (!chosen && preferRect) {
       while (rectIdx < indRectSorted.length) {
         const c = indRectSorted[rectIdx++];
         if (isLotFree(c, 4.1)) {
@@ -2304,7 +2501,31 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     }
     if (!chosen) break;
 
-    commitLot(chosen, "industrial", indRole, false);
+    /** @type {Record<string, any>} */
+    let extraProps = {};
+    if (indRole === "MFG") {
+      const mfgType = mfgArchetypes[(town.id + mfgCount) % 4];
+      mfgCount++;
+      const spec = MFG_SPECS[mfgType];
+      extraProps = {
+        mfgType,
+        mfgTier: spec.mfgTier,
+        requiredInputs: [...spec.requiredInputs],
+        outputGood: spec.outputGood,
+      };
+    } else if (indRole === "LOG") {
+      extraProps = {
+        demandProfile: {},
+        relativeDemand: 0.2,
+      };
+    } else if (indRole === "RAW") {
+      extraProps = {
+        resourceType: "CHEM",
+        outputGood: "CHEM",
+      };
+    }
+
+    commitLot(chosen, "industrial", indRole, false, extraProps);
     placedInd++;
   }
 }
@@ -2351,7 +2572,17 @@ export function tryPlaceNeighborhoodHouses(
         world.distToWater[id] < 2.35
       )
         continue;
-      if (world.zoneColorIdx[id] !== town.colorIdx) continue;
+      let minBrDist = Infinity;
+      for (const br of boroughs) {
+        const d = Math.hypot(gx - br.x, gy - br.y);
+        if (d < minBrDist) minBrDist = d;
+      }
+      if (
+        world.zoneColorIdx[id] !== town.colorIdx &&
+        !(world.zoneColorIdx[id] === -1 && minBrDist <= scanR - 2)
+      ) {
+        continue;
+      }
 
       /** @type {{ x: number, y: number } | null} */
       let driveway = null;
@@ -2365,12 +2596,6 @@ export function tryPlaceNeighborhoodHouses(
         }
       }
       if (!driveway) continue;
-
-      let minBrDist = Infinity;
-      for (const br of boroughs) {
-        const d = Math.hypot(gx - br.x, gy - br.y);
-        if (d < minBrDist) minBrDist = d;
-      }
       // Add spatial noise & wide random jitter to transition points so density feathers organically!
       const patchNoise =
         world.noise.fbm(gx * 0.14 + 5.2, gy * 0.14 + 2.9, 2) * 5.5;
@@ -2400,11 +2625,18 @@ export function tryPlaceNeighborhoodHouses(
     // Prevent 4-house "waffle blocks": leave yard/courtyard breathing room inside blocks!
     const adj = countAdjacentHouses(slot.gx, slot.gy);
     const radialFrac = Math.min(1, slot.minBrDist / Math.max(6, scanR));
+    const needMinHouses = town.tier >= 3 && town.housesCount < 10;
     if (adj >= 3) continue;
-    if (adj === 2 && world.rng.next() < 0.72) continue;
-    if (adj === 1 && world.rng.next() < 0.25 + radialFrac * 0.35) continue;
+    if (!needMinHouses && adj === 2 && world.rng.next() < 0.72) continue;
+    if (
+      !needMinHouses &&
+      adj === 1 &&
+      world.rng.next() < 0.25 + radialFrac * 0.35
+    )
+      continue;
 
     world.buildingMask[slot.id] = 1;
+    world.zoneColorIdx[slot.id] = town.colorIdx;
     const useSecondary =
       Math.hypot(slot.gx - clusterOffset.x, slot.gy - clusterOffset.y) <
       scanR * 0.36;

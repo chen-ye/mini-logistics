@@ -714,15 +714,23 @@ export function scoreMotorwaySamples(
       waterArc += segLen * wWeight;
       totalWaterArc += segLen * wWeight;
       // Hard invariant 6: Never build causeways across open lakes/bays on continental maps (`<= 9.5` weighted tiles),
+      // allow intermediate narrow-strait bridge budget (`<= 11.5` weighted tiles) for straits, lagoons, calderas, and fjords,
       // and only allow narrow-strait causeways (`<= 12.5` weighted tiles) in `island-hopper`!
-      const isIH = world.config.archetype === "island-hopper";
-      if (
-        waterArc >
-          (isIH
-            ? WORLD_GEOMETRY.EXPRESSWAY_LIMITS.maxIslandWaterArc
-            : WORLD_GEOMETRY.EXPRESSWAY_LIMITS.maxContinentalWaterArc) ||
-        totalWaterArc > (isIH ? 15.5 : 13.5)
-      ) {
+      const arch = world.config.archetype;
+      const isIH = arch === "island-hopper";
+      const isNarrowStraitArch =
+        arch === "isthmus-strait" ||
+        arch === "barrier-lagoon" ||
+        arch === "caldera-basin" ||
+        arch === "fjord-sound";
+      const maxWaterArc = isIH
+        ? WORLD_GEOMETRY.EXPRESSWAY_LIMITS.maxIslandWaterArc
+        : isNarrowStraitArch
+          ? 11.5
+          : WORLD_GEOMETRY.EXPRESSWAY_LIMITS.maxContinentalWaterArc;
+      const maxTotalWater = isIH ? 15.5 : isNarrowStraitArch ? 14.5 : 13.5;
+
+      if (waterArc > maxWaterArc || totalWaterArc > maxTotalWater) {
         return Infinity;
       }
       penalty += segLen * (world.waterMask[id] === 2 ? 7.5 : 3.4);
@@ -4071,13 +4079,22 @@ export function displaceBuildingsAlongMotorwayCorridors(world) {
     const rad = Math.max(wT, hT) * 0.5 + 1.25;
     const hit = distSqToSurface(cx, cy) <= rad * rad;
     if (hit) {
+      const t = world.towns[d.townId];
+      // Preserve a town's last remaining commercial building if it sits outside the physical motorway deck (> 1.45 tiles)
+      if (
+        t &&
+        d.zoneType === "commercial" &&
+        t.commercialCount <= 1 &&
+        distSqToSurface(cx, cy) > 2.1
+      ) {
+        return true;
+      }
       for (let dy = 0; dy < hT; dy++) {
         for (let dx = 0; dx < wT; dx++) {
           const lid = world.idx(d.gx + dx, d.gy + dy);
           if (world.buildingMask[lid] === 2) world.buildingMask[lid] = 0;
         }
       }
-      const t = world.towns[d.townId];
       if (t) {
         if (t.destinationsCount > 0) t.destinationsCount--;
         if (d.zoneType === "commercial" && t.commercialCount > 0)

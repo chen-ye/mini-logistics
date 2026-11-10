@@ -18,7 +18,11 @@ import {
   batch,
   shallowEqual,
 } from "./state.js";
-import { WORLD_SIZE_DEFAULTS, DEFAULT_GENERATOR_CONFIG } from "./constants.js";
+import {
+  WORLD_SIZE_DEFAULTS,
+  DEFAULT_GENERATOR_CONFIG,
+  ARCHETYPE_PARAMETER_PRESETS,
+} from "./constants.js";
 import { mountEntityInspector } from "./inspector-component.js";
 import { parseUrlState, serializeUrlState } from "./url-state.js";
 
@@ -336,7 +340,46 @@ export function syncDomInputsFromConfig(cfg) {
   if (sliderWind && parseInt(sliderWind.value, 10) !== windVal) {
     sliderWind.value = String(windVal);
   }
+
+  const archKey = cfg.archetype || DEFAULT_GENERATOR_CONFIG.archetype;
+  const archPreset =
+    ARCHETYPE_PARAMETER_PRESETS[archKey] ||
+    ARCHETYPE_PARAMETER_PRESETS.confluence;
+  const reliefVal = cfg.terrainRelief ?? archPreset.terrainRelief;
+  const incisionVal = cfg.valleyIncision ?? archPreset.valleyIncision;
+  const embaymentVal = cfg.coastalEmbayment ?? archPreset.coastalEmbayment;
+  const calderaVal = cfg.calderaCurvature ?? archPreset.calderaCurvature;
+  const barrierVal =
+    cfg.barrierFragmentation ?? archPreset.barrierFragmentation;
+  const basinsVal = cfg.basinCount ?? archPreset.basinCount;
+
+  const sliderRelief = getInput("sliderRelief");
+  if (sliderRelief && parseInt(sliderRelief.value, 10) !== reliefVal) {
+    sliderRelief.value = String(reliefVal);
+  }
+  const sliderIncision = getInput("sliderIncision");
+  if (sliderIncision && parseInt(sliderIncision.value, 10) !== incisionVal) {
+    sliderIncision.value = String(incisionVal);
+  }
+  const sliderEmbayment = getInput("sliderEmbayment");
+  if (sliderEmbayment && parseInt(sliderEmbayment.value, 10) !== embaymentVal) {
+    sliderEmbayment.value = String(embaymentVal);
+  }
+  const sliderCaldera = getInput("sliderCaldera");
+  if (sliderCaldera && parseInt(sliderCaldera.value, 10) !== calderaVal) {
+    sliderCaldera.value = String(calderaVal);
+  }
+  const sliderBarrier = getInput("sliderBarrier");
+  if (sliderBarrier && parseInt(sliderBarrier.value, 10) !== barrierVal) {
+    sliderBarrier.value = String(barrierVal);
+  }
+  const sliderBasins = getInput("sliderBasins");
+  if (sliderBasins && parseInt(sliderBasins.value, 10) !== basinsVal) {
+    sliderBasins.value = String(basinsVal);
+  }
+
   updateAirportSliderLabel();
+  syncGeomorphologyLabelsUI(cfg, deriveControlLabels(cfg));
 }
 
 /**
@@ -358,6 +401,92 @@ export function updateAirportSliderLabel() {
   if (el) el.textContent = labels.airportsLabel;
 }
 
+/**
+ * Synchronizes the 6 geomorphology scalar readouts, modified colors, preset badge, and reset button.
+ *
+ * @param {Partial<GeneratorConfig>} cfg
+ * @param {import('./types.js').ControlLabels} labels
+ */
+function syncGeomorphologyLabelsUI(cfg, labels) {
+  const archKey = cfg.archetype || DEFAULT_GENERATOR_CONFIG.archetype;
+  const preset =
+    ARCHETYPE_PARAMETER_PRESETS[archKey] ||
+    ARCHETYPE_PARAMETER_PRESETS.confluence;
+
+  /**
+   * @param {string} id
+   * @param {string | undefined} text
+   * @param {boolean} isModified
+   */
+  const updateScalarReadout = (id, text, isModified) => {
+    const el = document.getElementById(id);
+    if (!el || !text) return;
+    el.textContent = text;
+    el.style.color = isModified ? "#d94376" : "";
+  };
+
+  const r = cfg.terrainRelief ?? preset.terrainRelief;
+  const inc = cfg.valleyIncision ?? preset.valleyIncision;
+  const emb = cfg.coastalEmbayment ?? preset.coastalEmbayment;
+  const cal = cfg.calderaCurvature ?? preset.calderaCurvature;
+  const bar = cfg.barrierFragmentation ?? preset.barrierFragmentation;
+  const bas = cfg.basinCount ?? preset.basinCount;
+
+  updateScalarReadout(
+    "valRelief",
+    labels.reliefLabel || `${r}%`,
+    r !== preset.terrainRelief,
+  );
+  updateScalarReadout(
+    "valIncision",
+    labels.incisionLabel || `${inc}%`,
+    inc !== preset.valleyIncision,
+  );
+  updateScalarReadout(
+    "valEmbayment",
+    labels.embaymentLabel || `${emb}%`,
+    emb !== preset.coastalEmbayment,
+  );
+  updateScalarReadout(
+    "valCaldera",
+    labels.calderaLabel || `${cal}%`,
+    cal !== preset.calderaCurvature,
+  );
+  updateScalarReadout(
+    "valBarrier",
+    labels.barrierLabel || `${bar}%`,
+    bar !== preset.barrierFragmentation,
+  );
+  updateScalarReadout(
+    "valBasins",
+    labels.basinsLabel || `${bas}`,
+    bas !== preset.basinCount,
+  );
+
+  const geoPresetBadge = document.getElementById("geoPresetBadge");
+  const resetGeoScalarsBtn = document.getElementById("resetGeoScalarsBtn");
+  const modCount = labels.geoModifiedCount ?? 0;
+  if (modCount > 0) {
+    if (geoPresetBadge) {
+      geoPresetBadge.textContent = `${modCount} Mod`;
+      geoPresetBadge.className =
+        "text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-[#e85c90]/15 text-[#d94376]";
+    }
+    if (resetGeoScalarsBtn) {
+      resetGeoScalarsBtn.classList.remove("hidden");
+    }
+  } else {
+    if (geoPresetBadge) {
+      geoPresetBadge.textContent = "Preset";
+      geoPresetBadge.className =
+        "text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-stone-200/80 text-stone-600";
+    }
+    if (resetGeoScalarsBtn) {
+      resetGeoScalarsBtn.classList.add("hidden");
+    }
+  }
+}
+
 // Subscribe generator control labels to store config updates
 store.subscribe(
   (s) => deriveControlLabels(s.config),
@@ -372,6 +501,8 @@ store.subscribe(
     if (valAirports) valAirports.textContent = labels.airportsLabel;
     const valWind = getEl("valWind");
     if (valWind) valWind.textContent = labels.windLabel;
+
+    syncGeomorphologyLabelsUI(store.getState().config, labels);
   },
   shallowEqual,
 );
@@ -1003,22 +1134,8 @@ getSelect("archetypeSelect")?.addEventListener("change", (e) => {
   const sel = /** @type {HTMLSelectElement} */ (e.target);
   store.setCamera(null);
   store.setInspected(null, null);
-  if (sel.value === "island-hopper") {
-    const apSlider = getInput("sliderAirports");
-    if (parseInt(apSlider.value, 10) < 5) {
-      apSlider.value = "5";
-      batch(() => {
-        store.patchConfig({
-          archetype: sel.value,
-          airportCount: 5,
-        });
-      });
-      updateUrl(true);
-      rebuildWorld(false);
-      return;
-    }
-  }
-  store.patchConfig({ archetype: sel.value });
+  store.setArchetype(sel.value);
+  syncDomInputsFromConfig(store.getState().config);
   updateUrl(true);
   rebuildWorld(false);
 });
@@ -1129,6 +1246,83 @@ getInput("sliderWind")?.addEventListener("change", (e) => {
   store.patchConfig({ windAxis: parseInt(inp.value, 10) });
   updateUrl(false);
 });
+
+getInput("sliderRelief")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ terrainRelief: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+getInput("sliderRelief")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ terrainRelief: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
+
+getInput("sliderIncision")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ valleyIncision: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+getInput("sliderIncision")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ valleyIncision: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
+
+getInput("sliderEmbayment")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ coastalEmbayment: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+getInput("sliderEmbayment")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ coastalEmbayment: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
+
+getInput("sliderCaldera")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ calderaCurvature: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+getInput("sliderCaldera")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ calderaCurvature: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
+
+getInput("sliderBarrier")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ barrierFragmentation: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+getInput("sliderBarrier")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ barrierFragmentation: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
+
+getInput("sliderBasins")?.addEventListener("input", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ basinCount: parseInt(inp.value, 10) });
+  rebuildWorld(true);
+});
+getInput("sliderBasins")?.addEventListener("change", (e) => {
+  const inp = /** @type {HTMLInputElement} */ (e.target);
+  store.patchConfig({ basinCount: parseInt(inp.value, 10) });
+  updateUrl(false);
+});
+
+document
+  .getElementById("resetGeoScalarsBtn")
+  ?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    store.resetArchetypeScalars();
+    syncDomInputsFromConfig(store.getState().config);
+    updateUrl(false);
+    rebuildWorld(true);
+  });
 
 // Layer Overlay Buttons
 document.querySelectorAll(".layer-btn").forEach((el) => {

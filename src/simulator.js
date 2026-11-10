@@ -1,4 +1,4 @@
-/** @import { Airport, AirportATC, CarAgent, FlightPhase, FlightTrack, FlightTrackPoint, GateSlot, PlaneAgent, PlaneEndpoint, PlaneFSMState } from './types.js' */
+/** @import { AircraftType, Airport, AirportATC, CarAgent, FlightPhase, FlightTrack, FlightTrackPoint, GateSlot, PlaneAgent, PlaneEndpoint, PlaneFSMState } from './types.js' */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
 import { SIM_CONFIG } from "./constants.js";
 import { SeededRNG } from "./math.js";
@@ -436,10 +436,86 @@ export function maintainTaxiwayOrder(atc) {
 }
 
 /**
+ * Returns true if the endpoint can accommodate a 4-engine WIDEBODY_FREIGHTER (HUB, CRG, or off-map ExternalCorridor).
+ * Regional spoke airports ('REG') never accept wide-body freighters.
+ * @param {Partial<Airport & PlaneEndpoint> | null | undefined} ep
+ * @returns {boolean}
+ */
+export function canWidebodyServe(ep) {
+  if (!ep) return false;
+  if (ep.isExternal) return true;
+  if (typeof ep.acceptsWidebody === "boolean") return ep.acceptsWidebody;
+  return (
+    ep.isHub === true || ep.airportClass === "HUB" || ep.airportClass === "CRG"
+  );
+}
+
+/**
+ * Creates an off-map external corridor endpoint for international air traffic.
+ * @param {Airport | PlaneEndpoint} ap
+ * @param {number} [corridorIdx]
+ * @param {number} [W]
+ * @param {number} [H]
+ * @returns {PlaneEndpoint}
+ */
+export function createExternalEndpoint(ap, corridorIdx = 0, W = 360, H = 224) {
+  if (ap.externalCorridors && ap.externalCorridors.length > 0) {
+    const corr =
+      ap.externalCorridors[corridorIdx % ap.externalCorridors.length];
+    return {
+      x: corr.entryX,
+      y: corr.entryY,
+      angleRad: corr.angleRad,
+      halfLen: 6,
+      isExternal: true,
+      acceptsWidebody: true,
+      corridorId: corr.id,
+      label: corr.label,
+    };
+  }
+
+  const ang = ap.angleRad ?? 0;
+  const cos = Math.cos(ang);
+  const sin = Math.sin(ang);
+  const minX = -42;
+  const minY = -42;
+  const maxX = W + 42;
+  const maxY = H + 42;
+  let t = 160;
+  const tx =
+    cos > 1e-4
+      ? (maxX - ap.x) / cos
+      : cos < -1e-4
+        ? (minX - ap.x) / cos
+        : Infinity;
+  const ty =
+    sin > 1e-4
+      ? (maxY - ap.y) / sin
+      : sin < -1e-4
+        ? (minY - ap.y) / sin
+        : Infinity;
+  const tBorder = Math.min(tx > 0 ? tx : Infinity, ty > 0 ? ty : Infinity);
+  if (Number.isFinite(tBorder) && tBorder > 0) {
+    t = Math.min(t, tBorder);
+  }
+  const x = Math.max(minX, Math.min(maxX, ap.x + cos * t));
+  const y = Math.max(minY, Math.min(maxY, ap.y + sin * t));
+  return {
+    x,
+    y,
+    angleRad: ang,
+    halfLen: 6,
+    isExternal: true,
+    acceptsWidebody: true,
+    label: "INTL CORRIDOR",
+  };
+}
+
+/**
  * Builds an arc-length parameterized 5-phase gate-to-gate flight track in world tile coordinates.
  * @param {Airport | PlaneEndpoint} origin
  * @param {Airport | PlaneEndpoint} dest
- * @param {{ isCargoFreighter?: boolean, gateIndex?: number, gateLx?: number, destGateLx?: number, oSign?: 1 | -1, dSign?: 1 | -1 }} [options]
+ * @param {{ isCargoFreighter?: boolean, aircraftType?: AircraftType, gateIndex?: number, gateLx?: number, destGateLx?: number, oSign?: 1 | -1, dSign?: 1 | -1 }} [options]
  * @returns {FlightTrack}
  */
 export function buildFlightTrack(origin, dest, options = {}) {
@@ -458,10 +534,12 @@ export function buildFlightTrack(origin, dest, options = {}) {
   const dSign = options.dSign ?? dest.activeSign ?? (dDot >= 0 ? 1 : -1);
 
   // Dual-Runway Hub & Single-Runway Alignment (Phase 2)
-  const oRwyLen = origin.halfLen * 2;
+  const oHalfLen = origin.halfLen || 14;
+  const oRwyLen = oHalfLen * 2;
   const depRwyY = oIsHub ? -oSide * 1.72 : -oSide * 1.68;
 
-  const dBaseRwyLen = dest.halfLen * 2;
+  const dHalfLen = dest.halfLen || 14;
+  const dBaseRwyLen = dHalfLen * 2;
   const dRwyLen = dIsHub ? dBaseRwyLen * 0.88 : dBaseRwyLen;
   const arrRwyY = dIsHub ? -dSide * 3.35 : -dSide * 1.68;
 
@@ -502,127 +580,163 @@ export function buildFlightTrack(origin, dest, options = {}) {
   const dExitRwyX = dSign * (dIsHub ? 0.41 : 0.38) * dBaseRwyLen;
   const dCrossTaxiX = dSign * (dIsHub ? 0.41 : 0.38) * dBaseRwyLen;
 
+  const isTurboprop = options.aircraftType === "FEEDER_TURBOPROP";
+  const taxiSpeed = SIM_CONFIG.AVIATION.taxiSpeed;
+  const takeoffSpeed = isTurboprop
+    ? (SIM_CONFIG.AVIATION.turbopropTakeoffSpeed ?? 10.6)
+    : SIM_CONFIG.AVIATION.takeoffSpeed;
+  const cruiseSpeed = isTurboprop
+    ? (SIM_CONFIG.AVIATION.turbopropCruiseSpeed ?? 13.2)
+    : SIM_CONFIG.AVIATION.cruiseSpeed;
+  const landingSpeed = isTurboprop
+    ? (SIM_CONFIG.AVIATION.turbopropLandingSpeed ?? 9.8)
+    : SIM_CONFIG.AVIATION.landingSpeed;
+
   /** @type {FlightTrackPoint[]} */
   const rawPts = [];
   let holdShortRawIdx = -1;
 
-  // 1. TAXI_OUT (altitude = 0, speed = 2.2 tiles/sec)
-  const taxiSpeed = SIM_CONFIG.AVIATION.taxiSpeed;
-  const pGate = toWorld(origin, oGateX, oTermY);
-  rawPts.push({
-    x: pGate.x,
-    y: pGate.y,
-    altitude: 0,
-    phase: "TAXI_OUT",
-    speed: taxiSpeed,
-  });
+  let sx = 0;
+  let sy = 0;
 
-  const pApron = toWorld(origin, oGateX, oTaxiY);
-  rawPts.push({
-    x: pApron.x,
-    y: pApron.y,
-    altitude: 0,
-    phase: "TAXI_OUT",
-    speed: taxiSpeed,
-  });
-
-  const pCross = toWorld(origin, oCrossTaxiX, oTaxiY);
-  rawPts.push({
-    x: pCross.x,
-    y: pCross.y,
-    altitude: 0,
-    phase: "TAXI_OUT",
-    speed: taxiSpeed,
-  });
-
-  const pHoldShort = toWorld(origin, oCrossTaxiX, oHoldShortY);
-  holdShortRawIdx = rawPts.length;
-  rawPts.push({
-    x: pHoldShort.x,
-    y: pHoldShort.y,
-    altitude: 0,
-    phase: "TAXI_OUT",
-    speed: taxiSpeed,
-  });
-
-  // Forward 4-step quarter-circle fillet lining up from hold-short onto runway centerline
-  const turnR = Math.abs(depRwyY - oHoldShortY);
-  for (let step = 1; step <= 4; step++) {
-    const theta = (step / 4) * (Math.PI * 0.5);
-    const flx = oCrossTaxiX + oSign * turnR * (1 - Math.cos(theta));
-    const fly =
-      step === 4 ? depRwyY : oHoldShortY - oSide * turnR * Math.sin(theta);
-    const pFillet = toWorld(origin, flx, fly);
+  if (origin.isExternal) {
+    sx = origin.x;
+    sy = origin.y;
+    holdShortRawIdx = 0;
     rawPts.push({
-      x: pFillet.x,
-      y: pFillet.y,
+      x: origin.x,
+      y: origin.y,
+      altitude: SIM_CONFIG.AVIATION.cruiseAlt,
+      phase: "CRUISE",
+      speed: cruiseSpeed,
+    });
+  } else {
+    // 1. TAXI_OUT (altitude = 0, speed = 2.2 tiles/sec)
+    const pGate = toWorld(origin, oGateX, oTermY);
+    rawPts.push({
+      x: pGate.x,
+      y: pGate.y,
       altitude: 0,
       phase: "TAXI_OUT",
       speed: taxiSpeed,
     });
+
+    const pApron = toWorld(origin, oGateX, oTaxiY);
+    rawPts.push({
+      x: pApron.x,
+      y: pApron.y,
+      altitude: 0,
+      phase: "TAXI_OUT",
+      speed: taxiSpeed,
+    });
+
+    const pCross = toWorld(origin, oCrossTaxiX, oTaxiY);
+    rawPts.push({
+      x: pCross.x,
+      y: pCross.y,
+      altitude: 0,
+      phase: "TAXI_OUT",
+      speed: taxiSpeed,
+    });
+
+    const pHoldShort = toWorld(origin, oCrossTaxiX, oHoldShortY);
+    holdShortRawIdx = rawPts.length;
+    rawPts.push({
+      x: pHoldShort.x,
+      y: pHoldShort.y,
+      altitude: 0,
+      phase: "TAXI_OUT",
+      speed: taxiSpeed,
+    });
+
+    // Forward 4-step quarter-circle fillet lining up from hold-short onto runway centerline
+    const turnR = Math.abs(depRwyY - oHoldShortY);
+    for (let step = 1; step <= 4; step++) {
+      const theta = (step / 4) * (Math.PI * 0.5);
+      const flx = oCrossTaxiX + oSign * turnR * (1 - Math.cos(theta));
+      const fly =
+        step === 4 ? depRwyY : oHoldShortY - oSide * turnR * Math.sin(theta);
+      const pFillet = toWorld(origin, flx, fly);
+      rawPts.push({
+        x: pFillet.x,
+        y: pFillet.y,
+        altitude: 0,
+        phase: "TAXI_OUT",
+        speed: taxiSpeed,
+      });
+    }
+
+    // 2. TAKEOFF (altitude: 0 -> 0.18, speed: 2.2 -> 13.5 tiles/sec smooth acceleration roll)
+    const pEarlyRoll = toWorld(origin, -oSign * oRwyLen * 0.22, depRwyY);
+    rawPts.push({
+      x: pEarlyRoll.x,
+      y: pEarlyRoll.y,
+      altitude: 0,
+      phase: "TAKEOFF",
+      speed: taxiSpeed + (takeoffSpeed - taxiSpeed) * 0.22,
+    });
+
+    const pMidRoll = toWorld(origin, 0, depRwyY);
+    rawPts.push({
+      x: pMidRoll.x,
+      y: pMidRoll.y,
+      altitude: 0,
+      phase: "TAKEOFF",
+      speed: taxiSpeed + (takeoffSpeed - taxiSpeed) * 0.55,
+    });
+
+    const pLiftoff = toWorld(origin, oSign * oRwyLen * 0.32, depRwyY);
+    rawPts.push({
+      x: pLiftoff.x,
+      y: pLiftoff.y,
+      altitude: 0,
+      phase: "TAKEOFF",
+      speed: takeoffSpeed,
+    });
+
+    const oApproachLen = origin.approachLen || 14;
+    const oClimbX = oSign * (oHalfLen + oApproachLen * 0.65);
+    const oMidClimbX = oSign * (oHalfLen + oApproachLen * 0.32);
+
+    const pMidClimb = toWorld(origin, oMidClimbX, depRwyY);
+    rawPts.push({
+      x: pMidClimb.x,
+      y: pMidClimb.y,
+      altitude: SIM_CONFIG.AVIATION.climbOutAlt * 0.5,
+      phase: "TAKEOFF",
+      speed: takeoffSpeed,
+    });
+
+    const pClimbOut = toWorld(origin, oClimbX, depRwyY);
+    rawPts.push({
+      x: pClimbOut.x,
+      y: pClimbOut.y,
+      altitude: SIM_CONFIG.AVIATION.climbOutAlt,
+      phase: "TAKEOFF",
+      speed: takeoffSpeed,
+    });
+
+    sx = pClimbOut.x;
+    sy = pClimbOut.y;
   }
 
-  // 2. TAKEOFF (altitude: 0 -> 0.18, speed: 2.2 -> 13.5 tiles/sec smooth acceleration roll)
-  const takeoffSpeed = SIM_CONFIG.AVIATION.takeoffSpeed;
-  const pEarlyRoll = toWorld(origin, -oSign * oRwyLen * 0.22, depRwyY);
-  rawPts.push({
-    x: pEarlyRoll.x,
-    y: pEarlyRoll.y,
-    altitude: 0,
-    phase: "TAKEOFF",
-    speed: taxiSpeed + (takeoffSpeed - taxiSpeed) * 0.22,
-  });
+  // 3. CRUISE
+  let ex = dest.x;
+  let ey = dest.y;
+  /** @type {{ x: number, y: number } | null} */
+  let pAppEntry = null;
 
-  const pMidRoll = toWorld(origin, 0, depRwyY);
-  rawPts.push({
-    x: pMidRoll.x,
-    y: pMidRoll.y,
-    altitude: 0,
-    phase: "TAKEOFF",
-    speed: taxiSpeed + (takeoffSpeed - taxiSpeed) * 0.55,
-  });
-
-  const pLiftoff = toWorld(origin, oSign * oRwyLen * 0.32, depRwyY);
-  rawPts.push({
-    x: pLiftoff.x,
-    y: pLiftoff.y,
-    altitude: 0,
-    phase: "TAKEOFF",
-    speed: takeoffSpeed,
-  });
-
-  const oApproachLen = origin.approachLen || 14;
-  const oClimbX = oSign * (origin.halfLen + oApproachLen * 0.65);
-  const oMidClimbX = oSign * (origin.halfLen + oApproachLen * 0.32);
-
-  const pMidClimb = toWorld(origin, oMidClimbX, depRwyY);
-  rawPts.push({
-    x: pMidClimb.x,
-    y: pMidClimb.y,
-    altitude: SIM_CONFIG.AVIATION.climbOutAlt * 0.5,
-    phase: "TAKEOFF",
-    speed: takeoffSpeed,
-  });
-
-  const pClimbOut = toWorld(origin, oClimbX, depRwyY);
-  rawPts.push({
-    x: pClimbOut.x,
-    y: pClimbOut.y,
-    altitude: SIM_CONFIG.AVIATION.climbOutAlt,
-    phase: "TAKEOFF",
-    speed: takeoffSpeed,
-  });
-
-  // 3. CRUISE (altitude: 0.18 -> 1.0 -> 0.18, speed = 16.5 tiles/sec)
-  const sx = pClimbOut.x;
-  const sy = pClimbOut.y;
-
-  const dApproachLen = dest.approachLen || 14;
-  const dEntryDist = dest.halfLen * (dIsHub ? 0.88 : 1.0) + dApproachLen * 0.75;
-  const dEntryX = -dSign * dEntryDist;
-  const pAppEntry = toWorld(dest, dEntryX, arrRwyY);
-  const ex = pAppEntry.x;
-  const ey = pAppEntry.y;
+  if (dest.isExternal) {
+    ex = dest.x;
+    ey = dest.y;
+  } else {
+    const dApproachLen = dest.approachLen || 14;
+    const dEntryDist = dHalfLen * (dIsHub ? 0.88 : 1.0) + dApproachLen * 0.75;
+    const dEntryX = -dSign * dEntryDist;
+    pAppEntry = toWorld(dest, dEntryX, arrRwyY);
+    ex = pAppEntry.x;
+    ey = pAppEntry.y;
+  }
 
   const cdx = ex - sx;
   const cdy = ey - sy;
@@ -635,16 +749,30 @@ export function buildFlightTrack(origin, dest, options = {}) {
   const nx = -cdy / cDist;
   const ny = cdx / cDist;
   const latArc = Math.min(1.5, cDist * 0.035);
+  const c1Lat = origin.isExternal ? 46.0 : latArc;
 
-  const c1x = sx + oCos * oSign * climbPull + nx * latArc;
-  const c1y = sy + oSin * oSign * climbPull + ny * latArc;
-  const c2x = ex - dCos * dSign * climbPull + nx * latArc;
-  const c2y = ey - dSin * dSign * climbPull + ny * latArc;
+  const c1x =
+    sx +
+    (origin.isExternal ? (cdx / cDist) * climbPull : oCos * oSign * climbPull) +
+    nx * c1Lat;
+  const c1y =
+    sy +
+    (origin.isExternal ? (cdy / cDist) * climbPull : oSin * oSign * climbPull) +
+    ny * c1Lat;
+  const c2x =
+    ex -
+    (dest.isExternal ? (cdx / cDist) * climbPull : dCos * dSign * climbPull) +
+    nx * latArc;
+  const c2y =
+    ey -
+    (dest.isExternal ? (cdy / cDist) * climbPull : dSin * dSign * climbPull) +
+    ny * latArc;
   const airwayCurve = { sx, sy, c1x, c1y, c2x, c2y, ex, ey };
 
   const numCruiseSteps = Math.max(24, Math.ceil(cDist / 1.0));
-  const cruiseSpeed = SIM_CONFIG.AVIATION.cruiseSpeed;
-  for (let k = 1; k < numCruiseSteps; k++) {
+  const endStep = dest.isExternal ? numCruiseSteps : numCruiseSteps - 1;
+
+  for (let k = 1; k <= endStep; k++) {
     const t = k / numCruiseSteps;
     const mt = 1 - t;
     const b0 = mt * mt * mt;
@@ -653,10 +781,27 @@ export function buildFlightTrack(origin, dest, options = {}) {
     const b3 = t * t * t;
     const bx = b0 * sx + b1 * c1x + b2 * c2x + b3 * ex;
     const by = b0 * sy + b1 * c1y + b2 * c2y + b3 * ey;
-    const alt =
-      SIM_CONFIG.AVIATION.climbOutAlt +
-      (SIM_CONFIG.AVIATION.cruiseAlt - SIM_CONFIG.AVIATION.climbOutAlt) *
-        Math.sin(t * Math.PI);
+
+    let alt = SIM_CONFIG.AVIATION.cruiseAlt;
+    if (origin.isExternal && dest.isExternal) {
+      alt = SIM_CONFIG.AVIATION.cruiseAlt;
+    } else if (origin.isExternal) {
+      alt =
+        SIM_CONFIG.AVIATION.climbOutAlt +
+        (SIM_CONFIG.AVIATION.cruiseAlt - SIM_CONFIG.AVIATION.climbOutAlt) *
+          Math.cos(t * Math.PI * 0.5);
+    } else if (dest.isExternal) {
+      alt =
+        SIM_CONFIG.AVIATION.climbOutAlt +
+        (SIM_CONFIG.AVIATION.cruiseAlt - SIM_CONFIG.AVIATION.climbOutAlt) *
+          Math.sin(Math.min(1, t * 1.5) * Math.PI * 0.5);
+    } else {
+      alt =
+        SIM_CONFIG.AVIATION.climbOutAlt +
+        (SIM_CONFIG.AVIATION.cruiseAlt - SIM_CONFIG.AVIATION.climbOutAlt) *
+          Math.sin(t * Math.PI);
+    }
+
     rawPts.push({
       x: bx,
       y: by,
@@ -666,80 +811,83 @@ export function buildFlightTrack(origin, dest, options = {}) {
     });
   }
 
-  // 4. LANDING (altitude: 0.18 -> 0, speed: 12.5 -> 2.2 tiles/sec)
-  const landingSpeed = SIM_CONFIG.AVIATION.landingSpeed;
-  rawPts.push({
-    x: pAppEntry.x,
-    y: pAppEntry.y,
-    altitude: SIM_CONFIG.AVIATION.climbOutAlt,
-    phase: "LANDING",
-    speed: landingSpeed,
-  });
+  if (!dest.isExternal && pAppEntry) {
+    // 4. LANDING (altitude: 0.18 -> 0, speed: 12.5 -> 2.2 tiles/sec)
+    rawPts.push({
+      x: pAppEntry.x,
+      y: pAppEntry.y,
+      altitude: SIM_CONFIG.AVIATION.climbOutAlt,
+      phase: "LANDING",
+      speed: landingSpeed,
+    });
 
-  const midAppDist = (dEntryDist + 0.42 * dRwyLen) * 0.5;
-  const pMidApp = toWorld(dest, -dSign * midAppDist, arrRwyY);
-  rawPts.push({
-    x: pMidApp.x,
-    y: pMidApp.y,
-    altitude: SIM_CONFIG.AVIATION.climbOutAlt * 0.5,
-    phase: "LANDING",
-    speed: landingSpeed,
-  });
+    const dApproachLen = dest.approachLen || 14;
+    const dEntryDist = dHalfLen * (dIsHub ? 0.88 : 1.0) + dApproachLen * 0.75;
+    const midAppDist = (dEntryDist + 0.42 * dRwyLen) * 0.5;
+    const pMidApp = toWorld(dest, -dSign * midAppDist, arrRwyY);
+    rawPts.push({
+      x: pMidApp.x,
+      y: pMidApp.y,
+      altitude: SIM_CONFIG.AVIATION.climbOutAlt * 0.5,
+      phase: "LANDING",
+      speed: landingSpeed,
+    });
 
-  const pTouchdown = toWorld(dest, -dSign * 0.42 * dRwyLen, arrRwyY);
-  rawPts.push({
-    x: pTouchdown.x,
-    y: pTouchdown.y,
-    altitude: 0,
-    phase: "LANDING",
-    speed: 9.0,
-  });
+    const pTouchdown = toWorld(dest, -dSign * 0.42 * dRwyLen, arrRwyY);
+    rawPts.push({
+      x: pTouchdown.x,
+      y: pTouchdown.y,
+      altitude: 0,
+      phase: "LANDING",
+      speed: 9.0,
+    });
 
-  const pMidRollout = toWorld(dest, 0, arrRwyY);
-  rawPts.push({
-    x: pMidRollout.x,
-    y: pMidRollout.y,
-    altitude: 0,
-    phase: "LANDING",
-    speed: 5.5,
-  });
+    const pMidRollout = toWorld(dest, 0, arrRwyY);
+    rawPts.push({
+      x: pMidRollout.x,
+      y: pMidRollout.y,
+      altitude: 0,
+      phase: "LANDING",
+      speed: 5.5,
+    });
 
-  const pExit = toWorld(dest, dExitRwyX, arrRwyY);
-  rawPts.push({
-    x: pExit.x,
-    y: pExit.y,
-    altitude: 0,
-    phase: "TAXI_IN",
-    speed: taxiSpeed,
-  });
+    const pExit = toWorld(dest, dExitRwyX, arrRwyY);
+    rawPts.push({
+      x: pExit.x,
+      y: pExit.y,
+      altitude: 0,
+      phase: "TAXI_IN",
+      speed: taxiSpeed,
+    });
 
-  // 5. TAXI_IN (altitude = 0, speed = 2.2 tiles/sec)
-  const pTaxiCross = toWorld(dest, dCrossTaxiX, dTaxiY);
-  rawPts.push({
-    x: pTaxiCross.x,
-    y: pTaxiCross.y,
-    altitude: 0,
-    phase: "TAXI_IN",
-    speed: taxiSpeed,
-  });
+    // 5. TAXI_IN (altitude = 0, speed = 2.2 tiles/sec)
+    const pTaxiCross = toWorld(dest, dCrossTaxiX, dTaxiY);
+    rawPts.push({
+      x: pTaxiCross.x,
+      y: pTaxiCross.y,
+      altitude: 0,
+      phase: "TAXI_IN",
+      speed: taxiSpeed,
+    });
 
-  const pTaxiGate = toWorld(dest, dGateX, dTaxiY);
-  rawPts.push({
-    x: pTaxiGate.x,
-    y: pTaxiGate.y,
-    altitude: 0,
-    phase: "TAXI_IN",
-    speed: taxiSpeed,
-  });
+    const pTaxiGate = toWorld(dest, dGateX, dTaxiY);
+    rawPts.push({
+      x: pTaxiGate.x,
+      y: pTaxiGate.y,
+      altitude: 0,
+      phase: "TAXI_IN",
+      speed: taxiSpeed,
+    });
 
-  const pDestGate = toWorld(dest, dGateX, dTermY);
-  rawPts.push({
-    x: pDestGate.x,
-    y: pDestGate.y,
-    altitude: 0,
-    phase: "TAXI_IN",
-    speed: taxiSpeed,
-  });
+    const pDestGate = toWorld(dest, dGateX, dTermY);
+    rawPts.push({
+      x: pDestGate.x,
+      y: pDestGate.y,
+      altitude: 0,
+      phase: "TAXI_IN",
+      speed: taxiSpeed,
+    });
+  }
 
   // Filter consecutive duplicate points & build cumulative arc length
   /** @type {FlightTrackPoint[]} */
@@ -802,7 +950,12 @@ export function sampleFlightTrack(track, dist) {
   const y = p0.y + (p1.y - p0.y) * clampedU;
   const altitude = p0.altitude + (p1.altitude - p0.altitude) * clampedU;
   const speed = p0.speed + (p1.speed - p0.speed) * clampedU;
-  const phase = clampedDist >= totalLength ? "GATE_DWELL" : p0.phase;
+  const phase =
+    clampedDist >= totalLength
+      ? p0.phase === "CRUISE"
+        ? "CRUISE"
+        : "GATE_DWELL"
+      : p0.phase;
   const dx = p1.x - p0.x;
   const dy = p1.y - p0.y;
   const ang = Math.atan2(dy, dx);
@@ -832,6 +985,8 @@ export class LogisticsSimulator {
 
     // Phase 1: Initialize ATC on every airport
     for (const ap of this.world.airports) {
+      ap.importsCompleted ??= 0;
+      ap.exportsCompleted ??= 0;
       initAirportATC(ap, this.world.windVector);
     }
 
@@ -876,7 +1031,20 @@ export class LogisticsSimulator {
       const pool =
         mwayLinks.length > 0 && rng.next() < 0.45 ? mwayLinks : validLinks;
       if (pool.length > 0) {
-        const link = pool[Math.floor(rng.next() * pool.length)];
+        let totalWeight = 0;
+        for (let i = 0; i < pool.length; i++) {
+          totalWeight += Math.max(1, pool[i].demandWeight || 1);
+        }
+        let roll = rng.next() * totalWeight;
+        let link = pool[0];
+        for (let i = 0; i < pool.length; i++) {
+          const w = Math.max(1, pool[i].demandWeight || 1);
+          if (roll < w) {
+            link = pool[i];
+            break;
+          }
+          roll -= w;
+        }
         const returning = rng.next() < 0.32;
         const track = returning ? link.inboundTrack : link.outboundTrack;
         const dist = rng.next() * track.totalLength;
@@ -945,34 +1113,110 @@ export class LogisticsSimulator {
   spawnPlane(initialProgress = 0) {
     const { world, rng } = this;
     if (world.airports.length === 0) return;
+
+    for (const ap of world.airports) {
+      ap.importsCompleted ??= 0;
+      ap.exportsCompleted ??= 0;
+    }
+
     const planeIdx = this.planes.length;
+    const mult =
+      world.config.archetype === "island-hopper"
+        ? SIM_CONFIG.FLEET.islandHopperPlanesPerAirport
+        : SIM_CONFIG.FLEET.basePlanesPerAirport;
+    const planeCount = Math.max(2, world.airports.length * mult);
+
     const originIdx = planeIdx % world.airports.length;
-    const origin = world.airports[originIdx];
+    let origin = world.airports[originIdx];
     if (!origin) return;
 
     /** @type {Airport | PlaneEndpoint} */
     let dest;
-    if (world.airports.length > 1) {
+
+    const otherWidebodyAps = world.airports.filter(
+      (a) => a.id !== origin.id && canWidebodyServe(a),
+    );
+    const wantsWidebody =
+      canWidebodyServe(origin) &&
+      (origin.airportClass === "CRG" || planeIdx % 3 === 2);
+    const noOtherWidebody = wantsWidebody && otherWidebodyAps.length === 0;
+
+    const shouldPickExternal =
+      world.airports.length === 1 ||
+      noOtherWidebody ||
+      ((origin.isHub || origin.airportClass === "CRG") && rng.next() < 0.22);
+
+    if (shouldPickExternal) {
+      dest = createExternalEndpoint(origin, planeIdx, world.W, world.H);
+    } else {
       const destIdx =
         (originIdx + 1 + Math.floor(rng.next() * (world.airports.length - 1))) %
         world.airports.length;
       dest = world.airports[destIdx];
-    } else {
-      // Virtual international off-map corridor if single airport (matches drawAirwayCorridors)
-      const ang = origin.angleRad ?? 0;
-      dest = {
-        x: origin.x + Math.cos(ang + 0.35) * 95,
-        y: origin.y + Math.sin(ang + 0.35) * 95,
-        angleRad: ang,
-        halfLen: 6,
-      };
     }
 
-    const isCargoFreighter = Boolean(
-      origin.airportClass === "CRG" ||
-      dest.airportClass === "CRG" ||
-      (origin.isHub && dest.isHub && planeIdx % 3 === 2),
-    );
+    /** @type {AircraftType} */
+    let aircraftType = "PASSENGER_JET";
+    let isCargoFreighter = false;
+
+    if (
+      canWidebodyServe(origin) &&
+      canWidebodyServe(dest) &&
+      (origin.airportClass === "CRG" ||
+        dest.airportClass === "CRG" ||
+        dest.isExternal ||
+        origin.isExternal ||
+        planeIdx % 3 === 2)
+    ) {
+      aircraftType = "WIDEBODY_FREIGHTER";
+      isCargoFreighter = true;
+    } else if (
+      (!canWidebodyServe(origin) || !canWidebodyServe(dest)) &&
+      (planeIdx % 2 === 0 || world.config.archetype === "island-hopper")
+    ) {
+      aircraftType = "FEEDER_TURBOPROP";
+      isCargoFreighter = true;
+    } else if (
+      planeIdx % 3 === 2 &&
+      (!canWidebodyServe(origin) || !canWidebodyServe(dest))
+    ) {
+      aircraftType = "FEEDER_TURBOPROP";
+      isCargoFreighter = true;
+    } else {
+      aircraftType = "PASSENGER_JET";
+      isCargoFreighter = false;
+    }
+
+    // Hard Invariant: If aircraftType === "WIDEBODY_FREIGHTER", neither origin nor dest may EVER be a REG airport (!canWidebodyServe)
+    if (aircraftType === "WIDEBODY_FREIGHTER") {
+      if (!canWidebodyServe(origin) || !canWidebodyServe(dest)) {
+        aircraftType = "FEEDER_TURBOPROP";
+        isCargoFreighter = true;
+      }
+    }
+
+    // Hard Invariant: If world has any REG airports and planeCount >= 4, ensure at least one plane is FEEDER_TURBOPROP serving REG
+    const hasRegAirports = world.airports.some((a) => !canWidebodyServe(a));
+    if (hasRegAirports && planeCount >= 4 && planeIdx === planeCount - 1) {
+      const alreadyHasFeederReg = this.planes.some(
+        (p) =>
+          p.aircraftType === "FEEDER_TURBOPROP" &&
+          (!canWidebodyServe(p.origin) || !canWidebodyServe(p.dest)),
+      );
+      if (!alreadyHasFeederReg) {
+        const regAp = world.airports.find((a) => !canWidebodyServe(a));
+        if (regAp) {
+          origin = regAp;
+          const otherAps = world.airports.filter((a) => a.id !== regAp.id);
+          dest =
+            otherAps.length > 0
+              ? otherAps[Math.floor(rng.next() * otherAps.length)]
+              : createExternalEndpoint(regAp, planeIdx, world.W, world.H);
+          aircraftType = "FEEDER_TURBOPROP";
+          isCargoFreighter = true;
+        }
+      }
+    }
 
     const originAtc = origin.atc;
     const destAtc = dest.atc;
@@ -997,6 +1241,7 @@ export class LogisticsSimulator {
 
     const track = buildFlightTrack(origin, dest, {
       isCargoFreighter,
+      aircraftType,
       gateIndex: planeIdx,
       gateLx: chosenOriginGate?.lx,
       destGateLx: chosenDestGate?.lx,
@@ -1121,6 +1366,8 @@ export class LogisticsSimulator {
       dwellTimer: 0,
       holdingShort: state === "HOLD_SHORT_QUEUE",
       isCargoFreighter,
+      aircraftType,
+      isExternalFlight: Boolean(origin.isExternal || dest.isExternal),
       color: origin.palette?.roof || "#e65100",
       progress: Math.min(0.9999, dist / Math.max(0.001, track.totalLength)),
     };
@@ -1200,6 +1447,26 @@ export class LogisticsSimulator {
       if (p.reservedGateId === undefined) p.reservedGateId = null;
       if (p.taxiS === undefined) p.taxiS = 0;
       if (p.targetTaxiS === undefined) p.targetTaxiS = 0;
+      if (!p.aircraftType) {
+        if (
+          canWidebodyServe(p.origin) &&
+          canWidebodyServe(p.dest) &&
+          (p.origin?.airportClass === "CRG" ||
+            p.dest?.airportClass === "CRG" ||
+            pIdx % 3 === 2)
+        ) {
+          p.aircraftType = "WIDEBODY_FREIGHTER";
+        } else if (!canWidebodyServe(p.origin) || !canWidebodyServe(p.dest)) {
+          p.aircraftType = "FEEDER_TURBOPROP";
+        } else {
+          p.aircraftType = p.isCargoFreighter
+            ? "FEEDER_TURBOPROP"
+            : "PASSENGER_JET";
+        }
+      }
+      p.isExternalFlight ??= Boolean(
+        p.origin?.isExternal || p.dest?.isExternal,
+      );
 
       // Initialize state from phase if undefined (e.g. synthetic test objects)
       if (!p.state) {
@@ -1494,29 +1761,79 @@ export class LogisticsSimulator {
             if (p.dest && p.dest.id !== undefined && p.gateId === null) {
               p.origin = p.dest;
             }
+            if (p.origin?.isExternal && p.dest && !p._importRecorded) {
+              p.dest.importsCompleted = (p.dest.importsCompleted || 0) + 1;
+              p._importRecorded = true;
+            }
+
+            const currentOrigin = p.origin;
             /** @type {Airport | PlaneEndpoint | null} */
             let nextDest = null;
-            if (this.world.airports.length > 1) {
+
+            if (p.aircraftType === "WIDEBODY_FREIGHTER") {
+              const wideOthers = this.world.airports.filter(
+                (a) => canWidebodyServe(a) && a.id !== currentOrigin.id,
+              );
+              const roll = this.rng.next();
+              if (
+                wideOthers.length === 0 ||
+                ((currentOrigin.isHub ||
+                  currentOrigin.airportClass === "CRG") &&
+                  roll < 0.3)
+              ) {
+                nextDest = createExternalEndpoint(
+                  currentOrigin,
+                  (p.id ?? 0) + Math.floor(this.simTime),
+                  this.world.W,
+                  this.world.H,
+                );
+              } else {
+                nextDest =
+                  wideOthers[Math.floor(this.rng.next() * wideOthers.length)];
+              }
+            } else if (
+              (currentOrigin.isHub || currentOrigin.airportClass === "CRG") &&
+              this.rng.next() < 0.18
+            ) {
+              nextDest = createExternalEndpoint(
+                currentOrigin,
+                p.id ?? 0,
+                this.world.W,
+                this.world.H,
+              );
+            } else if (this.world.airports.length > 1) {
               const others = this.world.airports.filter(
-                (a) => a.id !== p.origin.id,
+                (a) => a.id !== currentOrigin.id,
               );
               nextDest = others[Math.floor(this.rng.next() * others.length)];
             } else {
-              const ang = p.origin.angleRad ?? 0;
-              nextDest = {
-                x: p.origin.x + Math.cos(ang + 0.35) * 95,
-                y: p.origin.y + Math.sin(ang + 0.35) * 95,
-                angleRad: ang,
-                halfLen: 6,
-              };
+              nextDest = createExternalEndpoint(
+                currentOrigin,
+                p.id ?? 0,
+                this.world.W,
+                this.world.H,
+              );
             }
+
             if (nextDest) {
               p.dest = nextDest;
-              p.isCargoFreighter = Boolean(
+              if (p.aircraftType === "WIDEBODY_FREIGHTER") {
+                if (
+                  !canWidebodyServe(p.origin) ||
+                  !canWidebodyServe(nextDest)
+                ) {
+                  p.aircraftType = "FEEDER_TURBOPROP";
+                }
+              }
+              p.isCargoFreighter =
+                p.aircraftType === "WIDEBODY_FREIGHTER" ||
+                p.aircraftType === "FEEDER_TURBOPROP" ||
                 p.origin.airportClass === "CRG" ||
-                p.dest.airportClass === "CRG" ||
-                (p.origin.isHub && p.dest.isHub && pIdx % 3 === 2),
+                p.dest.airportClass === "CRG";
+              p.isExternalFlight = Boolean(
+                p.origin.isExternal || nextDest.isExternal,
               );
+              p._importRecorded = false;
 
               const newAtc = p.origin.atc;
               const curGate = newAtc
@@ -1533,12 +1850,13 @@ export class LogisticsSimulator {
                         g.state === "FREE" &&
                         g.occupiedBy === null &&
                         g.reservedBy === null,
-                    ) ?? p.dest.atc.gates[pIdx % p.dest.atc.gates.length])
+                    ) ?? p.dest.atc.gates[planeId % p.dest.atc.gates.length])
                   : null;
 
               p.track = buildFlightTrack(p.origin, p.dest, {
                 isCargoFreighter: p.isCargoFreighter,
-                gateIndex: pIdx,
+                aircraftType: p.aircraftType,
+                gateIndex: planeId,
                 gateLx: curGate?.lx,
                 destGateLx: destGate?.lx,
                 oSign: p.origin.activeSign,
@@ -1883,8 +2201,82 @@ export class LogisticsSimulator {
 
         case "ENROUTE_CRUISE": {
           p.phase = "CRUISE";
-          p.speed = SIM_CONFIG.AVIATION.cruiseSpeed;
+          const curCruiseSample = sampleFlightTrack(p.track, p.dist);
+          p.speed = curCruiseSample.speed;
           p.dist += p.speed * effDt;
+
+          if (p.dest?.isExternal && p.dist >= p.track.totalLength - 0.35) {
+            const prevOriginId =
+              p.origin && !p.origin.isExternal ? p.origin.id : undefined;
+            if (p.origin && !p.origin.isExternal) {
+              p.origin.exportsCompleted = (p.origin.exportsCompleted || 0) + 1;
+            }
+            this.tripsCompleted += SIM_CONFIG.FLEET.flightTripWeight;
+            p.origin = p.dest;
+
+            let candAirports = this.world.airports;
+            if (p.aircraftType === "WIDEBODY_FREIGHTER") {
+              const wide = this.world.airports.filter((a) =>
+                canWidebodyServe(a),
+              );
+              if (wide.length > 0) {
+                candAirports = wide;
+              } else {
+                candAirports = this.world.airports;
+                p.aircraftType = "FEEDER_TURBOPROP";
+                p.isCargoFreighter = true;
+              }
+            }
+            const otherCands = candAirports.filter(
+              (a) => a.id !== prevOriginId,
+            );
+            const pool = otherCands.length > 0 ? otherCands : candAirports;
+            const nextAp =
+              pool[Math.floor(this.rng.next() * pool.length)] ||
+              this.world.airports[0];
+
+            /** @type {number | undefined} */
+            let destGateLx;
+            if (nextAp?.atc && nextAp.atc.gates.length > 0) {
+              const freeGate = nextAp.atc.gates.find(
+                (g) =>
+                  g.state === "FREE" &&
+                  g.occupiedBy === null &&
+                  g.reservedBy === null,
+              );
+              if (freeGate) {
+                freeGate.state = "RESERVED";
+                freeGate.reservedBy = p.id ?? pIdx;
+                p.reservedGateId = freeGate.id;
+                destGateLx = freeGate.lx;
+              }
+            }
+
+            p.track = buildFlightTrack(p.origin, nextAp, {
+              isCargoFreighter: p.isCargoFreighter,
+              aircraftType: p.aircraftType,
+              destGateLx,
+              dSign: nextAp.activeSign,
+            });
+            p.dest = nextAp;
+            p.isExternalFlight = true;
+            p.dist = 0;
+            p.segIdx = 0;
+            p.state = "ENROUTE_CRUISE";
+            p.phase = "CRUISE";
+            p.altitude = SIM_CONFIG.AVIATION.cruiseAlt;
+            const s0 = sampleFlightTrack(p.track, 0);
+            p._resX = 0;
+            p._resY = 0;
+            p._resAng = 0;
+            p.x = s0.x;
+            p.y = s0.y;
+            p.ang = s0.ang;
+            p.speed = s0.speed;
+            p.progress = 0;
+            p._importRecorded = false;
+            break;
+          }
 
           const sample = sampleFlightTrack(p.track, p.dist);
           applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
@@ -2067,6 +2459,10 @@ export class LogisticsSimulator {
 
           // Roll all the way to the high-speed exit turnoff (sample.phase === "TAXI_IN")
           if (sample.phase === "TAXI_IN") {
+            if (p.origin?.isExternal && p.dest && !p._importRecorded) {
+              p.dest.importsCompleted = (p.dest.importsCompleted || 0) + 1;
+              p._importRecorded = true;
+            }
             const destAtc = p.dest.atc;
             const planeId = p.id ?? pIdx;
             if (destAtc) {

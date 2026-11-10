@@ -88,6 +88,20 @@ describe("HTML ↔ JS DOM Contract Static Verification", () => {
     "sliderAirports",
     "valWind",
     "sliderWind",
+    "geoPresetBadge",
+    "resetGeoScalarsBtn",
+    "sliderRelief",
+    "valRelief",
+    "sliderIncision",
+    "valIncision",
+    "sliderEmbayment",
+    "valEmbayment",
+    "sliderCaldera",
+    "valCaldera",
+    "sliderBarrier",
+    "valBarrier",
+    "sliderBasins",
+    "valBasins",
     "telemetryGridLabel",
     "genTimeBadge",
     "statPop",
@@ -130,12 +144,53 @@ describe("HTML ↔ JS DOM Contract Static Verification", () => {
     const actual = getSelectOptionValues(indexHtml, "archetypeSelect");
     const expected = [
       "confluence",
-      "estuary",
-      "archipelago",
       "inland",
+      "alpine-passes",
+      "fjord-sound",
+      "isthmus-strait",
+      "caldera-basin",
+      "barrier-lagoon",
+      "canyon-gorge",
       "island-hopper",
     ];
     expect(actual).toEqual(expected);
+  });
+
+  test("verifies 6 Geomorphology Scalar sliders, readouts, preset badge, and reset button in index.html", () => {
+    const scalarSliderIds = [
+      "sliderRelief",
+      "sliderIncision",
+      "sliderEmbayment",
+      "sliderCaldera",
+      "sliderBarrier",
+      "sliderBasins",
+    ];
+    const scalarValIds = [
+      "valRelief",
+      "valIncision",
+      "valEmbayment",
+      "valCaldera",
+      "valBarrier",
+      "valBasins",
+    ];
+
+    for (const id of scalarSliderIds) {
+      const match = indexHtml.match(
+        new RegExp(`<input[^>]*id=["']${id}["'][^>]*>`, "i"),
+      );
+      expect(match).not.toBeNull();
+      expect(match?.[0]).toContain('type="range"');
+    }
+
+    for (const id of scalarValIds) {
+      const match = indexHtml.match(
+        new RegExp(`<span[^>]*id=["']${id}["'][^>]*>`, "i"),
+      );
+      expect(match).not.toBeNull();
+    }
+
+    expect(/id=["']geoPresetBadge["']/i.test(indexHtml)).toBe(true);
+    expect(/id=["']resetGeoScalarsBtn["']/i.test(indexHtml)).toBe(true);
   });
 
   test("verifies #terrainAlgoSelect options match TerrainAlgoKey domain enum", () => {
@@ -372,12 +427,11 @@ describe("Signal-Grade App Store & Memoization (src/state.js)", () => {
     expect(labels1.airportsLabel).toBe("3 (1 Hub, 2 Reg)");
     expect(labels1.windLabel).toBe("Auto (Seed)");
 
-    // Modify unrelated config fields: seed, worldSize, archetype, includeIntermediateRamps
+    // Modify unrelated config fields: seed, worldSize, terrainAlgo, hydrologyAlgo, includeIntermediateRamps
     const cfg2 = {
       ...cfg1,
       seed: "SEED-BETA",
       worldSize: "huge",
-      archetype: "archipelago",
       terrainAlgo: "voronoi-plates",
       hydrologyAlgo: "d8-strahler",
       includeIntermediateRamps: false,
@@ -392,6 +446,59 @@ describe("Signal-Grade App Store & Memoization (src/state.js)", () => {
     const labels3 = deriveControlLabels(cfg3);
     expect(labels3).not.toBe(labels1);
     expect(labels3.waterLabel).toBe("60%");
+  });
+
+  test("store.setArchetype hydrates canonical presets and store.resetArchetypeScalars restores them", () => {
+    const store = createAppStore();
+    expect(store.getState().config.archetype).toBe("confluence");
+    expect(store.getState().config.terrainRelief).toBe(100);
+    expect(store.getState().config.valleyIncision).toBe(40);
+    expect(store.getState().config.coastalEmbayment).toBe(100);
+    expect(store.getState().config.calderaCurvature).toBe(0);
+    expect(store.getState().config.barrierFragmentation).toBe(0);
+    expect(store.getState().config.basinCount).toBe(2);
+
+    // Switch to caldera-basin
+    store.setArchetype("caldera-basin");
+    const calderaCfg = store.getState().config;
+    expect(calderaCfg.archetype).toBe("caldera-basin");
+    expect(calderaCfg.waterCoverage).toBe(52);
+    expect(calderaCfg.terrainRelief).toBe(145);
+    expect(calderaCfg.valleyIncision).toBe(90);
+    expect(calderaCfg.coastalEmbayment).toBe(40);
+    expect(calderaCfg.calderaCurvature).toBe(175);
+    expect(calderaCfg.barrierFragmentation).toBe(30);
+    expect(calderaCfg.basinCount).toBe(2);
+
+    const calderaLabels = deriveControlLabels(calderaCfg);
+    expect(calderaLabels.reliefLabel).toBe("145%");
+    expect(calderaLabels.incisionLabel).toBe("90%");
+    expect(calderaLabels.embaymentLabel).toBe("40%");
+    expect(calderaLabels.calderaLabel).toBe("175%");
+    expect(calderaLabels.barrierLabel).toBe("30%");
+    expect(calderaLabels.basinsLabel).toBe("2");
+    expect(calderaLabels.geoModifiedCount).toBe(0);
+
+    // Tweak scalars away from preset
+    store.patchConfig({ terrainRelief: 180, valleyIncision: 140 });
+    const tweakedCfg = store.getState().config;
+    expect(tweakedCfg.terrainRelief).toBe(180);
+    expect(tweakedCfg.valleyIncision).toBe(140);
+    expect(deriveControlLabels(tweakedCfg).geoModifiedCount).toBe(2);
+
+    // Reset to preset
+    store.resetArchetypeScalars();
+    const resetCfg = store.getState().config;
+    expect(resetCfg.terrainRelief).toBe(145);
+    expect(resetCfg.valleyIncision).toBe(90);
+    expect(deriveControlLabels(resetCfg).geoModifiedCount).toBe(0);
+
+    // Island-hopper preset clamps airportCount to at least 5
+    store.patchConfig({ airportCount: 2 });
+    store.setArchetype("island-hopper");
+    expect(store.getState().config.archetype).toBe("island-hopper");
+    expect(store.getState().config.airportCount).toBe(5);
+    expect(store.getState().config.barrierFragmentation).toBe(190);
   });
 });
 
@@ -557,6 +664,60 @@ describe("Entity Inspector & Building Dossier (src/inspector-component.js)", () 
     expect(mfg.badge).toBe("MFG · FACTORY");
     expect(mfg.shortTag).toBe("MFG");
     expect(mfg.title).toContain("Metropolis Factory (NE)");
+
+    // 9. Coastal Fishery
+    const fishery = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 9,
+        townId: 0,
+        x: 50,
+        y: 65,
+        zoneType: "industrial",
+        subType: "RAW",
+        resourceType: "FISHERY",
+      }),
+      /** @type {any} */ (mockWorld),
+    );
+    expect(fishery.stage).toBe("RAW");
+    expect(fishery.badge).toBe("RAW · FISHERY");
+    expect(fishery.shortTag).toBe("FISH");
+    expect(fishery.typeLabel).toContain("Fishery");
+
+    // 10. Specialized Manufacturing (Steel Mill)
+    const steel = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 10,
+        townId: 0,
+        x: 65,
+        y: 40,
+        zoneType: "industrial",
+        subType: "MFG",
+        mfgType: "STEEL",
+      }),
+      /** @type {any} */ (mockWorld),
+    );
+    expect(steel.stage).toBe("MFG");
+    expect(steel.badge).toBe("MFG · STEEL");
+    expect(steel.shortTag).toBe("STEEL");
+    expect(steel.typeLabel).toContain("Steel Mill");
+
+    // 11. Multi-Modal Trade Gateway Proxy
+    const gateway = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 10001,
+        townId: 0,
+        x: 70,
+        y: 70,
+        isGatewayProxy: true,
+        label: "SFO",
+      }),
+      /** @type {any} */ (mockWorld),
+    );
+    expect(gateway.stage).toBe("LOG");
+    expect(gateway.badge).toBe("AIR · GATEWAY");
+    expect(gateway.shortTag).toBe("SFO");
+    expect(gateway.typeLabel).toBe("Trade Gateway");
+    expect(gateway.title).toContain("SFO Cargo Gateway");
 
     // Fallback when world is null -> Regional title with #id
     const regional = describeBuildingDossier(
