@@ -194,6 +194,170 @@ export function describeBuildingDossier(d, world = null) {
   };
 }
 
+/**
+ * Computes live gate, taxiway, runway, and inbound telemetry for an inspected airport.
+ *
+ * @param {Airport} entity
+ * @param {ProceduralLogisticsWorld | null} [world]
+ * @param {any[] | null} [overridePlanes]
+ * @returns {{
+ *   liveAirport: Airport,
+ *   activeDir: string,
+ *   runwaySummary: string,
+ *   occupiedGates: number,
+ *   reservedGates: number,
+ *   totalGates: number,
+ *   gateFacilityType: string,
+ *   gateSummary: string,
+ *   taxiHoldCount: number,
+ *   landingCount: number,
+ *   departingCount: number,
+ *   inboundCount: number,
+ *   atcSummary: string
+ * }}
+ */
+export function describeAirportLiveStatus(
+  entity,
+  world = null,
+  overridePlanes = null,
+) {
+  const effectiveWorld =
+    world || (typeof window !== "undefined" ? window.currentWorld : null);
+  const liveAirport =
+    effectiveWorld?.airports?.find((a) => a.id === entity.id) || entity;
+  /** @type {any} */
+  const atc = /** @type {any} */ (liveAirport).atc;
+  /** @type {any[]} */
+  const planes = Array.isArray(overridePlanes)
+    ? overridePlanes
+    : typeof window !== "undefined" &&
+        Array.isArray(/** @type {any} */ (window).simulator?.planes)
+      ? /** @type {any} */ (window).simulator.planes
+      : [];
+
+  const totalGates = atc?.gates?.length || (liveAirport.isHub ? 7 : 4);
+  let occupiedGates = 0;
+  let reservedGates = 0;
+  if (atc?.gates && Array.isArray(atc.gates)) {
+    for (const g of atc.gates) {
+      if (g.state === "OCCUPIED") occupiedGates++;
+      else if (g.state === "RESERVED") reservedGates++;
+    }
+  } else {
+    occupiedGates = planes.filter((/** @type {any} */ p) => {
+      const isHere =
+        (p.origin?.id === liveAirport.id &&
+          (p.phase === "GATE_DWELL" ||
+            p.state === "GATE_LOADING" ||
+            p.state === "PUSHBACK_HOLD")) ||
+        (p.dest?.id === liveAirport.id &&
+          (p.phase === "GATE_DWELL" || p.state === "GATE_LOADING"));
+      return isHere;
+    }).length;
+    occupiedGates = Math.min(occupiedGates, totalGates);
+  }
+
+  let taxiHoldCount = 0;
+  let landingCount = 0;
+  let departingCount = 0;
+  let inboundCount = 0;
+
+  if (planes.length > 0) {
+    for (const p of planes) {
+      const fromHere = p.origin?.id === liveAirport.id;
+      const toHere = p.dest?.id === liveAirport.id;
+      const st = p.state;
+
+      if (
+        (fromHere &&
+          (st === "TAXI_TO_RUNWAY" ||
+            st === "HOLD_SHORT_QUEUE" ||
+            (!st && p.phase === "TAXI_OUT"))) ||
+        (toHere &&
+          (st === "HOLD_CROSSING_RUNWAY" ||
+            st === "TAXI_TO_GATE" ||
+            (!st && p.phase === "TAXI_IN")))
+      ) {
+        taxiHoldCount++;
+      }
+
+      if (
+        toHere &&
+        (st === "LANDING_ROLLOUT" || (!st && p.phase === "LANDING"))
+      ) {
+        landingCount++;
+      }
+
+      if (
+        fromHere &&
+        (st === "TAKEOFF_ROLL" || (!st && p.phase === "TAKEOFF"))
+      ) {
+        departingCount++;
+      }
+
+      if (
+        toHere &&
+        (st === "ENROUTE_CRUISE" ||
+          st === "APPROACH_QUEUE" ||
+          st === "LANDING_ROLLOUT" ||
+          (!st && (p.phase === "CRUISE" || p.phase === "LANDING")))
+      ) {
+        inboundCount++;
+      }
+    }
+  } else if (atc) {
+    taxiHoldCount =
+      (Array.isArray(atc.taxiwayOccupants) ? atc.taxiwayOccupants.length : 0) +
+      (Array.isArray(atc.crossingQueue)
+        ? atc.crossingQueue.length
+        : Array.isArray(atc.runwayCrossQueue)
+          ? atc.runwayCrossQueue.length
+          : 0);
+    if (atc.arrRunwayBusyBy != null) landingCount = 1;
+    if (atc.depRunwayBusyBy != null) departingCount = 1;
+    inboundCount =
+      (Array.isArray(atc.approachQueue)
+        ? atc.approachQueue.length
+        : Array.isArray(atc.inboundQueue)
+          ? atc.inboundQueue.length
+          : 0) + landingCount;
+  }
+
+  const activeDir =
+    (atc?.activeSign ?? liveAirport.activeSign ?? 1) === -1
+      ? "Upwind Rev"
+      : "Upwind Fwd";
+  const gateFacilityType = liveAirport.isHub
+    ? "Jetbridge"
+    : liveAirport.airportClass === "CRG"
+      ? "Cargo Ramp"
+      : "Apron";
+
+  const runwaySummary = `${liveAirport.runwayCount} Parallel • ${liveAirport.runwayLabel} (${activeDir})`;
+  const gateSummary = `${occupiedGates} / ${totalGates} Occupied${reservedGates > 0 ? ` (${reservedGates} Rsv)` : ""} • ${gateFacilityType}`;
+
+  const atcParts = [`${taxiHoldCount} Taxiing`];
+  if (landingCount > 0) atcParts.push(`${landingCount} Landing`);
+  if (departingCount > 0) atcParts.push(`${departingCount} Takeoff`);
+  atcParts.push(`${inboundCount} Inbound`);
+  const atcSummary = atcParts.join(" • ");
+
+  return {
+    liveAirport,
+    activeDir,
+    runwaySummary,
+    occupiedGates,
+    reservedGates,
+    totalGates,
+    gateFacilityType,
+    gateSummary,
+    taxiHoldCount,
+    landingCount,
+    departingCount,
+    inboundCount,
+    atcSummary,
+  };
+}
 const BaseElement =
   typeof HTMLElement !== "undefined"
     ? HTMLElement
@@ -443,6 +607,38 @@ export class EntityInspectorElement extends BaseElement {
   }
 
   /**
+   * Updates live telemetry spans inside an open airport inspector card without rebuilding the DOM.
+   *
+   * @param {ProceduralLogisticsWorld | null} [world]
+   * @param {any[] | null} [overridePlanes]
+   */
+  refreshLiveStats(world = null, overridePlanes = null) {
+    const inspected = this.options?.store?.getState().inspected;
+    if (!inspected || inspected.type !== "airport" || !inspected.entity) return;
+
+    const effectiveWorld =
+      world || (this.options?.getWorld ? this.options.getWorld() : null);
+    const status = describeAirportLiveStatus(
+      /** @type {Airport} */ (inspected.entity),
+      effectiveWorld,
+      overridePlanes,
+    );
+
+    const rwyEl = this.querySelector("#inspRunwayStats");
+    if (rwyEl && rwyEl.textContent !== status.runwaySummary) {
+      rwyEl.textContent = status.runwaySummary;
+    }
+    const gateEl = this.querySelector("#inspGateStats");
+    if (gateEl && gateEl.textContent !== status.gateSummary) {
+      gateEl.textContent = status.gateSummary;
+    }
+    const atcEl = this.querySelector("#inspAtcStats");
+    if (atcEl && atcEl.textContent !== status.atcSummary) {
+      atcEl.textContent = status.atcSummary;
+    }
+  }
+
+  /**
    * @param {Airport} entity
    * @param {ProceduralLogisticsWorld | null} world
    * @param {HTMLElement | null} badge
@@ -451,128 +647,43 @@ export class EntityInspectorElement extends BaseElement {
    * @param {HTMLElement | null} body
    */
   _renderAirport(entity, world, badge, code, title, body) {
+    const status = describeAirportLiveStatus(entity, world);
+    const liveEntity = status.liveAirport;
     const hostTown =
-      world?.towns && entity.hostTownId != null
-        ? world.towns[entity.hostTownId]
+      world?.towns && liveEntity.hostTownId != null
+        ? world.towns[liveEntity.hostTownId]
         : null;
     if (badge) {
-      badge.textContent = entity.classLabel.toUpperCase();
+      badge.textContent = liveEntity.classLabel.toUpperCase();
       badge.className =
         "text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-[#e85c90] text-white tracking-wide";
     }
     if (code) {
-      code.textContent = `IATA ${entity.iata} • (${Math.round(entity.x)}, ${Math.round(entity.y)})`;
+      code.textContent = `IATA ${liveEntity.iata} • (${Math.round(liveEntity.x)}, ${Math.round(liveEntity.y)})`;
     }
     if (title) {
-      title.textContent = entity.name;
+      title.textContent = liveEntity.name;
     }
     if (body) {
-      /** @type {any} */
-      const atc = /** @type {any} */ (entity).atc;
-      /** @type {any[]} */
-      const planes =
-        typeof window !== "undefined" &&
-        /** @type {any} */ (window).simulator?.planes
-          ? /** @type {any} */ (window).simulator.planes
-          : [];
-
-      const totalGates = atc?.gates?.length || (entity.isHub ? 7 : 4);
-      let occupiedGates = 0;
-      if (atc?.gates && Array.isArray(atc.gates)) {
-        occupiedGates = atc.gates.filter(
-          (/** @type {any} */ g) =>
-            g.state === "OCCUPIED" || g.state === "RESERVED",
-        ).length;
-      } else {
-        occupiedGates = planes.filter((/** @type {any} */ p) => {
-          const isHere =
-            (p.origin?.id === entity.id &&
-              (p.phase === "GATE_DWELL" ||
-                p.state === "GATE_LOADING" ||
-                p.state === "PUSHBACK_HOLD")) ||
-            (p.dest?.id === entity.id &&
-              (p.phase === "GATE_DWELL" || p.state === "GATE_LOADING"));
-          return isHere;
-        }).length;
-        occupiedGates = Math.min(occupiedGates, totalGates);
-      }
-
-      let taxiHoldCount = 0;
-      if (atc?.taxiwayOccupants && Array.isArray(atc.taxiwayOccupants)) {
-        taxiHoldCount = atc.taxiwayOccupants.length;
-        if (Array.isArray(atc.runwayCrossQueue)) {
-          taxiHoldCount += atc.runwayCrossQueue.length;
-        } else if (Array.isArray(atc.crossingQueue)) {
-          taxiHoldCount += atc.crossingQueue.length;
-        } else {
-          const crossing = planes.filter(
-            (/** @type {any} */ p) =>
-              (p.origin?.id === entity.id || p.dest?.id === entity.id) &&
-              p.state === "HOLD_CROSSING_RUNWAY",
-          ).length;
-          taxiHoldCount += crossing;
-        }
-      } else {
-        taxiHoldCount = planes.filter((/** @type {any} */ p) => {
-          const isHere = p.origin?.id === entity.id || p.dest?.id === entity.id;
-          const alt = p.altitude ?? 0;
-          return (
-            isHere &&
-            alt <= 0.001 &&
-            (p.phase === "TAXI_OUT" ||
-              p.phase === "TAXI_IN" ||
-              p.state === "TAXI_TO_RUNWAY" ||
-              p.state === "HOLD_SHORT_QUEUE" ||
-              p.state === "HOLD_CROSSING_RUNWAY" ||
-              p.state === "TAXI_TO_GATE")
-          );
-        }).length;
-      }
-
-      let inboundCount = 0;
-      if (typeof atc?.approachQueue?.length === "number") {
-        inboundCount = atc.approachQueue.length;
-      } else if (typeof atc?.inboundQueue?.length === "number") {
-        inboundCount = atc.inboundQueue.length;
-      } else {
-        inboundCount = planes.filter((/** @type {any} */ p) => {
-          if (p.dest?.id !== entity.id) return false;
-          const state = p.state || p.phase;
-          return (
-            state === "ENROUTE_CRUISE" ||
-            state === "APPROACH_QUEUE" ||
-            state === "LANDING_ROLLOUT" ||
-            p.phase === "CRUISE" ||
-            p.phase === "LANDING"
-          );
-        }).length;
-      }
-
-      const activeDir =
-        (atc?.activeSign ?? 1) === -1 ? "Upwind Rev" : "Upwind Fwd";
-      const gateFacilityType = entity.isHub
-        ? "Jetbridge"
-        : entity.airportClass === "CRG"
-          ? "Cargo Ramp"
-          : "Apron";
-
       const acceptsWide =
-        entity.acceptsWidebody ??
-        (entity.isHub || entity.airportClass === "CRG");
+        liveEntity.acceptsWidebody ??
+        (liveEntity.isHub || liveEntity.airportClass === "CRG");
       const fleetCapability = acceptsWide
         ? "Wide-Body Freighter + Feeder + Jet"
         : "Feeder Turboprop + Regional Jet (No Wide-Body)";
-      const intlTrade = `Intl Trade: ${entity.importsCompleted || 0} Imp · ${entity.exportsCompleted || 0} Exp`;
+      const intlTrade = `Intl Trade: ${liveEntity.importsCompleted || 0} Imp · ${liveEntity.exportsCompleted || 0} Exp`;
 
       const gatewayLinks = (world?.cargoLinks || []).filter(
-        (l) => l.from?.airportId === entity.id || l.to?.airportId === entity.id,
+        (l) =>
+          l.from?.airportId === liveEntity.id ||
+          l.to?.airportId === liveEntity.id,
       );
 
       let gatewayLinksHtml = "";
       if (gatewayLinks.length > 0) {
         const linkRows = gatewayLinks
           .map((link) => {
-            const isOut = link.from?.airportId === entity.id;
+            const isOut = link.from?.airportId === liveEntity.id;
             const partner = isOut ? link.to : link.from;
             const pInfo = describeBuildingDossier(partner, world);
             const distTiles = (link.points || []).length;
@@ -611,23 +722,23 @@ export class EntityInspectorElement extends BaseElement {
       <div class="divide-y divide-stone-300/60 border-y border-stone-300/60">
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">Runways</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">${entity.runwayCount} Parallel • ${entity.runwayLabel} (${activeDir})</span>
+          <span id="inspRunwayStats" class="mono font-bold text-[#36383e] tabular-nums">${status.runwaySummary}</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">Gate Stands</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">${occupiedGates} / ${totalGates} Occupied • ${gateFacilityType}</span>
+          <span id="inspGateStats" class="mono font-bold text-[#36383e] tabular-nums">${status.gateSummary}</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">ATC & Taxi Queue</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">${taxiHoldCount} Taxiing • ${inboundCount} Inbound</span>
+          <span id="inspAtcStats" class="mono font-bold text-[#36383e] tabular-nums">${status.atcSummary}</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">Approach Cone</span>
-          <span class="mono font-bold text-emerald-700 tabular-nums">${entity.approachClearance}% Clear</span>
+          <span class="mono font-bold text-emerald-700 tabular-nums">${liveEntity.approachClearance}% Clear</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">Expressway Spur</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">Motorway ${entity.motorwayId || 1} (${entity.distToCBD} tiles to CBD)</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums">Motorway ${liveEntity.motorwayId || 1} (${liveEntity.distToCBD} tiles to CBD)</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">Fleet Capability</span>

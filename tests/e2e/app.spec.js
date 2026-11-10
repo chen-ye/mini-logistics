@@ -109,13 +109,32 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
       }
     }
 
-    // Open Entity Inspector on primary airport and navigate to host municipality & facility
+    // Open Entity Inspector on primary airport and verify live taxi/landing/gate telemetry updates
     await page.evaluate(() => {
       const ap = window.currentWorld?.airports[0];
       if (ap) window.openEntityInspector("airport", ap, true);
     });
     await expect(page.locator("#inspectorCard")).toBeVisible();
     await expect(page.locator("#inspCode")).toContainText("IATA");
+    await expect(page.locator("#inspGateStats")).toContainText("Occupied");
+    await expect(page.locator("#inspAtcStats")).toContainText("Taxiing");
+
+    const updatedInBrowser = await page.evaluate(() => {
+      const gateEl = document.getElementById("inspGateStats");
+      const atcEl = document.getElementById("inspAtcStats");
+      const seen = new Set();
+      for (let i = 0; i < 240; i++) {
+        window.simulator?.update(0.1, 1.0);
+        const insp =
+          /** @type {import("../../src/inspector-component.js").EntityInspectorElement | null} */ (
+            document.querySelector("ml-entity-inspector")
+          );
+        insp?.refreshLiveStats(window.currentWorld, window.simulator?.planes);
+        seen.add(`${gateEl?.textContent}|${atcEl?.textContent}`);
+      }
+      return seen.size;
+    });
+    expect(updatedInBrowser).toBeGreaterThan(1);
 
     const townJumpBtn = page.locator("#inspBody [data-jump-town]").first();
     if ((await townJumpBtn.count()) > 0) {
