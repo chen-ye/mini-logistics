@@ -1724,6 +1724,16 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
             expect(
               distToAirportGroundPath(refAp, p.x, p.y),
             ).toBeLessThanOrEqual(0.38);
+          } else if (
+            p.altitude > 0 &&
+            step > 1e-4 &&
+            (p.state === "TAKEOFF_ROLL" ||
+              p.state === "ENROUTE_CRUISE" ||
+              p.state === "APPROACH_QUEUE" ||
+              p.state === "LANDING_ROLLOUT")
+          ) {
+            const kappaAir = dAng / step;
+            expect(kappaAir).toBeLessThanOrEqual(0.42);
           }
 
           // 4. Bounded Physical Acceleration (dv/dt) & Monotonic Straightaway Takeoff Roll
@@ -1928,4 +1938,227 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
       expect(seenGateSummaries.size).toBeGreaterThan(1);
     }
   }, 20000);
+
+  test("Stabilized Departure, Enroute & Arrival G1 Tangency & Airborne Curvature Invariants", () => {
+    const pipeline = createWorldPipeline();
+
+    /**
+     * Asserts that all consecutive segments across TAKEOFF -> CRUISE, CRUISE -> CRUISE,
+     * and CRUISE -> LANDING have discrete turn angle <= 12 deg (cos >= 0.978).
+     * @param {import("../../src/types.js").FlightTrack} track
+     */
+    const assertTrackAirborneTangency = (track) => {
+      const { pts } = track;
+      const isAirPhase = (/** @type {string} */ ph) =>
+        ph === "TAKEOFF" || ph === "CRUISE" || ph === "LANDING";
+      for (let i = 1; i < pts.length - 1; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        if (
+          !isAirPhase(p0.phase) ||
+          !isAirPhase(p1.phase) ||
+          !isAirPhase(p2.phase)
+        ) {
+          continue;
+        }
+        const dx0 = p1.x - p0.x;
+        const dy0 = p1.y - p0.y;
+        const dx1 = p2.x - p1.x;
+        const dy1 = p2.y - p1.y;
+        const l0 = Math.hypot(dx0, dy0);
+        const l1 = Math.hypot(dx1, dy1);
+        if (l0 < 1e-4 || l1 < 1e-4) continue;
+        const cosTurn = (dx0 * dx1 + dy0 * dy1) / (l0 * l1);
+        expect(cosTurn).toBeGreaterThanOrEqual(0.978);
+      }
+    };
+
+    // 1. Synthetic extreme airport pairs: short-range, 180-deg downwind departure, 180-deg downwind arrival, S-turn, and external corridors
+    const syntheticPairs = [
+      // Short-range coaxial & short-range laterally/angularly offset pairs
+      [
+        {
+          id: 1,
+          x: 60,
+          y: 80,
+          halfLen: 10,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: 1,
+          isHub: false,
+          airportClass: "REG",
+        },
+        {
+          id: 2,
+          x: 105,
+          y: 85,
+          halfLen: 10,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: 1,
+          isHub: false,
+          airportClass: "REG",
+        },
+      ],
+      [
+        {
+          id: 1,
+          x: 60,
+          y: 80,
+          halfLen: 10,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: 1,
+          isHub: false,
+          airportClass: "REG",
+        },
+        {
+          id: 2,
+          x: 105,
+          y: 80,
+          halfLen: 10,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: 1,
+          isHub: false,
+          airportClass: "REG",
+        },
+      ],
+      // 180-degree downwind departure AND 180-degree downwind arrival (origin at x=200 taking off +x toward dest at x=60 landing +x)
+      [
+        {
+          id: 1,
+          x: 200,
+          y: 100,
+          halfLen: 14,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: 1,
+          isHub: true,
+          airportClass: "HUB",
+        },
+        {
+          id: 2,
+          x: 60,
+          y: 110,
+          halfLen: 14,
+          angleRad: 0,
+          apronSide: -1,
+          activeSign: 1,
+          isHub: true,
+          airportClass: "HUB",
+        },
+      ],
+      // Opposing headings (head-on departure/arrival requiring base-to-final U-turn)
+      [
+        {
+          id: 1,
+          x: 70,
+          y: 100,
+          halfLen: 12,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: -1,
+          isHub: false,
+          airportClass: "CRG",
+        },
+        {
+          id: 2,
+          x: 190,
+          y: 130,
+          halfLen: 12,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: -1,
+          isHub: false,
+          airportClass: "CRG",
+        },
+      ],
+      // Perpendicular crosswind
+      [
+        {
+          id: 1,
+          x: 80,
+          y: 70,
+          halfLen: 10,
+          angleRad: 0,
+          apronSide: 1,
+          activeSign: 1,
+          isHub: false,
+          airportClass: "REG",
+        },
+        {
+          id: 2,
+          x: 160,
+          y: 160,
+          halfLen: 14,
+          angleRad: Math.PI * 0.5,
+          apronSide: 1,
+          activeSign: -1,
+          isHub: true,
+          airportClass: "HUB",
+        },
+      ],
+    ];
+
+    for (const [apA, apB] of syntheticPairs) {
+      for (const oSign of /** @type {const} */ ([1, -1])) {
+        for (const dSign of /** @type {const} */ ([1, -1])) {
+          const track = buildFlightTrack(
+            /** @type {any} */ (apA),
+            /** @type {any} */ (apB),
+            { oSign, dSign },
+          );
+          assertTrackAirborneTangency(track);
+        }
+      }
+      const extFromA = createExternalEndpoint(/** @type {any} */ (apA), 0);
+      assertTrackAirborneTangency(
+        buildFlightTrack(/** @type {any} */ (apA), extFromA),
+      );
+      assertTrackAirborneTangency(
+        buildFlightTrack(extFromA, /** @type {any} */ (apA)),
+      );
+    }
+
+    // 2. Benchmark world airport pairs (continental + island-hopper)
+    for (const [seed, archetype] of /** @type {const} */ ([
+      ["OTTD-METRO-84", "confluence"],
+      ["ISLAND-HOP-101", "island-hopper"],
+    ])) {
+      const world = pipeline({
+        seed,
+        worldSize: archetype === "island-hopper" ? "standard" : "compact",
+        archetype,
+        terrainAlgo: "tectonic-fbm",
+        hydrologyAlgo: "thalweg-astar",
+        airportMix: "hub-reg-cargo",
+        includeIntermediateRamps: true,
+        waterCoverage: 48,
+        townCount: 14,
+        buildingDensity: 200,
+        airportCount: 3,
+        windAxis: -1,
+      });
+
+      for (const apA of world.airports) {
+        initAirportATC(apA, world.windVector);
+      }
+
+      for (const apA of world.airports) {
+        const ext = createExternalEndpoint(apA, 0, world.W, world.H);
+        assertTrackAirborneTangency(buildFlightTrack(apA, ext));
+        assertTrackAirborneTangency(buildFlightTrack(ext, apA));
+        for (const apB of world.airports) {
+          if (apA.id === apB.id) continue;
+          const track = buildFlightTrack(apA, apB, {
+            oSign: apA.activeSign,
+            dSign: apB.activeSign,
+          });
+          assertTrackAirborneTangency(track);
+        }
+      }
+    }
+  });
 });

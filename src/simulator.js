@@ -142,6 +142,10 @@ function stepGroundCarrot(
   maxKappaRate = 5.5,
 ) {
   const gearDir = p.gearDir ?? 1;
+  const isAirborne = (p.altitude ?? 0) > 0;
+  const effMaxKappa = isAirborne
+    ? Math.min(maxKappa, 0.38, 32.0 / Math.max(4.0, (p.speed ?? 0) ** 2))
+    : maxKappa;
   const motionAng = gearDir < 0 ? normalizeAngle(p.ang + Math.PI) : p.ang;
   const alpha = normalizeAngle(
     Math.atan2(carrotY - p.y, carrotX - p.x) - motionAng,
@@ -150,8 +154,8 @@ function stepGroundCarrot(
   const rawKappa =
     dCarrot > 1e-3 ? (2 * Math.sin(alpha)) / Math.max(0.28, dCarrot) : 0;
   const targetKappa = Math.max(
-    -maxKappa,
-    Math.min(maxKappa, gearDir * rawKappa),
+    -effMaxKappa,
+    Math.min(effMaxKappa, gearDir * rawKappa),
   );
   let nextKappa = moveTowards(
     p.steerKappa ?? 0,
@@ -159,8 +163,8 @@ function stepGroundCarrot(
     maxKappaRate * effDt,
   );
   const prevOmega = p._groundOmega ?? 0;
-  if ((p.altitude ?? 0) === 0 && p.speed > 1e-3) {
-    const maxAngAccel = 11.5;
+  if (p.speed > 1e-3) {
+    const maxAngAccel = isAirborne ? 14.0 : 11.5;
     const limOmega = maxAngAccel * effDt;
     const desiredOmega = nextKappa * gearDir * p.speed;
     const clampedOmega = Math.max(
@@ -168,8 +172,8 @@ function stepGroundCarrot(
       Math.min(prevOmega + limOmega, desiredOmega),
     );
     nextKappa = Math.max(
-      -maxKappa,
-      Math.min(maxKappa, clampedOmega / (gearDir * p.speed)),
+      -effMaxKappa,
+      Math.min(effMaxKappa, clampedOmega / (gearDir * p.speed)),
     );
   }
   p.steerKappa = nextKappa;
@@ -887,22 +891,114 @@ export function buildFlightTrack(origin, dest, options = {}) {
     sy = pClimbOut.y;
   }
 
-  // 3. CRUISE
-  let ex = dest.x;
-  let ey = dest.y;
+  // 3. CRUISE (Dubins-style G1 departure turn arc + collinear enroute Bezier + arrival base-to-final turn arc)
+  const rawSx = sx;
+  const rawSy = sy;
+  let rawEx = dest.x;
+  let rawEy = dest.y;
   /** @type {{ x: number, y: number } | null} */
   let pAppEntry = null;
 
-  if (dest.isExternal) {
-    ex = dest.x;
-    ey = dest.y;
-  } else {
+  if (!dest.isExternal) {
     const dApproachLen = dest.approachLen || 14;
     const dEntryDist = dHalfLen * (dIsHub ? 0.88 : 1.0) + dApproachLen * 0.75;
     const dEntryX = -dSign * dEntryDist;
     pAppEntry = toWorld(dest, dEntryX, arrRwyY);
-    ex = pAppEntry.x;
-    ey = pAppEntry.y;
+    rawEx = pAppEntry.x;
+    rawEy = pAppEntry.y;
+  }
+
+  const oCos = Math.cos(oAng);
+  const oSin = Math.sin(oAng);
+  const dCos = Math.cos(dAng);
+  const dSin = Math.sin(dAng);
+  const thetaO = Math.atan2(oSin * oSign, oCos * oSign);
+  const thetaD = Math.atan2(dSin * dSign, dCos * dSign);
+  const rawD = Math.hypot(rawEx - rawSx, rawEy - rawSy) || 1;
+  const thetaChord = Math.atan2(rawEy - rawSy, rawEx - rawSx);
+
+  const rDep = Math.min(7.5, rawD * 0.25);
+  const rArr = Math.min(7.5, rawD * 0.25);
+  const maxTurn =
+    rawD < 24
+      ? Math.min(0.72 * Math.PI, (rawD / 24) * 0.25 * Math.PI)
+      : 0.72 * Math.PI;
+
+  let deltaDep = 0;
+  if (!origin.isExternal) {
+    let dThetaDep = normalizeAngle(thetaChord - thetaO);
+    if (Math.abs(dThetaDep) > 0.78 * Math.PI) {
+      dThetaDep = -oSide * oSign * Math.abs(dThetaDep);
+    }
+    if (Math.abs(dThetaDep) > 0.08) {
+      deltaDep = Math.max(-maxTurn, Math.min(maxTurn, dThetaDep));
+    }
+  }
+
+  let deltaArr = 0;
+  if (!dest.isExternal) {
+    let dThetaArr = normalizeAngle(thetaD - thetaChord);
+    if (Math.abs(dThetaArr) > 0.78 * Math.PI) {
+      dThetaArr = -dSide * dSign * Math.abs(dThetaArr);
+    }
+    if (Math.abs(dThetaArr) > 0.08) {
+      deltaArr = Math.max(-maxTurn, Math.min(maxTurn, dThetaArr));
+    }
+  }
+
+  const climbAlt = SIM_CONFIG.AVIATION.climbOutAlt;
+  const maxAlt = SIM_CONFIG.AVIATION.cruiseAlt;
+  const hasDepArc = !origin.isExternal && Math.abs(deltaDep) > 0;
+  const hasArrArc = !dest.isExternal && Math.abs(deltaArr) > 0;
+  const depEndAlt = hasDepArc
+    ? climbAlt + (maxAlt - climbAlt) * 0.16
+    : origin.isExternal
+      ? maxAlt
+      : climbAlt;
+  const arrStartAlt = hasArrArc
+    ? climbAlt + (maxAlt - climbAlt) * 0.16
+    : dest.isExternal
+      ? maxAlt
+      : climbAlt;
+
+  if (hasDepArc) {
+    const depArcLen = rDep * Math.abs(deltaDep);
+    const depSteps = Math.max(
+      2,
+      Math.ceil(Math.max(depArcLen / 0.85, Math.abs(deltaDep) / 0.11)),
+    );
+    const sDep = Math.sign(deltaDep);
+    for (let i = 1; i <= depSteps; i++) {
+      const u = i / depSteps;
+      const ang = thetaO + u * deltaDep;
+      const ax = rawSx + rDep * sDep * (Math.sin(ang) - Math.sin(thetaO));
+      const ay = rawSy - rDep * sDep * (Math.cos(ang) - Math.cos(thetaO));
+      rawPts.push({
+        x: ax,
+        y: ay,
+        altitude: climbAlt + (depEndAlt - climbAlt) * u,
+        phase: "CRUISE",
+        speed: cruiseSpeed,
+      });
+    }
+    sx =
+      rawSx +
+      rDep *
+        Math.sign(deltaDep) *
+        (Math.sin(thetaO + deltaDep) - Math.sin(thetaO));
+    sy =
+      rawSy -
+      rDep *
+        Math.sign(deltaDep) *
+        (Math.cos(thetaO + deltaDep) - Math.cos(thetaO));
+  }
+
+  let ex = rawEx;
+  let ey = rawEy;
+  if (hasArrArc) {
+    const sArr = Math.sign(deltaArr);
+    ex = rawEx + rArr * sArr * (Math.sin(thetaD - deltaArr) - Math.sin(thetaD));
+    ey = rawEy - rArr * sArr * (Math.cos(thetaD - deltaArr) - Math.cos(thetaD));
   }
 
   const cdx = ex - sx;
@@ -910,39 +1006,29 @@ export function buildFlightTrack(origin, dest, options = {}) {
   const cDist = Math.hypot(cdx, cdy) || 1;
   const ux = cdx / cDist;
   const uy = cdy / cDist;
-  const climbPull = Math.min(18, Math.max(4, cDist * 0.34));
-  const oCos = Math.cos(oAng);
-  const oSin = Math.sin(oAng);
-  const dCos = Math.cos(dAng);
-  const dSin = Math.sin(dAng);
-  const oDirX = origin.isExternal ? ux : oCos * oSign;
-  const oDirY = origin.isExternal ? uy : oSin * oSign;
-  const dDirX = dest.isExternal ? ux : dCos * dSign;
-  const dDirY = dest.isExternal ? uy : dSin * dSign;
-  const oDotU = oDirX * ux + oDirY * uy;
-  const dDotU = dDirX * ux + dDirY * uy;
   const nx = -uy;
   const ny = ux;
-  const baseArc = Math.min(1.5, cDist * 0.035);
-  const oLatArc = origin.isExternal
-    ? 46.0
-    : oDotU < 0.5
-      ? Math.max(baseArc, (0.5 - oDotU) * Math.min(22, cDist * 0.28))
-      : baseArc;
-  const dLatArc = dest.isExternal
-    ? baseArc
-    : dDotU < 0.5
-      ? Math.max(baseArc, (0.5 - dDotU) * Math.min(22, cDist * 0.28))
-      : baseArc;
 
-  const c1x = sx + oDirX * climbPull + nx * oLatArc;
-  const c1y = sy + oDirY * climbPull + ny * oLatArc;
-  const c2x = ex - dDirX * climbPull + nx * dLatArc;
-  const c2y = ey - dDirY * climbPull + ny * dLatArc;
+  const tDepAng = origin.isExternal ? Math.atan2(uy, ux) : thetaO + deltaDep;
+  const tArrAng = dest.isExternal ? Math.atan2(uy, ux) : thetaD - deltaArr;
+  const tDepX = Math.cos(tDepAng);
+  const tDepY = Math.sin(tDepAng);
+  const tArrX = Math.cos(tArrAng);
+  const tArrY = Math.sin(tArrAng);
+
+  const lPull = Math.min(18, Math.max(1.5, cDist * 0.3));
+  const oExtLat = origin.isExternal ? Math.min(3.5, cDist * 0.04) : 0;
+  const dExtLat = dest.isExternal ? Math.min(3.5, cDist * 0.04) : 0;
+
+  const c1x = sx + lPull * tDepX + nx * oExtLat;
+  const c1y = sy + lPull * tDepY + ny * oExtLat;
+  const c2x = ex - lPull * tArrX + nx * dExtLat;
+  const c2y = ey - lPull * tArrY + ny * dExtLat;
   const airwayCurve = { sx, sy, c1x, c1y, c2x, c2y, ex, ey };
 
   const numCruiseSteps = Math.max(36, Math.ceil(cDist * 1.25));
-  const endStep = dest.isExternal ? numCruiseSteps : numCruiseSteps - 1;
+  const endStep =
+    dest.isExternal || hasArrArc ? numCruiseSteps : numCruiseSteps - 1;
 
   for (let k = 1; k <= endStep; k++) {
     const t = k / numCruiseSteps;
@@ -954,24 +1040,18 @@ export function buildFlightTrack(origin, dest, options = {}) {
     const bx = b0 * sx + b1 * c1x + b2 * c2x + b3 * ex;
     const by = b0 * sy + b1 * c1y + b2 * c2y + b3 * ey;
 
-    let alt = SIM_CONFIG.AVIATION.cruiseAlt;
+    let alt = maxAlt;
     if (origin.isExternal && dest.isExternal) {
-      alt = SIM_CONFIG.AVIATION.cruiseAlt;
+      alt = maxAlt;
     } else if (origin.isExternal) {
-      alt =
-        SIM_CONFIG.AVIATION.climbOutAlt +
-        (SIM_CONFIG.AVIATION.cruiseAlt - SIM_CONFIG.AVIATION.climbOutAlt) *
-          Math.cos(t * Math.PI * 0.5);
+      alt = arrStartAlt + (maxAlt - arrStartAlt) * Math.cos(t * Math.PI * 0.5);
     } else if (dest.isExternal) {
       alt =
-        SIM_CONFIG.AVIATION.climbOutAlt +
-        (SIM_CONFIG.AVIATION.cruiseAlt - SIM_CONFIG.AVIATION.climbOutAlt) *
-          Math.sin(Math.min(1, t * 1.5) * Math.PI * 0.5);
+        depEndAlt +
+        (maxAlt - depEndAlt) * Math.sin(Math.min(1, t * 1.5) * Math.PI * 0.5);
     } else {
-      alt =
-        SIM_CONFIG.AVIATION.climbOutAlt +
-        (SIM_CONFIG.AVIATION.cruiseAlt - SIM_CONFIG.AVIATION.climbOutAlt) *
-          Math.sin(t * Math.PI);
+      const baseAlt = depEndAlt * (1 - t) + arrStartAlt * t;
+      alt = baseAlt + (maxAlt - baseAlt) * Math.sin(t * Math.PI);
     }
 
     rawPts.push({
@@ -981,6 +1061,28 @@ export function buildFlightTrack(origin, dest, options = {}) {
       phase: "CRUISE",
       speed: cruiseSpeed,
     });
+  }
+
+  if (hasArrArc) {
+    const arrArcLen = rArr * Math.abs(deltaArr);
+    const arrSteps = Math.max(
+      2,
+      Math.ceil(Math.max(arrArcLen / 0.85, Math.abs(deltaArr) / 0.11)),
+    );
+    const sArr = Math.sign(deltaArr);
+    for (let i = 1; i < arrSteps; i++) {
+      const u = i / arrSteps;
+      const ang = thetaD - (1 - u) * deltaArr;
+      const ax = rawEx + rArr * sArr * (Math.sin(ang) - Math.sin(thetaD));
+      const ay = rawEy - rArr * sArr * (Math.cos(ang) - Math.cos(thetaD));
+      rawPts.push({
+        x: ax,
+        y: ay,
+        altitude: arrStartAlt + (climbAlt - arrStartAlt) * u,
+        phase: "CRUISE",
+        speed: cruiseSpeed,
+      });
+    }
   }
 
   if (!dest.isExternal && pAppEntry) {
@@ -1142,7 +1244,7 @@ function projectFlightTrackDist(track, px, py, curDist, ds) {
   const { pts, cumLen, totalLength } = track;
   const curS = sampleFlightTrack(track, curDist);
   const i0 = Math.max(0, curS.segIdx - 1);
-  const i1 = Math.min(pts.length - 2, curS.segIdx + 4);
+  const i1 = Math.min(pts.length - 2, curS.segIdx + 10);
   let bestD = Infinity;
   let bestArc = curDist;
   for (let i = i0; i <= i1; i++) {
@@ -1163,7 +1265,7 @@ function projectFlightTrackDist(track, px, py, curDist, ds) {
   }
   return Math.min(
     totalLength,
-    Math.max(curDist, Math.min(curDist + ds * 1.2 + 1e-4, bestArc)),
+    Math.max(curDist, Math.min(curDist + ds * 1.45 + 1e-4, bestArc)),
   );
 }
 
@@ -2704,7 +2806,7 @@ export class LogisticsSimulator {
           const L =
             p.altitude === 0
               ? Math.max(0.35, p.speed * 0.1)
-              : Math.max(0.45, p.speed * 0.09);
+              : Math.max(1.8, p.speed * 0.22);
           const carrot = sampleFlightTrack(p.track, p.dist + L);
           stepGroundCarrot(
             p,
@@ -2780,7 +2882,7 @@ export class LogisticsSimulator {
           );
 
           const ds = p.speed * effDt;
-          const L = Math.max(0.45, p.speed * 0.09);
+          const L = Math.max(1.8, p.speed * 0.22);
           const carrot = sampleFlightTrack(p.track, p.dist + L);
           stepGroundCarrot(p, carrot.x, carrot.y, effDt, 2.4, 18.0);
           p.dist = projectFlightTrackDist(p.track, p.x, p.y, p.dist, ds);
@@ -2926,12 +3028,16 @@ export class LogisticsSimulator {
           const qIdx = destAtc
             ? Math.max(0, destAtc.approachQueue.indexOf(p))
             : 0;
+          const isTurboprop = p.aircraftType === "FEEDER_TURBOPROP";
+          const appLandSpd = isTurboprop
+            ? (SIM_CONFIG.AVIATION.turbopropLandingSpeed ?? 9.8)
+            : SIM_CONFIG.AVIATION.landingSpeed;
           if (p._holdRAlong === undefined || p._holdRCross === undefined) {
-            p._holdRAlong = 3.6 + qIdx * 0.8;
-            p._holdRCross = 3.6 + qIdx * 0.8;
+            p._holdRAlong = 4.6 + qIdx * 0.85;
+            p._holdRCross = 4.6 + qIdx * 0.85;
           }
           const rHold = p._holdRCross;
-          const holdSpeed = SIM_CONFIG.AVIATION.landingSpeed * 0.85;
+          const holdSpeed = appLandSpd * 0.82;
           const ux = Math.cos(sample.ang);
           const uy = Math.sin(sample.ang);
           const turnSign = -(p.dest.apronSide || 1);
@@ -3002,18 +3108,18 @@ export class LogisticsSimulator {
             false,
           );
 
-          const clearingOut = sepOk && thetaProg >= nextTurn - 0.25;
+          const clearingOut = sepOk && thetaProg >= nextTurn - 0.55;
           let carrotX = sample.x;
           let carrotY = sample.y;
           if (clearingOut) {
             const lookSample = sampleFlightTrack(
               p.track,
-              p.dist + Math.max(0.6, p.speed * 0.1),
+              p.dist + Math.max(1.8, p.speed * 0.2),
             );
             carrotX = lookSample.x;
             carrotY = lookSample.y;
           } else {
-            const lookTheta = thetaProg + 0.35;
+            const lookTheta = thetaProg + 0.52;
             carrotX =
               sample.x +
               rHold * Math.sin(lookTheta) * ux +
@@ -3099,7 +3205,7 @@ export class LogisticsSimulator {
           const L =
             p.altitude === 0
               ? Math.max(0.35, p.speed * 0.1)
-              : Math.max(0.45, p.speed * 0.09);
+              : Math.max(1.8, p.speed * 0.22);
           const carrot = sampleFlightTrack(p.track, p.dist + L);
           stepGroundCarrot(
             p,
