@@ -711,7 +711,7 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     );
     expect(hubTakeoffs.length).toBeGreaterThan(0);
     for (const p of hubTakeoffs) {
-      expect(Math.abs(p.y - hubOrigin.y - -0.85)).toBeLessThan(1e-4);
+      expect(Math.abs(p.y - hubOrigin.y - -1.72)).toBeLessThan(1e-4);
     }
 
     const hubLandings = trackHub.pts.filter(
@@ -719,7 +719,7 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     );
     expect(hubLandings.length).toBeGreaterThan(0);
     for (const p of hubLandings) {
-      expect(Math.abs(p.y - hubDest.y - -2.55)).toBeLessThan(1e-4);
+      expect(Math.abs(p.y - hubDest.y - -3.35)).toBeLessThan(1e-4);
     }
 
     const regOrigin = {
@@ -747,7 +747,7 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     );
     expect(regTakeoffs.length).toBeGreaterThan(0);
     for (const p of regTakeoffs) {
-      expect(Math.abs(p.y - regOrigin.y - -0.58)).toBeLessThan(1e-4);
+      expect(Math.abs(p.y - regOrigin.y - -1.68)).toBeLessThan(1e-4);
     }
 
     const regLandings = trackReg.pts.filter(
@@ -755,7 +755,7 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     );
     expect(regLandings.length).toBeGreaterThan(0);
     for (const p of regLandings) {
-      expect(Math.abs(p.y - regDest.y - -0.58)).toBeLessThan(1e-4);
+      expect(Math.abs(p.y - regDest.y - -1.68)).toBeLessThan(1e-4);
     }
   });
 
@@ -891,6 +891,11 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
       for (const ap of world.airports) {
         expect(ap.atc).toBeDefined();
         expect(ap.atc?.gates.length).toBe(ap.isHub ? 7 : 4);
+        for (const g of ap.atc?.gates ?? []) {
+          expect(Math.abs(g.ly - (ap.atc?.taxiY ?? 0))).toBeGreaterThanOrEqual(
+            1.4,
+          );
+        }
       }
 
       const minSep = SIM_CONFIG.AVIATION.minTaxiSeparation;

@@ -41,7 +41,7 @@ function normalizeAngle(a) {
 function capturePoseResidual(p, newRefX, newRefY, newRefAng) {
   const dx = p.x - newRefX;
   const dy = p.y - newRefY;
-  if (Math.hypot(dx, dy) > 1.35) {
+  if (Math.hypot(dx, dy) > 1.85) {
     p._resX = 0;
     p._resY = 0;
     p._resAng = 0;
@@ -99,10 +99,10 @@ export function initAirportATC(ap, windVector = null) {
   const isHub = ap.isHub ?? false;
   const rwyLen = ap.halfLen * 2;
   const termW = rwyLen * (isHub ? 0.46 : 0.4);
-  const taxiY = side * (isHub ? 0.4 : 0.45);
-  const termY = side * (isHub ? 1.05 : 0.95);
-  // Hold short on the cross-field connector clear of the runway asphalt edge (±0.575..0.675 tiles)
-  const holdShortY = side * (isHub ? 0.16 : 0.24);
+  const taxiY = -side * (isHub ? 0.6 : 0.62);
+  const termY = side * (isHub ? 0.86 : 0.8);
+  // Hold short on the cross-field connector clear of the runway asphalt edge
+  const holdShortY = -side * (isHub ? 0.94 : 0.96);
 
   const exitCrossX = activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
   const depCrossX = -activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
@@ -198,8 +198,8 @@ export function taxiSpinePosToWorld(ap, s) {
   const depCrossX = atc
     ? atc.depCrossX
     : -activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
-  const taxiY = atc ? atc.taxiY : side * (isHub ? 0.4 : 0.45);
-  const holdShortY = atc ? atc.holdShortY : side * (isHub ? 0.16 : 0.24);
+  const taxiY = atc ? atc.taxiY : -side * (isHub ? 0.6 : 0.62);
+  const holdShortY = atc ? atc.holdShortY : -side * (isHub ? 0.94 : 0.96);
   const spineLen = Math.abs(depCrossX - exitCrossX);
   const holdShortS = atc
     ? atc.holdShortS
@@ -211,7 +211,7 @@ export function taxiSpinePosToWorld(ap, s) {
   let ly = 0;
   let ang = 0;
 
-  const crossFromY = -side * (isHub ? 1.7 : 0.58);
+  const crossFromY = -side * (isHub ? 3.35 : 1.68);
   const crossSpan = Math.abs(taxiY - crossFromY);
 
   if (clampedS < -crossSpan) {
@@ -240,6 +240,39 @@ export function taxiSpinePosToWorld(ap, s) {
 
   const w = toWorld(ap, lx, ly);
   return { x: w.x, y: w.y, ang };
+}
+
+/**
+ * Computes the world pose for a taxiway occupant, smoothly turning 90 degrees
+ * off the parallel taxiway along the gate lead-in line during the final 1.35 tiles of TAXI_TO_GATE.
+ * @param {Airport | PlaneEndpoint} ap
+ * @param {PlaneAgent} occ
+ * @returns {{ x: number, y: number, ang: number }}
+ */
+function taxiOccupantWorldPose(ap, occ) {
+  const wPos = taxiSpinePosToWorld(ap, occ.taxiS ?? 0);
+  if (
+    occ.state === "TAXI_TO_GATE" &&
+    occ.reservedGateId !== null &&
+    occ.reservedGateId !== undefined &&
+    ap.atc
+  ) {
+    const gate = ap.atc.gates.find((g) => g.id === occ.reservedGateId);
+    if (gate) {
+      const remS = Math.max(0, gate.taxiS - (occ.taxiS ?? 0));
+      const turnSpan = 1.35;
+      if (remS <= turnSpan) {
+        const t = 1 - remS / turnSpan;
+        const u = t * t * (3 - 2 * t);
+        return {
+          x: wPos.x + (gate.worldX - wPos.x) * u,
+          y: wPos.y + (gate.worldY - wPos.y) * u,
+          ang: wPos.ang + normalizeAngle(gate.noseAngle - wPos.ang) * u,
+        };
+      }
+    }
+  }
+  return wPos;
 }
 
 /**
@@ -328,11 +361,11 @@ export function buildFlightTrack(origin, dest, options = {}) {
 
   // Dual-Runway Hub & Single-Runway Alignment (Phase 2)
   const oRwyLen = origin.halfLen * 2;
-  const depRwyY = oIsHub ? -oSide * 0.85 : -oSide * 0.58;
+  const depRwyY = oIsHub ? -oSide * 1.72 : -oSide * 1.68;
 
   const dBaseRwyLen = dest.halfLen * 2;
   const dRwyLen = dIsHub ? dBaseRwyLen * 0.88 : dBaseRwyLen;
-  const arrRwyY = dIsHub ? -dSide * 2.55 : -dSide * 0.58;
+  const arrRwyY = dIsHub ? -dSide * 3.35 : -dSide * 1.68;
 
   const oTermW = oRwyLen * (oIsHub ? 0.46 : 0.4);
   const dTermW = dBaseRwyLen * (dIsHub ? 0.46 : 0.4);
@@ -351,10 +384,10 @@ export function buildFlightTrack(origin, dest, options = {}) {
     options.gateLx !== undefined
       ? options.gateLx
       : oFracs[gateIndex % oFracs.length] * oTermW;
-  const oTermY = oSide * (oIsHub ? 1.05 : 0.95);
-  const oTaxiY = oSide * (oIsHub ? 0.4 : 0.45);
+  const oTermY = oSide * (oIsHub ? 0.86 : 0.8);
+  const oTaxiY = -oSide * (oIsHub ? 0.6 : 0.62);
   const oCrossTaxiX = -oSign * (oIsHub ? 0.41 : 0.38) * oRwyLen;
-  const oHoldShortY = oSide * (oIsHub ? 0.16 : 0.24);
+  const oHoldShortY = -oSide * (oIsHub ? 0.94 : 0.96);
 
   // Destination gate and taxi geometry (matches unscaled concourse & cross-field taxiways in drawAirports)
   const dFracs = dIsHub
@@ -366,8 +399,8 @@ export function buildFlightTrack(origin, dest, options = {}) {
     options.destGateLx !== undefined
       ? options.destGateLx
       : dFracs[gateIndex % dFracs.length] * dTermW;
-  const dTermY = dSide * (dIsHub ? 1.05 : 0.95);
-  const dTaxiY = dSide * (dIsHub ? 0.4 : 0.45);
+  const dTermY = dSide * (dIsHub ? 0.86 : 0.8);
+  const dTaxiY = -dSide * (dIsHub ? 0.6 : 0.62);
   const dExitRwyX = dSign * (dIsHub ? 0.41 * 1.04 : 0.38) * dBaseRwyLen;
   const dCrossTaxiX = dSign * (dIsHub ? 0.41 : 0.38) * dBaseRwyLen;
 
@@ -570,7 +603,7 @@ export function buildFlightTrack(origin, dest, options = {}) {
     x: pExit.x,
     y: pExit.y,
     altitude: 0,
-    phase: "LANDING",
+    phase: "TAXI_IN",
     speed: taxiSpeed,
   });
 
@@ -986,6 +1019,10 @@ export class LogisticsSimulator {
       if (originAtc) {
         originAtc.taxiwayOccupants.push(planeAgent);
         maintainTaxiwayOrder(originAtc);
+        const wPos = taxiSpinePosToWorld(origin, planeAgent.taxiS ?? 0);
+        planeAgent.x = wPos.x;
+        planeAgent.y = wPos.y;
+        planeAgent.ang = wPos.ang;
         if (state === "HOLD_SHORT_QUEUE") {
           originAtc.holdShortQueue.push(planeAgent);
         }
@@ -994,6 +1031,10 @@ export class LogisticsSimulator {
       if (dest.atc) {
         dest.atc.taxiwayOccupants.push(planeAgent);
         maintainTaxiwayOrder(dest.atc);
+        const wPos = taxiSpinePosToWorld(dest, planeAgent.taxiS ?? 0);
+        planeAgent.x = wPos.x;
+        planeAgent.y = wPos.y;
+        planeAgent.ang = wPos.ang;
       }
     }
 
@@ -1193,7 +1234,8 @@ export class LogisticsSimulator {
           atc.depRunwayBusyBy === null &&
           atc.crossingBusyBy === null &&
           atc.holdShortQueue.length === 0;
-        const startS = atc.isHub ? -2.1 : 0;
+        const headCrosser = atc.crossingQueue[0];
+        const startS = headCrosser?.taxiS ?? (atc.isHub ? -1.94 : -1.06);
         const entryClear = atc.taxiwayOccupants.every(
           (o) =>
             (o.taxiS ?? 0) - startS >= SIM_CONFIG.AVIATION.minTaxiSeparation,
@@ -1204,9 +1246,9 @@ export class LogisticsSimulator {
             if (atc.isHub) {
               atc.crossingBusyBy = crosser.id ?? null;
             }
+            crosser.taxiS = startS;
             const wPos = taxiSpinePosToWorld(ap, startS);
             capturePoseResidual(crosser, wPos.x, wPos.y, wPos.ang);
-            crosser.taxiS = startS;
             if (!atc.taxiwayOccupants.includes(crosser)) {
               atc.taxiwayOccupants.push(crosser);
               maintainTaxiwayOrder(atc);
@@ -1910,10 +1952,12 @@ export class LogisticsSimulator {
                 }
               }
             }
+            const crossSpan = destAtc ? (destAtc.isHub ? 2.75 : 1.06) : 1.06;
             const entryClear = destAtc
               ? destAtc.taxiwayOccupants.every(
                   (o) =>
-                    (o.taxiS ?? 0) >= SIM_CONFIG.AVIATION.minTaxiSeparation,
+                    (o.taxiS ?? 0) - -crossSpan >=
+                    SIM_CONFIG.AVIATION.minTaxiSeparation,
                 )
               : true;
             if (destAtc && (destAtc.isHub || !entryClear)) {
@@ -1922,21 +1966,20 @@ export class LogisticsSimulator {
               if (!destAtc.crossingQueue.includes(p)) {
                 destAtc.crossingQueue.push(p);
               }
-              const qIdx = Math.max(0, destAtc.crossingQueue.indexOf(p));
-              p.taxiS = -2.1 - qIdx * SIM_CONFIG.AVIATION.minTaxiSeparation;
+              p.taxiS = -crossSpan;
               const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
               capturePoseResidual(p, wPos.x, wPos.y, wPos.ang);
               applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
             } else {
               p.state = "TAXI_TO_GATE";
               p.phase = "TAXI_IN";
-              p.taxiS = 0;
+              p.taxiS = destAtc ? -crossSpan : 0;
               if (destAtc) {
                 if (!destAtc.taxiwayOccupants.includes(p)) {
                   destAtc.taxiwayOccupants.push(p);
                   maintainTaxiwayOrder(destAtc);
                 }
-                const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
+                const wPos = taxiOccupantWorldPose(p.dest, p);
                 capturePoseResidual(p, wPos.x, wPos.y, wPos.ang);
                 applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
               }
@@ -1948,9 +1991,9 @@ export class LogisticsSimulator {
         case "HOLD_CROSSING_RUNWAY": {
           p.phase = "TAXI_IN";
           p.altitude = 0;
-          p.speed = 0;
           const destAtc = p.dest.atc;
           if (!destAtc) {
+            p.speed = 0;
             p.state = "TAXI_TO_GATE";
             p.phase = "TAXI_IN";
             const sample = sampleFlightTrack(p.track, p.dist);
@@ -1958,7 +2001,21 @@ export class LogisticsSimulator {
             p.segIdx = sample.segIdx;
           } else {
             const qIdx = Math.max(0, destAtc.crossingQueue.indexOf(p));
-            p.taxiS = -2.1 - qIdx * SIM_CONFIG.AVIATION.minTaxiSeparation;
+            const holdTargetS =
+              (destAtc.isHub ? -1.94 : -1.06) -
+              qIdx * SIM_CONFIG.AVIATION.minTaxiSeparation;
+            const curS = p.taxiS ?? (destAtc.isHub ? -2.75 : -1.06);
+            const maxStep = SIM_CONFIG.AVIATION.taxiSpeed * effDt;
+            if (curS < holdTargetS - 1e-4) {
+              p.taxiS = Math.min(holdTargetS, curS + maxStep);
+              p.speed = SIM_CONFIG.AVIATION.taxiSpeed;
+            } else if (curS > holdTargetS + 1e-4) {
+              p.taxiS = Math.max(holdTargetS, curS - maxStep);
+              p.speed = SIM_CONFIG.AVIATION.taxiSpeed;
+            } else {
+              p.taxiS = holdTargetS;
+              p.speed = 0;
+            }
             const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
             applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
           }
@@ -2064,7 +2121,7 @@ export class LogisticsSimulator {
               continue;
             }
 
-            const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
+            const wPos = taxiOccupantWorldPose(p.dest, p);
             applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
             p.progress = Math.min(
               0.9999,
@@ -2110,7 +2167,7 @@ export class LogisticsSimulator {
       if (ap.atc) {
         maintainTaxiwayOrder(ap.atc);
         for (const occ of ap.atc.taxiwayOccupants) {
-          const wPos = taxiSpinePosToWorld(ap, occ.taxiS ?? 0);
+          const wPos = taxiOccupantWorldPose(ap, occ);
           occ.x = wPos.x + (occ._resX ?? 0);
           occ.y = wPos.y + (occ._resY ?? 0);
           occ.ang = wPos.ang + (occ._resAng ?? 0);

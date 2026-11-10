@@ -961,7 +961,7 @@ export class MiniMotorwaysRenderer {
       const cy = ap.y * ts + ts * 0.5;
       const rwyLen = ap.halfLen * 2 * ts;
       const padLen = rwyLen + ts * 1.8;
-      const padWid = ap.halfWid * 2 * ts + ts * (ap.isHub ? 1.8 : 1.2);
+      const padWid = ap.halfWid * 2 * ts + ts * (ap.isHub ? 2.1 : 1.9);
       const side = ap.apronSide;
 
       ctx.save();
@@ -979,14 +979,25 @@ export class MiniMotorwaysRenderer {
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // 2. Transit / Parking Plaza Island inside the Curbside Loop
+      // 2. Dedicated Apron Gate Parking Ramp Bay (recessed off the parallel taxiway)
       const termW = ap.isHub ? rwyLen * 0.46 : rwyLen * 0.4;
-      const termH = ts * (ap.isHub ? 1.15 : 1.02);
-      const termY = side * ts * (ap.isHub ? 1.32 : 1.18);
+      const termH = ts * (ap.isHub ? 0.76 : 0.7);
+      const termY = side * ts * (ap.isHub ? 1.66 : 1.54);
+      const apronInnerY = ap.isHub ? -side * ts * 0.6 : side * ts * 0.22;
+      const apronRampW = termW * (ap.isHub ? 0.92 : 1.02);
+      const apronTopY = Math.min(apronInnerY, termY);
+      const apronBoxH = Math.abs(termY - apronInnerY);
+      ctx.beginPath();
+      ctx.roundRect(-apronRampW * 0.5, apronTopY, apronRampW, apronBoxH, 4);
+      setSub(ctx, 2);
+      ctx.fillStyle = "#d9d5cd";
+      ctx.fill();
+
+      // 3. Transit / Parking Plaza Island inside the Curbside Loop
       const termOuterY = termY + side * (termH * 0.5);
       const loopW = termW * (ap.isHub ? 0.82 : 0.88);
-      const loopInnerY = termOuterY + side * (ts * 0.22);
-      const loopOuterY = loopInnerY + side * (ts * 1.06);
+      const loopInnerY = termOuterY + side * (ts * 0.2);
+      const loopOuterY = loopInnerY + side * (ts * 0.98);
       const loopBoxH = Math.abs(loopOuterY - loopInnerY);
 
       const plazaMidY = (loopInnerY + loopOuterY) * 0.5;
@@ -1028,14 +1039,14 @@ export class MiniMotorwaysRenderer {
       const rwyLen = ap.halfLen * 2 * ts;
       const side = ap.apronSide;
       const termW = ap.isHub ? rwyLen * 0.46 : rwyLen * 0.4;
-      const termH = ts * (ap.isHub ? 1.15 : 1.02);
-      const termY = side * ts * (ap.isHub ? 1.32 : 1.18);
+      const termH = ts * (ap.isHub ? 0.76 : 0.7);
+      const termY = side * ts * (ap.isHub ? 1.66 : 1.54);
       const termOuterY = termY + side * (termH * 0.5);
 
       const loopW = termW * (ap.isHub ? 0.82 : 0.88);
       const loopHalfW = loopW * 0.5;
-      const loopInnerY = termOuterY + side * (ts * 0.22);
-      const loopOuterY = loopInnerY + side * (ts * 1.06);
+      const loopInnerY = termOuterY + side * (ts * 0.2);
+      const loopOuterY = loopInnerY + side * (ts * 0.98);
       const loopTopY = Math.min(loopInnerY, loopOuterY);
       const loopBoxH = Math.abs(loopOuterY - loopInnerY);
       const loopR = loopBoxH * 0.48;
@@ -2029,9 +2040,9 @@ export class MiniMotorwaysRenderer {
       const cx = ap.x * ts + ts * 0.5;
       const cy = ap.y * ts + ts * 0.5;
       const rwyLen = ap.halfLen * 2 * ts;
-      const rwyWid = ts * (ap.isHub ? 1.35 : 1.15);
+      const rwyWid = ts * (ap.isHub ? 1.26 : 1.1);
       const padLen = rwyLen + ts * 1.8;
-      const padWid = ap.halfWid * 2 * ts + ts * (ap.isHub ? 1.8 : 1.2);
+      const padWid = ap.halfWid * 2 * ts + ts * (ap.isHub ? 2.1 : 1.9);
       const side = ap.apronSide;
 
       ctx.save();
@@ -2042,14 +2053,14 @@ export class MiniMotorwaysRenderer {
         // =================================================================
         // TIER 1: INTERNATIONAL DUAL-RUNWAY HUB (Parallel Runways L & R)
         // =================================================================
-        const mainRwyY = -side * (ts * 0.85);
-        const outerRwyY = -side * (ts * 2.55);
-        const centralTaxiY = side * (ts * 0.4);
+        const mainRwyY = -side * (ts * 1.72);
+        const outerRwyY = -side * (ts * 3.35);
+        const centralTaxiY = -side * (ts * 0.6);
 
         // High-speed parallel & cross-field taxiways
         setSub(ctx, 0);
         ctx.strokeStyle = "#9ca0a6";
-        ctx.lineWidth = ts * 0.42;
+        ctx.lineWidth = ts * 0.36;
         ctx.lineCap = "round";
         ctx.beginPath();
         ctx.moveTo(-rwyLen * 0.41, centralTaxiY);
@@ -2107,10 +2118,11 @@ export class MiniMotorwaysRenderer {
 
         // Multi-Wing International Terminal Concourse + Jetbridges
         const termW = rwyLen * 0.46;
-        const termH = ts * 1.15;
-        const termY = side * (ts * 1.32);
+        const termH = ts * 0.76;
+        const termY = side * (ts * 1.66);
+        const termInnerY = termY - side * (termH * 0.5);
 
-        // Jetbridge fingers extending toward central apron taxiway
+        // Jetbridge fingers extending from concourse front wall to parked aircraft nose doors
         setSub(ctx, 3);
         ctx.strokeStyle = "#7c7f87";
         ctx.lineWidth = 3.0;
@@ -2118,15 +2130,15 @@ export class MiniMotorwaysRenderer {
           const gx = g * (termW * 0.12);
           ctx.beginPath();
           ctx.moveTo(gx, termY);
-          ctx.lineTo(gx, centralTaxiY + side * (ts * 0.25));
+          ctx.lineTo(gx, termInnerY - side * (ts * 0.08));
           ctx.stroke();
         }
 
-        // Apron gate stand T-markings at the 7 jetbridge gate positions
+        // Apron gate stand lead-in lines & T-markings extending from the taxiway centerline
         setSub(ctx, 1);
         ctx.strokeStyle = "#f4c24f";
         ctx.lineWidth = 1.2;
-        const hubStandY = centralTaxiY + side * (ts * 0.35);
+        const hubStandY = side * (ts * 1.2);
         const hubStopBarHalf = ts * 0.16;
         ctx.beginPath();
         for (let g = -3; g <= 3; g++) {
@@ -2186,12 +2198,12 @@ export class MiniMotorwaysRenderer {
         // =================================================================
         // TIER 2 & 3: REGIONAL COMMERCIAL ('REG') OR AIR CARGO ('CRG')
         // =================================================================
-        const mainRwyY = -side * (ts * 0.58);
-        const taxiY = side * (ts * 0.45);
+        const mainRwyY = -side * (ts * 1.68);
+        const taxiY = -side * (ts * 0.62);
 
         setSub(ctx, 0);
         ctx.strokeStyle = "#9ca0a6";
-        ctx.lineWidth = ts * 0.38;
+        ctx.lineWidth = ts * 0.34;
         ctx.lineCap = "round";
         ctx.beginPath();
         ctx.moveTo(-rwyLen * 0.38, taxiY);
@@ -2228,10 +2240,10 @@ export class MiniMotorwaysRenderer {
         ctx.setLineDash([]);
 
         const termW = rwyLen * 0.4;
-        const termH = ts * 1.02;
-        const termY = side * (ts * 1.18);
+        const termH = ts * 0.7;
+        const termY = side * (ts * 1.54);
 
-        // Subtle yellow gate stand T-markings at the 4 gate bays
+        // Compact short yellow gate stand T-markings in the regional/cargo apron bay
         setSub(ctx, 1);
         ctx.strokeStyle = "#f4c24f";
         ctx.lineWidth = 1.2;
@@ -2239,12 +2251,13 @@ export class MiniMotorwaysRenderer {
           ap.airportClass === "CRG"
             ? [-0.42, -0.22, 0.22, 0.42]
             : [-0.36, -0.12, 0.12, 0.36];
-        const regStandY = taxiY + side * (ts * 0.35);
+        const regStandStartY = side * (ts * 0.68);
+        const regStandY = side * (ts * 1.12);
         const regStopBarHalf = ts * 0.14;
         ctx.beginPath();
         for (const frac of regFracs) {
           const gx = frac * termW;
-          ctx.moveTo(gx, taxiY);
+          ctx.moveTo(gx, regStandStartY);
           ctx.lineTo(gx, regStandY);
           ctx.moveTo(gx - regStopBarHalf, regStandY);
           ctx.lineTo(gx + regStopBarHalf, regStandY);
