@@ -5136,9 +5136,8 @@ export class MiniMotorwaysRenderer {
         : entity.resourceType
           ? `${entity.resourceType} · RAW`
           : entity.zoneType === "commercial"
-            ? entity.isCircular
-              ? "CBD HUB"
-              : "COMMERCIAL"
+            ? (entity.label || entity.subType || "").toUpperCase() ||
+              (entity.isCircular ? "CBD HUB" : "COMMERCIAL")
             : entity.mfgType
               ? `${entity.mfgType} · MFG`
               : entity.subType === "RAW"

@@ -2377,6 +2377,41 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
   );
 
   const goodsOrder = ["GROCERIES", "CONSUMER_GOODS", "HARDWARE", "ELECTRONICS"];
+  /**
+   * @param {string[]} demandedGoods
+   * @param {boolean} isCircular
+   */
+  const nameCommercialSubType = (demandedGoods, isCircular) => {
+    if (demandedGoods.length === 1) {
+      const g = demandedGoods[0];
+      if (g === "GROCERIES")
+        return isCircular ? "CBD Food Hall" : "Grocery Market";
+      if (g === "CONSUMER_GOODS")
+        return isCircular ? "CBD Grand Galleria" : "Department Store";
+      if (g === "HARDWARE")
+        return isCircular ? "CBD Builders Exchange" : "Hardware Depot";
+      if (g === "ELECTRONICS")
+        return isCircular ? "CBD Tech Plaza" : "Tech Showroom";
+    }
+    const set = new Set(demandedGoods);
+    if (set.has("GROCERIES") && set.has("CONSUMER_GOODS")) {
+      return isCircular
+        ? "CBD Food & Retail Rotunda"
+        : "Supermarket & Galleria";
+    }
+    if (set.has("CONSUMER_GOODS") && set.has("HARDWARE")) {
+      return isCircular
+        ? "CBD Home & Commerce Rotunda"
+        : "Home & Lifestyle Mart";
+    }
+    if (set.has("HARDWARE") && set.has("ELECTRONICS")) {
+      return isCircular ? "CBD Tech & Trade Tower" : "Tech & Hardware Mart";
+    }
+    if (set.has("ELECTRONICS") && set.has("GROCERIES")) {
+      return isCircular ? "CBD Metro Exchange" : "Metro Hypermarket";
+    }
+    return isCircular ? "CBD High-Rise" : "Arterial Retail Plaza";
+  };
 
   let placedCom = 0;
   // Tier 3 Market Towns & Tier 4 Hamlets use compact 2×1/1×2 Corner Markets rather than 2×2/3×2 CBD plazas
@@ -2390,11 +2425,14 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     const isCBDLandmark =
       is2x2 &&
       (placedCom === 0 || (cand.minBrDist < 4.5 && world.rng.next() < 0.45));
-    const subType = isCBDLandmark ? "CBD High-Rise" : "Arterial Retail Plaza";
     const g0 = goodsOrder[(town.id + placedCom) % 4];
     const g1 = goodsOrder[(town.id + placedCom + 1) % 4];
     const demandedGoods = [g0, g1];
-    commitLot(cand, "commercial", subType, isCBDLandmark, { demandedGoods });
+    const subType = nameCommercialSubType(demandedGoods, isCBDLandmark);
+    commitLot(cand, "commercial", subType, isCBDLandmark, {
+      demandedGoods,
+      label: subType,
+    });
     placedCom++;
   }
 
@@ -2404,7 +2442,11 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     if (!isLotFree(cand, 2.5)) continue;
     const g0 = goodsOrder[(town.id + placedCom) % 4];
     const demandedGoods = [g0];
-    commitLot(cand, "commercial", "Corner Market", false, { demandedGoods });
+    const subType = nameCommercialSubType(demandedGoods, false);
+    commitLot(cand, "commercial", subType, false, {
+      demandedGoods,
+      label: subType,
+    });
     placedCom++;
   }
   // Fallback: if a Tier-3/4 town had no 2×1/1×2 lot free, place 1 small 2×2 Corner Market so it never has 0 commercial!
@@ -2412,8 +2454,11 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     for (const cand of slots2x2) {
       if (!isLotFree(cand, 2.5)) continue;
       const g0 = goodsOrder[town.id % 4];
-      commitLot(cand, "commercial", "Corner Market", false, {
-        demandedGoods: [g0],
+      const demandedGoods = [g0];
+      const subType = nameCommercialSubType(demandedGoods, false);
+      commitLot(cand, "commercial", subType, false, {
+        demandedGoods,
+        label: subType,
       });
       placedCom++;
       break;
@@ -2476,11 +2521,15 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
       indRole = tier2Roles[placedInd % tier2Roles.length];
     else indRole = tier3Roles[placedInd % tier3Roles.length];
 
-    // Only Tier 1 & Tier 2 cities use elongated 3×2/2×3 industrial halls; Tier 3/4 towns use compact 2×1/1×2 or 2×2 workshops!
+    const plannedMfgType =
+      indRole === "MFG" ? mfgArchetypes[(town.id + mfgCount) % 4] : null;
+    // Heavy STEEL mills always prefer 3×2/2×3 pads and never spawn on compact 2×1/1×2 lots;
+    // Tier 1 & Tier 2 cities use elongated 3×2/2×3 industrial halls, while Tier 3/4 towns use compact 2×1/1×2 or 2×2 workshops.
     const preferRect =
       town.tier <= 2 &&
       (indRole === "MFG" || indRole === "LOG") &&
-      world.rng.next() < 0.75;
+      (plannedMfgType === "STEEL" || world.rng.next() < 0.75);
+    /** @type {{ x: number, y: number, wTiles: number, hTiles: number, roadX: number, roadY: number, dirX: number, dirY: number } | null} */
     let chosen = null;
 
     if (town.tier >= 3) {
@@ -2515,7 +2564,12 @@ export function placeTownCommercialAndIndustrial(world, town, R, densityMult) {
     /** @type {Record<string, any>} */
     let extraProps = {};
     if (indRole === "MFG") {
-      const mfgType = mfgArchetypes[(town.id + mfgCount) % 4];
+      const isCompactLot = chosen.wTiles === 1 || chosen.hTiles === 1;
+      const mfgType = isCompactLot
+        ? (town.id + mfgCount) % 2 === 0
+          ? "FOOD"
+          : "GOODS"
+        : plannedMfgType || mfgArchetypes[(town.id + mfgCount) % 4];
       mfgCount++;
       const spec = MFG_SPECS[mfgType];
       extraProps = {
