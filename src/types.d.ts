@@ -822,6 +822,10 @@ export interface FlightTrack {
   cumLen: Float32Array;
   totalLength: number;
   holdShortDist: number;
+  lineupEndDist?: number;
+  cruiseStartDist?: number;
+  landingStartDist?: number;
+  taxiInStartDist?: number;
   airwayCurve: FlightAirwayCurve;
 }
 
@@ -912,9 +916,16 @@ export interface PlaneAgent {
   holdingPatternAngle?: number;
   pushbackOriginGateId?: number | null;
   pushbackOriginS?: number | null;
-  _resX?: number;
-  _resY?: number;
-  _resAng?: number;
+  accel?: number;
+  steerKappa?: number;
+  gearDir?: 1 | -1;
+  _groundOmega?: number;
+  _pushbackStage?: "REVERSE" | "FORWARD" | null;
+  _pushbackS?: number;
+  _gatePullInS?: number | null;
+  _lastSimDist?: number;
+  _lastSimState?: PlaneFSMState;
+  _lastSimPhase?: FlightPhase;
   _holdRAlong?: number;
   _holdRCross?: number;
   _importRecorded?: boolean;

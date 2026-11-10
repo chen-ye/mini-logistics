@@ -12,6 +12,7 @@ import {
 } from "../../src/simulator.js";
 import { computeTrumpetRampBeziers } from "../../src/vehicle-routing.js";
 import { SIM_CONFIG } from "../../src/constants.js";
+import { describeAirportLiveStatus } from "../../src/inspector-component.js";
 
 /**
  * Calculates perpendicular Euclidean distance from point (px, py) to line segment (x1, y1)-(x2, y2).
@@ -1549,4 +1550,382 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     }
     expect(arrivalDest.importsCompleted).toBe(1);
   });
+
+  test("Un-Faked Finite-Difference Kinematics: Screen Velocity Fidelity, Zero Sideslip, Zero Turntable Spin & Bounded Accel/Jerk over 3,000 frames at 60fps (Phase 4)", () => {
+    const pipeline = createWorldPipeline();
+    const dt = 1 / 60;
+    const maxGroundKappa = 2.8;
+    const maxSideslipRad = (3.5 * Math.PI) / 180;
+
+    for (const [seed, archetype] of /** @type {const} */ ([
+      ["OTTD-METRO-84", "confluence"],
+      ["ISLAND-HOP-101", "island-hopper"],
+    ])) {
+      const world = pipeline({
+        seed,
+        worldSize: archetype === "island-hopper" ? "standard" : "compact",
+        archetype,
+        terrainAlgo: "tectonic-fbm",
+        hydrologyAlgo: "thalweg-astar",
+        airportMix: "hub-reg-cargo",
+        includeIntermediateRamps: true,
+        waterCoverage: 48,
+        townCount: 14,
+        buildingDensity: 200,
+        airportCount: 3,
+        windAxis: -1,
+      });
+
+      const sim = new LogisticsSimulator(world);
+      sim.cars = [];
+      expect(sim.planes.length).toBeGreaterThan(0);
+
+      /** @type {Map<number, { x: number, y: number, ang: number, vAct: number | null, aAct: number | null, omega: number | null, state: string | undefined, stateTicks: number, transitions: number, track: unknown }>} */
+      const history = new Map();
+      for (const p of sim.planes) {
+        history.set(p.id ?? 0, {
+          x: p.x,
+          y: p.y,
+          ang: p.ang,
+          vAct: null,
+          aAct: null,
+          omega: null,
+          state: p.state,
+          stateTicks: 0,
+          transitions: 0,
+          track: p.track,
+        });
+      }
+
+      /**
+       * Computes distance from local airport point (lx, ly) to the airport's ground centerlines.
+       * @param {import("../../src/types.js").Airport | import("../../src/types.js").PlaneEndpoint} ap
+       * @param {number} wx
+       * @param {number} wy
+       */
+      const distToAirportGroundPath = (ap, wx, wy) => {
+        const ang = ap.angleRad ?? 0;
+        const cosA = Math.cos(ang);
+        const sinA = Math.sin(ang);
+        const dx = wx - ap.x;
+        const dy = wy - ap.y;
+        const lx = dx * cosA + dy * sinA;
+        const ly = -dx * sinA + dy * cosA;
+        const side = ap.apronSide || 1;
+        const isHub = Boolean(ap.isHub);
+        const rwyLen = ap.halfLen * 2;
+        const activeSign = ap.atc?.activeSign ?? ap.activeSign ?? 1;
+        const exitCrossX = ap.atc
+          ? ap.atc.exitRwyX
+          : activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+        const depCrossX = ap.atc
+          ? ap.atc.depCrossX
+          : -activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+        const taxiY = ap.atc ? ap.atc.taxiY : -side * (isHub ? 0.6 : 0.62);
+        const termY = side * (isHub ? 0.86 : 0.8);
+        const depRwyY = -side * (isHub ? 1.72 : 1.68);
+        const arrRwyY = -side * (isHub ? 3.35 : 1.68);
+
+        let minD = Math.min(
+          distToSegment(lx, ly, -rwyLen * 0.5, depRwyY, rwyLen * 0.5, depRwyY),
+          distToSegment(lx, ly, -rwyLen * 0.5, arrRwyY, rwyLen * 0.5, arrRwyY),
+          distToSegment(
+            lx,
+            ly,
+            Math.min(exitCrossX, depCrossX),
+            taxiY,
+            Math.max(exitCrossX, depCrossX),
+            taxiY,
+          ),
+          distToSegment(lx, ly, exitCrossX, arrRwyY, exitCrossX, taxiY),
+          distToSegment(lx, ly, depCrossX, depRwyY, depCrossX, taxiY),
+        );
+        for (const g of ap.atc?.gates || []) {
+          minD = Math.min(
+            minD,
+            distToSegment(lx, ly, g.lx, taxiY, g.lx, termY),
+          );
+        }
+        return minD;
+      };
+
+      let observedReversePushback = false;
+      let observedStraightTakeoffRoll = false;
+
+      for (let tick = 0; tick < 3000; tick++) {
+        sim.update(dt, 1.0);
+
+        for (const p of sim.planes) {
+          const id = p.id ?? 0;
+          const prev = history.get(id);
+          if (!prev) continue;
+
+          if (p.state === prev.state) {
+            prev.stateTicks++;
+          } else {
+            prev.state = p.state;
+            prev.stateTicks = 1;
+            prev.transitions++;
+          }
+          // 6. Zero Deadlock / Bounded State Dwell Time
+          expect(prev.stateTicks).toBeLessThanOrEqual(2200);
+
+          // If an off-map external corridor flight just turned around onto a new inbound track at the off-map boundary, re-anchor finite-difference history
+          if (p.track !== prev.track && p.origin?.isExternal) {
+            prev.x = p.x;
+            prev.y = p.y;
+            prev.ang = p.ang;
+            prev.vAct = null;
+            prev.aAct = null;
+            prev.omega = null;
+            prev.track = p.track;
+            prev.transitions++;
+            continue;
+          }
+          prev.track = p.track;
+
+          const dx = p.x - prev.x;
+          const dy = p.y - prev.y;
+          const step = Math.hypot(dx, dy);
+          const vAct = step / dt;
+          const dAngSigned = Math.atan2(
+            Math.sin(p.ang - prev.ang),
+            Math.cos(p.ang - prev.ang),
+          );
+          const dAng = Math.abs(dAngSigned);
+          const omega = dAngSigned / dt;
+
+          // 1. Screen Velocity vs. Reported p.speed Fidelity
+          expect(Math.abs(vAct - p.speed)).toBeLessThanOrEqual(0.15);
+
+          // 2, 3 & 7. Ground Non-Holonomic Rolling Invariants (Zero Sideslip, Zero Turntable Spin & Strict Ground Path Adherence)
+          if (p.altitude === 0) {
+            if (p.gearDir === -1 && vAct > 0.15) {
+              observedReversePushback = true;
+            }
+            if (vAct > 0.15) {
+              const velAng = Math.atan2(dy, dx);
+              const wheelAng = p.gearDir === -1 ? p.ang + Math.PI : p.ang;
+              expect(angDiff(wheelAng, velAng)).toBeLessThanOrEqual(
+                maxSideslipRad,
+              );
+            }
+            expect(dAng).toBeLessThanOrEqual(maxGroundKappa * step + 1e-4);
+            if (step === 0) {
+              expect(dAng).toBe(0);
+            }
+
+            const refAp =
+              p.state === "LANDING_ROLLOUT" ||
+              p.state === "HOLD_CROSSING_RUNWAY" ||
+              p.state === "TAXI_TO_GATE"
+                ? p.dest
+                : p.origin;
+            expect(
+              distToAirportGroundPath(refAp, p.x, p.y),
+            ).toBeLessThanOrEqual(0.38);
+          }
+
+          // 4. Bounded Physical Acceleration (dv/dt) & Monotonic Straightaway Takeoff Roll
+          let aAct = prev.aAct;
+          if (prev.vAct !== null) {
+            aAct = (vAct - prev.vAct) / dt;
+            expect(Math.abs(aAct)).toBeLessThanOrEqual(8.0);
+
+            const lineupEndDist =
+              p.track.lineupEndDist ?? p.track.holdShortDist + 1.2;
+            const pTakeoffSpeed =
+              p.aircraftType === "FEEDER_TURBOPROP"
+                ? (SIM_CONFIG.AVIATION.turbopropTakeoffSpeed ?? 10.6)
+                : SIM_CONFIG.AVIATION.takeoffSpeed;
+            if (
+              p.state === "TAKEOFF_ROLL" &&
+              p.dist >= lineupEndDist + 0.6 &&
+              p.speed < pTakeoffSpeed
+            ) {
+              observedStraightTakeoffRoll = true;
+              expect(aAct).toBeGreaterThanOrEqual(1.2);
+            }
+          }
+
+          // 5. Bounded Linear & Angular Jerk (da/dt & dω/dt)
+          if (prev.aAct !== null && aAct !== null) {
+            const jAct = Math.abs(aAct - prev.aAct) / dt;
+            expect(jAct).toBeLessThanOrEqual(35.0);
+          }
+          if (p.altitude === 0 && prev.omega !== null) {
+            const angAcc = Math.abs(omega - prev.omega) / dt;
+            expect(angAcc).toBeLessThanOrEqual(14.0);
+          }
+
+          prev.x = p.x;
+          prev.y = p.y;
+          prev.ang = p.ang;
+          prev.vAct = vAct;
+          prev.aAct = aAct;
+          prev.omega = p.altitude === 0 ? omega : null;
+        }
+      }
+
+      for (const h of history.values()) {
+        expect(h.transitions).toBeGreaterThanOrEqual(4);
+      }
+      expect(observedReversePushback).toBe(true);
+      expect(observedStraightTakeoffRoll).toBe(true);
+    }
+  });
+
+  test("Multi-Seed Ground Path Adherence, Zero-Deadlock Long-Run Audit & Live Airport Inspector Telemetry across 5 benchmark seeds", () => {
+    const pipeline = createWorldPipeline();
+    const dt = 1 / 60;
+
+    /**
+     * @param {import("../../src/types.js").Airport | import("../../src/types.js").PlaneEndpoint} ap
+     * @param {number} wx
+     * @param {number} wy
+     */
+    const distToAirportGroundPath = (ap, wx, wy) => {
+      const ang = ap.angleRad ?? 0;
+      const cosA = Math.cos(ang);
+      const sinA = Math.sin(ang);
+      const dx = wx - ap.x;
+      const dy = wy - ap.y;
+      const lx = dx * cosA + dy * sinA;
+      const ly = -dx * sinA + dy * cosA;
+      const side = ap.apronSide || 1;
+      const isHub = Boolean(ap.isHub);
+      const rwyLen = ap.halfLen * 2;
+      const activeSign = ap.atc?.activeSign ?? ap.activeSign ?? 1;
+      const exitCrossX = ap.atc
+        ? ap.atc.exitRwyX
+        : activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+      const depCrossX = ap.atc
+        ? ap.atc.depCrossX
+        : -activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+      const taxiY = ap.atc ? ap.atc.taxiY : -side * (isHub ? 0.6 : 0.62);
+      const termY = side * (isHub ? 0.86 : 0.8);
+      const depRwyY = -side * (isHub ? 1.72 : 1.68);
+      const arrRwyY = -side * (isHub ? 3.35 : 1.68);
+
+      let minD = Math.min(
+        distToSegment(lx, ly, -rwyLen * 0.5, depRwyY, rwyLen * 0.5, depRwyY),
+        distToSegment(lx, ly, -rwyLen * 0.5, arrRwyY, rwyLen * 0.5, arrRwyY),
+        distToSegment(
+          lx,
+          ly,
+          Math.min(exitCrossX, depCrossX),
+          taxiY,
+          Math.max(exitCrossX, depCrossX),
+          taxiY,
+        ),
+        distToSegment(lx, ly, exitCrossX, arrRwyY, exitCrossX, taxiY),
+        distToSegment(lx, ly, depCrossX, depRwyY, depCrossX, taxiY),
+      );
+      for (const g of ap.atc?.gates || []) {
+        minD = Math.min(minD, distToSegment(lx, ly, g.lx, taxiY, g.lx, termY));
+      }
+      return minD;
+    };
+
+    for (const [seed, archetype, airportMix] of /** @type {const} */ ([
+      ["OTTD-METRO-84", "confluence", "hub-reg-cargo"],
+      ["ISLAND-HOP-101", "island-hopper", "hub-reg-cargo"],
+      ["DELTA-402", "barrier-lagoon", "dual-hub"],
+      ["HARBOR-305", "fjord-sound", "hub-regional"],
+      ["VALLEY-618", "inland", "hub-regional"],
+    ])) {
+      const world = pipeline({
+        seed,
+        worldSize:
+          archetype === "island-hopper" || archetype === "fjord-sound"
+            ? "standard"
+            : "compact",
+        archetype,
+        terrainAlgo: "tectonic-fbm",
+        hydrologyAlgo: "thalweg-astar",
+        airportMix,
+        includeIntermediateRamps: true,
+        waterCoverage: 48,
+        townCount: 14,
+        buildingDensity: 200,
+        airportCount: 3,
+        windAxis: -1,
+      });
+
+      const sim = new LogisticsSimulator(world);
+      sim.cars = [];
+      const primaryAp = world.airports[0];
+      expect(primaryAp).toBeDefined();
+      if (!primaryAp) continue;
+
+      const stateTicks = new Map(
+        sim.planes.map((p) => [
+          p.id ?? 0,
+          { state: p.state, ticks: 0, transitions: 0 },
+        ]),
+      );
+      const seenAtcSummaries = new Set();
+      const seenGateSummaries = new Set();
+      let sawLanding = false;
+      let sawTakeoff = false;
+      let sawTaxiing = false;
+
+      for (let tick = 0; tick < 3600; tick++) {
+        sim.update(dt, 1.0);
+        for (const p of sim.planes) {
+          const st = stateTicks.get(p.id ?? 0);
+          if (st) {
+            if (st.state === p.state) {
+              st.ticks++;
+            } else {
+              st.state = p.state;
+              st.ticks = 1;
+              st.transitions++;
+            }
+            expect(st.ticks).toBeLessThanOrEqual(2400);
+          }
+
+          if (p.altitude === 0) {
+            const refAp =
+              p.state === "LANDING_ROLLOUT" ||
+              p.state === "HOLD_CROSSING_RUNWAY" ||
+              p.state === "TAXI_TO_GATE"
+                ? p.dest
+                : p.origin;
+            expect(
+              distToAirportGroundPath(refAp, p.x, p.y),
+            ).toBeLessThanOrEqual(0.38);
+          }
+        }
+
+        if (tick % 10 === 0) {
+          for (const ap of world.airports) {
+            const liveStatus = describeAirportLiveStatus(ap, world, sim.planes);
+            seenAtcSummaries.add(liveStatus.atcSummary);
+            seenGateSummaries.add(liveStatus.gateSummary);
+            if (liveStatus.landingCount > 0) {
+              sawLanding = true;
+              expect(liveStatus.atcSummary).toContain("Landing");
+            }
+            if (liveStatus.departingCount > 0) {
+              sawTakeoff = true;
+              expect(liveStatus.atcSummary).toContain("Takeoff");
+            }
+            if (liveStatus.taxiHoldCount > 0) {
+              sawTaxiing = true;
+            }
+          }
+        }
+      }
+
+      for (const st of stateTicks.values()) {
+        expect(st.transitions).toBeGreaterThanOrEqual(4);
+      }
+      expect(sawLanding).toBe(true);
+      expect(sawTakeoff).toBe(true);
+      expect(sawTaxiing).toBe(true);
+      expect(seenAtcSummaries.size).toBeGreaterThan(2);
+      expect(seenGateSummaries.size).toBeGreaterThan(1);
+    }
+  }, 20000);
 });

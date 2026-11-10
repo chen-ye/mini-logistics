@@ -698,8 +698,10 @@ window.openEntityInspector = openEntityInspector;
 
 // Mount the custom Light-DOM entity inspector element
 const inspectorCard = document.getElementById("inspectorCard");
+/** @type {import("./inspector-component.js").EntityInspectorElement | null} */
+let inspectorElement = null;
 if (inspectorCard) {
-  mountEntityInspector(inspectorCard, {
+  inspectorElement = mountEntityInspector(inspectorCard, {
     store,
     getWorld: () => currentWorld,
     onFocus: (type, entity) => {
@@ -1426,6 +1428,7 @@ function animate(now) {
   if (currentWorld && simulator) {
     simulator.update(dt, simSpeed);
     renderer.render(currentWorld, simulator);
+    inspectorElement?.refreshLiveStats(currentWorld, simulator.planes);
 
     getEl("tripCounter").textContent =
       simulator.tripsCompleted.toLocaleString();

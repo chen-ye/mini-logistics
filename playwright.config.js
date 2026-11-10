@@ -1,5 +1,17 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const cwd = process.cwd();
+let defaultPort = 8788;
+if (cwd.includes("/worktree/")) {
+  let hash = 0;
+  for (let i = 0; i < cwd.length; i++) {
+    hash = (hash * 31 + cwd.charCodeAt(i)) | 0;
+  }
+  defaultPort = 8800 + (Math.abs(hash) % 190);
+}
+const port = Number(process.env.PORT) || defaultPort;
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 45000,
@@ -9,7 +21,7 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:8788",
+    baseURL,
     trace: "on-first-retry",
   },
   projects: [
@@ -19,8 +31,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "bun run dev",
-    url: "http://127.0.0.1:8788/index.html",
+    command: `bunx serve . -p ${port}`,
+    url: `${baseURL}/index.html`,
     reuseExistingServer: !process.env.CI,
     timeout: 30000,
   },
