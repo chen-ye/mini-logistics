@@ -1,6 +1,10 @@
 import { describe, test, expect } from "bun:test";
 import { createWorldPipeline } from "../../src/world-generator.js";
 import { MiniMotorwaysRenderer } from "../../src/renderer.js";
+import {
+  describeBuildingDossier,
+  getPartnerStageBadgeClass,
+} from "../../src/inspector-component.js";
 
 const TERRAIN_ALGOS = ["tectonic-fbm", "quilez-erosion", "voronoi-plates"];
 const HYDRO_ALGOS = ["thalweg-astar", "d8-strahler", "meandering-plain"];
@@ -729,4 +733,135 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
       expect(corridors.length).toBeGreaterThanOrEqual(1);
     }
   }, 15000);
+
+  test("Shoreline FISHERY siting, stage color semantics, LOG consolidation & inspector stage/commodity telemetry", () => {
+    const pipeline = createWorldPipeline();
+    const expectedStageColors = {
+      "LOG->COM": "#7c3aed",
+      "MFG->COM": "#4f46e5",
+      "RAW->MFG": "#d97706",
+      "RAW->LOG": "#d97706",
+      "MFG->MFG": "#e11d48",
+      "MFG->LOG": "#ea580c",
+      "CBD->CBD": "#0284c7",
+      "IMPORT->COM": "#0d9488",
+      "IMPORT->LOG": "#0d9488",
+      "IMPORT->MFG": "#0d9488",
+      "RAW->EXPORT": "#0d9488",
+      "MFG->EXPORT": "#0d9488",
+      "LOG->EXPORT": "#0d9488",
+    };
+
+    for (const seed of ["OTTD-METRO-84", "HARBOR-305"]) {
+      const world = pipeline({
+        seed,
+        worldSize: "standard",
+        archetype: "confluence",
+        terrainAlgo: "tectonic-fbm",
+        hydrologyAlgo: "thalweg-astar",
+        airportMix: "hub-regional",
+        includeIntermediateRamps: true,
+        waterCoverage: 48,
+        townCount: 18,
+        buildingDensity: 200,
+        airportCount: 3,
+        windAxis: -1,
+      });
+
+      // 1. Shoreline FISHERY placement: at least 1 rural FISHERY sits on a dry 2x2 pad with shoreline dW in [1.0, 2.8]
+      const fisheries = world.destinations.filter(
+        (d) => d.subType === "RAW" && d.resourceType === "FISHERY",
+      );
+      expect(fisheries.length).toBeGreaterThanOrEqual(1);
+      const ruralFisheries = fisheries.filter((d) => d.isRuralNiche);
+      expect(ruralFisheries.length).toBeGreaterThanOrEqual(1);
+      for (const f of ruralFisheries) {
+        const originDw = world.distToWater[world.idx(f.gx, f.gy)];
+        expect(originDw).toBeGreaterThanOrEqual(1.0);
+        expect(originDw).toBeLessThanOrEqual(2.8);
+        for (let dy = 0; dy <= 1; dy++) {
+          for (let dx = 0; dx <= 1; dx++) {
+            const pid = world.idx(f.gx + dx, f.gy + dy);
+            expect(world.waterMask[pid]).toBe(0);
+          }
+        }
+      }
+
+      // 2. Stage color semantics & explicit commodity tags on every cargo link
+      for (const link of world.cargoLinks) {
+        const expectedCol =
+          expectedStageColors[
+            /** @type {keyof typeof expectedStageColors} */ (link.stage)
+          ];
+        expect(expectedCol).toBeDefined();
+        expect(link.color).toBe(expectedCol);
+        expect(typeof link.commodity).toBe("string");
+        expect((link.commodity ?? "").length).toBeGreaterThan(0);
+      }
+
+      // 3. LOG hub consolidation share: LOG->COM links represent a substantial share of retail COM supply
+      const comRetailLinks = world.cargoLinks.filter(
+        (l) =>
+          l.stage === "LOG->COM" ||
+          l.stage === "MFG->COM" ||
+          l.stage === "IMPORT->COM",
+      );
+      const logToComLinks = comRetailLinks.filter(
+        (l) => l.stage === "LOG->COM",
+      );
+      expect(comRetailLinks.length).toBeGreaterThan(0);
+      const logShare = logToComLinks.length / comRetailLinks.length;
+      expect(logShare).toBeGreaterThanOrEqual(0.45);
+    }
+
+    // 4. Inspector stage-colored dossier & partner link badge classes
+    const mockWorld = /** @type {any} */ ({
+      towns: [{ id: 0, name: "Harborview", x: 50, y: 50 }],
+    });
+    const fisheryInfo = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 1,
+        townId: 0,
+        x: 52,
+        y: 50,
+        zoneType: "industrial",
+        subType: "RAW",
+        resourceType: "FISHERY",
+      }),
+      mockWorld,
+    );
+    expect(fisheryInfo.badgeClass).toBe("bg-cyan-800 text-white");
+    expect(getPartnerStageBadgeClass(fisheryInfo)).toBe(
+      "bg-cyan-100 text-cyan-900",
+    );
+
+    const chemInfo = describeBuildingDossier(
+      /** @type {any} */ ({
+        id: 2,
+        townId: 0,
+        x: 52,
+        y: 50,
+        zoneType: "industrial",
+        subType: "RAW",
+        resourceType: "CHEM",
+      }),
+      mockWorld,
+    );
+    expect(chemInfo.badgeClass).toBe("bg-lime-800 text-white");
+    expect(getPartnerStageBadgeClass(chemInfo)).toBe(
+      "bg-lime-100 text-lime-900",
+    );
+
+    expect(getPartnerStageBadgeClass("RAW", "MINE")).toBe(
+      "bg-amber-100 text-amber-900",
+    );
+    expect(getPartnerStageBadgeClass("MFG")).toBe(
+      "bg-orange-100 text-orange-900",
+    );
+    expect(getPartnerStageBadgeClass("LOG")).toBe(
+      "bg-purple-100 text-purple-900",
+    );
+    expect(getPartnerStageBadgeClass("COM")).toBe("bg-blue-100 text-blue-900");
+    expect(getPartnerStageBadgeClass("AIR")).toBe("bg-teal-100 text-teal-900");
+  }, 20000);
 });

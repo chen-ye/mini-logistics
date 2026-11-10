@@ -132,7 +132,7 @@ export function describeBuildingDossier(d, world = null) {
       return {
         stage: "RAW",
         badge: "RAW · FISHERY",
-        badgeClass: "bg-sky-700 text-white",
+        badgeClass: "bg-cyan-800 text-white",
         shortTag: "FISH",
         typeLabel: `Fishery (${sec})`,
         title: `${townName} Fishery (${sec})`,
@@ -143,7 +143,7 @@ export function describeBuildingDossier(d, world = null) {
     return {
       stage: "RAW",
       badge: "RAW · CHEM",
-      badgeClass: "bg-amber-700 text-white",
+      badgeClass: "bg-lime-800 text-white",
       shortTag: "CHEM",
       typeLabel: `Chem (${sec})`,
       title: `${townName} Chemical Plant (${sec})`,
@@ -192,6 +192,53 @@ export function describeBuildingDossier(d, world = null) {
     subtitle: "Heavy & Light Manufacturing Plant",
     townName,
   };
+}
+
+/**
+ * Returns Tailwind badge classes for a cargo link partner building based on stage and resource type.
+ *
+ * @param {{ stage?: string, badge?: string, shortTag?: string } | string} pInfoOrStage
+ * @param {Destination | { resourceType?: string | null, isGatewayProxy?: boolean | null } | string | null} [partner]
+ * @returns {string}
+ */
+export function getPartnerStageBadgeClass(pInfoOrStage, partner = null) {
+  const stage =
+    typeof pInfoOrStage === "string" ? pInfoOrStage : pInfoOrStage?.stage;
+  const pObj =
+    typeof pInfoOrStage === "object" && pInfoOrStage !== null
+      ? pInfoOrStage
+      : null;
+  const partnerObj =
+    typeof partner === "object" && partner !== null ? partner : null;
+  const resourceType =
+    typeof partner === "string" ? partner : partnerObj?.resourceType;
+  if (
+    stage === "AIR" ||
+    Boolean(partnerObj?.isGatewayProxy) ||
+    pObj?.badge === "AIR · GATEWAY" ||
+    pObj?.shortTag === "AIR"
+  ) {
+    return "bg-teal-100 text-teal-900";
+  }
+  if (stage === "RAW") {
+    if (resourceType === "FISHERY" || pObj?.shortTag === "FISH") {
+      return "bg-cyan-100 text-cyan-900";
+    }
+    if (resourceType === "CHEM" || pObj?.shortTag === "CHEM") {
+      return "bg-lime-100 text-lime-900";
+    }
+    return "bg-amber-100 text-amber-900";
+  }
+  if (stage === "MFG") {
+    return "bg-orange-100 text-orange-900";
+  }
+  if (stage === "LOG") {
+    return "bg-purple-100 text-purple-900";
+  }
+  if (stage === "COM") {
+    return "bg-blue-100 text-blue-900";
+  }
+  return "bg-amber-100 text-amber-900";
 }
 
 /**
@@ -687,16 +734,21 @@ export class EntityInspectorElement extends BaseElement {
             const partner = isOut ? link.to : link.from;
             const pInfo = describeBuildingDossier(partner, world);
             const distTiles = (link.points || []).length;
+            const badgeTone = getPartnerStageBadgeClass(pInfo, partner);
             const dirBadge = isOut
-              ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 shrink-0">EXPORT → ${pInfo.shortTag} #${partner.id}</span>`
-              : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 shrink-0">IMPORT ← ${pInfo.shortTag} #${partner.id}</span>`;
+              ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${badgeTone} shrink-0">EXPORT → ${pInfo.shortTag} #${partner.id}</span>`
+              : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${badgeTone} shrink-0">IMPORT ← ${pInfo.shortTag} #${partner.id}</span>`;
+            const commodityChip = link.commodity
+              ? `<span class="mono text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-stone-200/85 text-stone-700">${link.commodity}</span>`
+              : "";
             return `
             <button type="button" data-jump-dest="${partner.id}" class="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-stone-300/70 hover:border-stone-500 text-left transition group">
               <div class="flex items-center gap-2 min-w-0">
                 ${dirBadge}
                 <span class="font-bold text-[#36383e] group-hover:text-[#e85c90] truncate">${pInfo.title}</span>
               </div>
-              <div class="flex items-center gap-1 shrink-0">
+              <div class="flex items-center gap-1.5 shrink-0">
+                ${commodityChip}
                 <span class="mono text-[10px] font-bold text-stone-500 tabular-nums">${distTiles} tiles</span>
                 <svg class="w-3.5 h-3.5 text-stone-400 group-hover:text-[#36383e]" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
               </div>
@@ -880,10 +932,14 @@ export class EntityInspectorElement extends BaseElement {
       const partner = dir === "in" ? link.from : link.to;
       const pInfo = describeBuildingDossier(partner, world);
       const distTiles = (link.points || []).length;
+      const badgeTone = getPartnerStageBadgeClass(pInfo, partner);
       const dirBadge =
         dir === "in"
-          ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 shrink-0">← ${pInfo.shortTag} #${partner.id}</span>`
-          : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 shrink-0">→ ${pInfo.shortTag} #${partner.id}</span>`;
+          ? `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${badgeTone} shrink-0">← ${pInfo.shortTag} #${partner.id}</span>`
+          : `<span class="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${badgeTone} shrink-0">→ ${pInfo.shortTag} #${partner.id}</span>`;
+      const commodityChip = link.commodity
+        ? `<span class="mono text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-stone-200/85 text-stone-700">${link.commodity}</span>`
+        : "";
       const isGateway = Boolean(
         partner.isGatewayProxy && partner.airportId != null,
       );
@@ -896,7 +952,8 @@ export class EntityInspectorElement extends BaseElement {
             ${dirBadge}
             <span class="font-bold text-[#36383e] group-hover:text-[#e85c90] truncate">${pInfo.title}</span>
           </div>
-          <div class="flex items-center gap-1 shrink-0">
+          <div class="flex items-center gap-1.5 shrink-0">
+            ${commodityChip}
             <span class="mono text-[10px] font-bold text-stone-500 tabular-nums">${distTiles} tiles</span>
             <svg class="w-3.5 h-3.5 text-stone-400 group-hover:text-[#36383e]" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
           </div>

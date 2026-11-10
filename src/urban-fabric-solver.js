@@ -1400,7 +1400,8 @@ export function seedOutOfTownResourceNiches(world) {
   const candidates = [];
   for (let gy = 14; gy < world.H - 16; gy += 3) {
     for (let gx = 14; gx < world.W - 16; gx += 3) {
-      // Check a 2×2 building pad + 2-tile clearance margin for dry land, zero roads/buildings, and outside urban blush
+      // Check a 2×2 building pad + 2-tile clearance margin for zero roads/buildings and outside urban blush,
+      // with a 1-tile dry setback (`dx, dy in [-1..2]`) so shoreline `FISHERY` wharves can sit beside the coast.
       let padOk = true;
       for (let dy = -2; dy <= 3 && padOk; dy++) {
         for (let dx = -2; dx <= 3; dx++) {
@@ -1412,14 +1413,24 @@ export function seedOutOfTownResourceNiches(world) {
           }
           const pid = world.idx(px, py);
           if (
-            world.waterMask[pid] > 0 ||
             world.buildingMask[pid] > 0 ||
             world.roadGrid[pid] > 0 ||
-            world.zoneColorIdx[pid] >= 0 ||
-            world.distToWater[pid] < 1.35
+            world.zoneColorIdx[pid] >= 0
           ) {
             padOk = false;
             break;
+          }
+          if (dx >= -1 && dx <= 2 && dy >= -1 && dy <= 2) {
+            if (world.waterMask[pid] > 0) {
+              padOk = false;
+              break;
+            }
+          }
+          if (dx >= 0 && dx <= 1 && dy >= 0 && dy <= 1) {
+            if (world.distToWater[pid] < 1.0) {
+              padOk = false;
+              break;
+            }
           }
         }
       }
@@ -1482,7 +1493,7 @@ export function seedOutOfTownResourceNiches(world) {
       }
 
       // Evaluate fitness for the 5 geographic resource niches:
-      // 1. `FISHERY`: coastal shoreline wharf (`dW in [1.4, 3.8]`, `hAbove <= 0.068`, `slope <= 0.25`, water nearby)
+      // 1. `FISHERY`: coastal shoreline wharf (`dW in [1.1, 2.8]`, `hAbove <= 0.068`, `slope <= 0.25`, water nearby)
       // 2. `MINE`: foothill quarry & mine (`hAbove >= 0.115`, `dW >= 2.2`)
       // 3. `TIMBER`: upland forestry camp (`hAbove >= 0.08`, high fertility, `dW >= 2.2`)
       // 4. `FARM`: alluvial agribusiness (`hAbove <= 0.085`, low slope, `dW >= 3.5`)
@@ -1492,15 +1503,15 @@ export function seedOutOfTownResourceNiches(world) {
       let nicheScore = -1;
 
       if (
-        dW >= 1.4 &&
-        dW <= 3.8 &&
+        dW >= 1.1 &&
+        dW <= 2.8 &&
         hAbove <= 0.068 &&
         slope <= 0.25 &&
         hasWaterNearby
       ) {
         resourceType = "FISHERY";
         nicheScore =
-          0.96 + (3.8 - dW) * 0.22 + (0.25 - slope) * 1.8 - minRoadDist * 0.03;
+          0.98 + (2.8 - dW) * 0.28 + (0.25 - slope) * 1.8 - minRoadDist * 0.03;
       } else if (
         hAbove >= 0.115 &&
         hAbove <= 0.28 &&
