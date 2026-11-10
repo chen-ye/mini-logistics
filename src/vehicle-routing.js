@@ -165,6 +165,233 @@ export function deriveVehicleRoutingGraph(world) {
  * terminal roundabouts (`terminal-stub`), intermediate diamond slip-ramps (`diamond-ramp`),
  * and system interchanges (`cloverleaf`, `trumpet`).
  */
+/**
+ * Computes curve-anchored C1-continuous cubic Bezier segments in world tile coordinates
+ * for all 4 directional ramps of a 3-way Trumpet interchange:
+ *   - `yellow`: Left Outer Slip-Ramp (Mainline +u -> Spur Outbound +v)
+ *   - `purple`: Right Outer Slip-Ramp (Spur Inbound -v -> Mainline +u)
+ *   - `brown`:  Inner 270° Trumpet Loop (Mainline -u -> 270° Loop -> Left Bridge Lane -> Spur Outbound +v)
+ *   - `blue`:   Outer Trumpet Bell (Spur Inbound -v -> Right Bridge Lane -> Outer Arch & S-Glide -> Mainline -u)
+ *
+ * @param {import('./types.js').TrumpetInterchange} ic
+ * @param {import('./types.js').Motorway[]} [motorways]
+ */
+export function computeTrumpetRampBeziers(ic, motorways = []) {
+  const sy = ic.sideSign || 1;
+  const cosM = Math.cos(ic.angleMain || 0);
+  const sinM = Math.sin(ic.angleMain || 0);
+  const ux = sy * cosM;
+  const uy = sy * sinM;
+  const vx = -sy * sinM;
+  const vy = sy * cosM;
+
+  const toWorldUV = (u, v) => ({
+    x: ic.x + ux * u + vx * v,
+    y: ic.y + uy * u + vy * v,
+  });
+
+  const mainMw = motorways?.find((m) => m.number === ic.mwayMain) || null;
+  const spurMw = motorways?.find((m) => m.number === ic.mwaySpur) || null;
+
+  const sampleMotorwayAtArc = (mw, targetArc, dirX, dirY) => {
+    const samples = mw?.samples;
+    if (!samples || samples.length < 2) {
+      return {
+        x: ic.x + dirX * targetArc,
+        y: ic.y + dirY * targetArc,
+        tx: dirX,
+        ty: dirY,
+      };
+    }
+    let k0 = 0;
+    let bestD = Infinity;
+    for (let k = 0; k < samples.length; k++) {
+      const d = Math.hypot(samples[k].x - ic.x, samples[k].y - ic.y);
+      if (d < bestD) {
+        bestD = d;
+        k0 = k;
+      }
+    }
+    const kNext = Math.min(samples.length - 1, k0 + 1);
+    const kPrev = Math.max(0, k0 - 1);
+    const fdx = samples[kNext].x - samples[kPrev].x;
+    const fdy = samples[kNext].y - samples[kPrev].y;
+    const stepSign = fdx * dirX + fdy * dirY >= 0 ? 1 : -1;
+
+    let walked = 0;
+    let curK = k0;
+    let ptX = samples[k0].x;
+    let ptY = samples[k0].y;
+    while (curK + stepSign >= 0 && curK + stepSign < samples.length) {
+      const nk = curK + stepSign;
+      const segDx = samples[nk].x - samples[curK].x;
+      const segDy = samples[nk].y - samples[curK].y;
+      const segLen = Math.hypot(segDx, segDy);
+      if (walked + segLen >= targetArc && segLen > 1e-4) {
+        const frac = (targetArc - walked) / segLen;
+        ptX = samples[curK].x + segDx * frac;
+        ptY = samples[curK].y + segDy * frac;
+        return {
+          x: ptX,
+          y: ptY,
+          tx: segDx / segLen,
+          ty: segDy / segLen,
+        };
+      }
+      walked += segLen;
+      curK = nk;
+      ptX = samples[curK].x;
+      ptY = samples[curK].y;
+    }
+    const prevK = Math.max(0, Math.min(samples.length - 1, curK - stepSign));
+    const tdx = samples[curK].x - samples[prevK].x || dirX;
+    const tdy = samples[curK].y - samples[prevK].y || dirY;
+    const tLen = Math.hypot(tdx, tdy) || 1;
+    return {
+      x: ptX,
+      y: ptY,
+      tx: tdx / tLen,
+      ty: tdy / tLen,
+    };
+  };
+
+  const mNegYellow = sampleMotorwayAtArc(mainMw, 3.85, -ux, -uy);
+  const mPosPurple = sampleMotorwayAtArc(mainMw, 3.85, ux, uy);
+  const mNegBlue = sampleMotorwayAtArc(mainMw, 5.65, -ux, -uy);
+  const sPos = sampleMotorwayAtArc(spurMw, 3.85, vx, vy);
+
+  // 1. Yellow Ramp: C1 cubic from Mainline (-u side, +u travel) to Spur (+v side, +v travel)
+  const yP0 = {
+    x: mNegYellow.x + vx * 0.24,
+    y: mNegYellow.y + vy * 0.24,
+  };
+  const yP1 = {
+    x: mNegYellow.x + vx * 0.3 - mNegYellow.tx * 1.95,
+    y: mNegYellow.y + vy * 0.3 - mNegYellow.ty * 1.95,
+  };
+  const yP3 = {
+    x: sPos.x - ux * 0.24,
+    y: sPos.y - uy * 0.24,
+  };
+  const yP2 = {
+    x: sPos.x - ux * 0.3 - sPos.tx * 1.95,
+    y: sPos.y - uy * 0.3 - sPos.ty * 1.95,
+  };
+  const yellow = { p0: yP0, p1: yP1, p2: yP2, p3: yP3 };
+
+  // 2. Purple Ramp: C1 cubic from Spur (+v side, -v travel) to Mainline (+u side, +u travel)
+  const pP0 = {
+    x: sPos.x + ux * 0.24,
+    y: sPos.y + uy * 0.24,
+  };
+  const pP1 = {
+    x: sPos.x + ux * 0.3 - sPos.tx * 1.95,
+    y: sPos.y + uy * 0.3 - sPos.ty * 1.95,
+  };
+  const pP3 = {
+    x: mPosPurple.x + vx * 0.24,
+    y: mPosPurple.y + vy * 0.24,
+  };
+  const pP2 = {
+    x: mPosPurple.x + vx * 0.3 - mPosPurple.tx * 1.95,
+    y: mPosPurple.y + vy * 0.3 - mPosPurple.ty * 1.95,
+  };
+  const purple = { p0: pP0, p1: pP1, p2: pP2, p3: pP3 };
+
+  // 3. Brown Inner 270° Loop (Cloverleaf-equivalent R_inner = 1.25 loop radius, reaching 2.67x2.63 tiles)
+  //    Center of concentric top arch is at (u = -1.42, v = -1.38) with R_inner = 1.25, R_outer = 1.72.
+  const k90 = 0.55228475;
+  const uC = -1.42;
+  const vC = -1.38;
+  const rIn = 1.25;
+  const rOut = 1.72;
+
+  // Seg 1: Mainline (-u) at (-0.20, -0.24) -> 9 o'clock (-2.67, -1.38) heading up (-v)
+  const brownSeg1 = {
+    p0: toWorldUV(-0.2, -0.24),
+    p1: toWorldUV(-1.6, -0.28),
+    p2: toWorldUV(uC - rIn, -0.52),
+    p3: toWorldUV(uC - rIn, vC),
+  };
+  // Seg 2: 9 o'clock (-2.67, -1.38) -> 12 o'clock (-1.42, -2.63)
+  const brownSeg2 = {
+    p0: toWorldUV(uC - rIn, vC),
+    p1: toWorldUV(uC - rIn, vC - k90 * rIn),
+    p2: toWorldUV(uC - k90 * rIn, vC - rIn),
+    p3: toWorldUV(uC, vC - rIn),
+  };
+  // Seg 3: 12 o'clock (-1.42, -2.63) -> 3 o'clock (-0.17, -1.38)
+  const brownSeg3 = {
+    p0: toWorldUV(uC, vC - rIn),
+    p1: toWorldUV(uC + k90 * rIn, vC - rIn),
+    p2: toWorldUV(uC + rIn, vC - k90 * rIn),
+    p3: toWorldUV(uC + rIn, vC),
+  };
+  // Seg 4: 3 o'clock (-0.17, -1.38) straight down to Bridge left lane (-0.17, -0.15)
+  const brownSeg4 = {
+    p0: toWorldUV(uC + rIn, vC),
+    p1: toWorldUV(uC + rIn, -0.95),
+    p2: toWorldUV(-0.17, -0.52),
+    p3: toWorldUV(-0.17, -0.15),
+  };
+
+  // 4. Blue Outer Trumpet Bell:
+  //    Runs parallel/concentric (R_outer = 1.72, Δr = 0.47 tiles) with Brown from Bridge through
+  //    3 o'clock (0°), 12 o'clock (90°), to 10:30 o'clock (135°), then sweeps in a broad R ≈ 4.2-tile
+  //    curve into the Westbound Mainline at d = 5.65 tiles!
+  // Seg 1: Bridge right lane (+0.23, -0.15) -> 3 o'clock (+0.30, -1.38)
+  const blueSeg1 = {
+    p0: toWorldUV(0.23, -0.15),
+    p1: toWorldUV(0.25, -0.52),
+    p2: toWorldUV(uC + rOut, -0.95),
+    p3: toWorldUV(uC + rOut, vC),
+  };
+  // Seg 2: 3 o'clock (+0.30, -1.38) -> 12 o'clock (-1.42, -3.10)
+  const blueSeg2 = {
+    p0: toWorldUV(uC + rOut, vC),
+    p1: toWorldUV(uC + rOut, vC - k90 * rOut),
+    p2: toWorldUV(uC + k90 * rOut, vC - rOut),
+    p3: toWorldUV(uC, vC - rOut),
+  };
+  // Seg 3: 12 o'clock (90°) -> 10:30 o'clock (135° diverge point on concentric circle R_outer = 1.72)
+  const sweepRad = (45 * Math.PI) / 180;
+  const k45 = (4 / 3) * Math.tan(sweepRad * 0.25);
+  const sin45 = Math.sin(sweepRad);
+  const cos45 = Math.cos(sweepRad);
+  const uDiv = uC - rOut * sin45;
+  const vDiv = vC - rOut * cos45;
+  const tDivU = -cos45;
+  const tDivV = sin45;
+  const blueSeg3 = {
+    p0: toWorldUV(uC, vC - rOut),
+    p1: toWorldUV(uC - k45 * rOut, vC - rOut),
+    p2: toWorldUV(uDiv - tDivU * k45 * rOut, vDiv - tDivV * k45 * rOut),
+    p3: toWorldUV(uDiv, vDiv),
+  };
+  // Seg 4: Broad R ≈ 4.2-tile C1 sweep from (uDiv, vDiv) along (tDivU, tDivV) into mNegBlue (d = 5.65)
+  const blP3 = {
+    x: mNegBlue.x - vx * 0.24,
+    y: mNegBlue.y - vy * 0.24,
+  };
+  const blP2 = {
+    x: mNegBlue.x - vx * 0.3 - mNegBlue.tx * 1.85,
+    y: mNegBlue.y - vy * 0.3 - mNegBlue.ty * 1.85,
+  };
+  const blueSeg4 = {
+    p0: toWorldUV(uDiv, vDiv),
+    p1: toWorldUV(uDiv + tDivU * 1.55, vDiv + tDivV * 1.55),
+    p2: blP2,
+    p3: blP3,
+  };
+
+  return {
+    yellow,
+    purple,
+    brown: [brownSeg1, brownSeg2, brownSeg3, brownSeg4],
+    blue: [blueSeg1, blueSeg2, blueSeg3, blueSeg4],
+  };
+}
+
 export function ensureVehicleRoutingGraph(world) {
   if (world._vehicleGraph) return world._vehicleGraph;
   const { W, H } = world;
@@ -180,6 +407,7 @@ export function ensureVehicleRoutingGraph(world) {
     isStreet = false,
     isRoundabout = false,
     isSlipRamp = false,
+    onUpperBridge = false,
   ) => {
     const id = nodes.length;
     nodes.push({
@@ -190,6 +418,7 @@ export function ensureVehicleRoutingGraph(world) {
       isStreet,
       isRoundabout,
       isSlipRamp,
+      onUpperBridge,
     });
     adj.push([]);
     return id;
@@ -351,20 +580,19 @@ export function ensureVehicleRoutingGraph(world) {
       const ux = tx / tLen;
       const uy = ty / tLen;
       if (fromPt) {
-        const dx = samples[bestK].x - fromPt.x;
-        const dy = samples[bestK].y - fromPt.y;
-        if (
-          dx * ux + dy * uy < 0.25 &&
+        while (
+          (samples[bestK].x - fromPt.x) * ux +
+            (samples[bestK].y - fromPt.y) * uy <
+            0.35 &&
           bestK + dirSign >= 0 &&
           bestK + dirSign < samples.length
         ) {
           bestK += dirSign;
         }
       } else if (toPt) {
-        const dx = toPt.x - samples[bestK].x;
-        const dy = toPt.y - samples[bestK].y;
-        if (
-          dx * ux + dy * uy < 0.25 &&
+        while (
+          (toPt.x - samples[bestK].x) * ux + (toPt.y - samples[bestK].y) * uy <
+            0.35 &&
           bestK - dirSign >= 0 &&
           bestK - dirSign < samples.length
         ) {
@@ -435,6 +663,21 @@ export function ensureVehicleRoutingGraph(world) {
       const entryB = mwNodeLists.get(ic.mwayB);
       if (!entryA || !entryB) continue;
 
+      const upperEntry = ic.prunedBridgeB ? entryA : entryB;
+      if (upperEntry?.mw?.samples) {
+        for (let k = 0; k < upperEntry.mw.samples.length; k++) {
+          const s = upperEntry.mw.samples[k];
+          if (Math.hypot(s.x - ic.x, s.y - ic.y) <= 1.85) {
+            if (nodes[upperEntry.mNodesFwd[k]]) {
+              nodes[upperEntry.mNodesFwd[k]].onUpperBridge = true;
+            }
+            if (nodes[upperEntry.mNodesRev[k]]) {
+              nodes[upperEntry.mNodesRev[k]].onUpperBridge = true;
+            }
+          }
+        }
+      }
+
       const uAx = Math.cos(ic.angleA);
       const uAy = Math.sin(ic.angleA);
       const uBx = Math.cos(ic.angleB);
@@ -443,9 +686,9 @@ export function ensureVehicleRoutingGraph(world) {
       const signsA = ic.activeSignsA || [-1, 1];
       const signsB = ic.activeSignsB || [-1, 1];
 
-      const outerDist = 2.95;
-      const outerCtrl = 1.05;
-      const leafSpan = 3.1;
+      const outerDist = 3.65;
+      const outerCtrl = 1.75;
+      const leafSpan = 4.85;
 
       for (const sA of signsA) {
         for (const sB of signsB) {
@@ -560,6 +803,7 @@ export function ensureVehicleRoutingGraph(world) {
           }
 
           // Inner 270° Cloverleaf Loop Ramp
+          const upperIsA = Boolean(ic.prunedBridgeB);
           if (crossAB > 0) {
             const p1x = ic.x + rAx * leafSpan;
             const p1y = ic.y + rAy * leafSpan;
@@ -578,8 +822,10 @@ export function ensureVehicleRoutingGraph(world) {
                 3 * mt * mt * t * p1y +
                 3 * mt * t * t * p2y +
                 t * t * t * ic.y;
+              const onUpper =
+                (t === 0.0 && upperIsA) || (t === 1.0 && !upperIsA);
               rNodesInner.push(
-                addNode(rx, ry, true, false, false, false, true),
+                addNode(rx, ry, true, false, false, false, true, onUpper),
               );
             }
             const firstPt = nodes[rNodesInner[0]];
@@ -633,8 +879,10 @@ export function ensureVehicleRoutingGraph(world) {
                 3 * mt * mt * t * p1y +
                 3 * mt * t * t * p2y +
                 t * t * t * ic.y;
+              const onUpper =
+                (t === 0.0 && !upperIsA) || (t === 1.0 && upperIsA);
               rNodesInner.push(
-                addNode(rx, ry, true, false, false, false, true),
+                addNode(rx, ry, true, false, false, false, true, onUpper),
               );
             }
             const firstPt = nodes[rNodesInner[0]];
@@ -678,20 +926,22 @@ export function ensureVehicleRoutingGraph(world) {
       const spurEntry = mwNodeLists.get(ic.mwaySpur);
       if (!mainEntry || !spurEntry) continue;
 
-      const cosM = Math.cos(ic.angleMain);
-      const sinM = Math.sin(ic.angleMain);
-      const toWorld = (lx, ly) => ({
-        x: ic.x + lx * cosM - ly * sinM,
-        y: ic.y + lx * sinM + ly * cosM,
-      });
+      if (spurEntry?.mw?.samples) {
+        for (let k = 0; k < spurEntry.mw.samples.length; k++) {
+          const s = spurEntry.mw.samples[k];
+          if (Math.hypot(s.x - ic.x, s.y - ic.y) <= 1.4) {
+            if (nodes[spurEntry.mNodesFwd[k]]) {
+              nodes[spurEntry.mNodesFwd[k]].onUpperBridge = true;
+            }
+            if (nodes[spurEntry.mNodesRev[k]]) {
+              nodes[spurEntry.mNodesRev[k]].onUpperBridge = true;
+            }
+          }
+        }
+      }
 
       const sy = ic.sideSign || 1;
-      const oppSy = -sy;
-
-      const pMainOuter = toWorld(-2.15, 0);
-      const pSpurOuter = toWorld(0, sy * 2.15);
-      const pMainInner = toWorld(0.52, 0);
-      const pSpurInner = toWorld(0, 0);
+      const ramps = computeTrumpetRampBeziers(ic, world.motorways);
 
       const spurSamples = spurEntry.mw.samples;
       const spurEndAtIc =
@@ -707,253 +957,27 @@ export function ensureVehicleRoutingGraph(world) {
         ? spurEntry.mNodesRev
         : spurEntry.mNodesFwd;
 
-      // Helper to evaluate cubic Bezier segment in local Trumpet coordinates
-      const evalCubicSeg = (p0, p1, p2, p3, t) => {
+      // Mainline carriageways in canonical +u and -u directions (where lx = sy * u)
+      const mainPosUNode = sy === 1 ? mainEntry.mNodesFwd : mainEntry.mNodesRev;
+      const mainNegUNode = sy === 1 ? mainEntry.mNodesRev : mainEntry.mNodesFwd;
+
+      const evalSeg = (seg, t) => {
         const mt = 1 - t;
         return {
-          lx:
-            mt * mt * mt * p0.lx +
-            3 * mt * mt * t * p1.lx +
-            3 * mt * t * t * p2.lx +
-            t * t * t * p3.lx,
-          ly:
-            mt * mt * mt * p0.ly +
-            3 * mt * mt * t * p1.ly +
-            3 * mt * t * t * p2.ly +
-            t * t * t * p3.ly,
+          x:
+            mt * mt * mt * seg.p0.x +
+            3 * mt * mt * t * seg.p1.x +
+            3 * mt * t * t * seg.p2.x +
+            t * t * t * seg.p3.x,
+          y:
+            mt * mt * mt * seg.p0.y +
+            3 * mt * mt * t * seg.p1.y +
+            3 * mt * t * t * seg.p2.y +
+            t * t * t * seg.p3.y,
         };
       };
 
-      const seg1_p0 = { lx: 0, ly: 0 };
-      const seg1_p1 = { lx: 0, ly: oppSy * 1.35 };
-      const seg1_p2 = { lx: 0.38, ly: oppSy * 1.85 };
-      const seg1_p3 = { lx: 1.02, ly: oppSy * 1.85 };
-
-      const seg2_p0 = { lx: 1.02, ly: oppSy * 1.85 };
-      const seg2_p1 = { lx: 1.92, ly: oppSy * 1.85 };
-      const seg2_p2 = { lx: 1.92, ly: 0 };
-      const seg2_p3 = { lx: 0.52, ly: 0 };
-
-      const seg2Fwd_p0 = { lx: 1.02, ly: oppSy * 1.85 };
-      const seg2Fwd_p1 = { lx: 1.85, ly: oppSy * 1.85 };
-      const seg2Fwd_p2 = { lx: 1.65, ly: 0 };
-      const seg2Fwd_p3 = { lx: 1.92, ly: 0 };
-      const pMainEast = toWorld(1.92, 0);
-
-      // 1. West Mainline (-lx) <-> Spur Movements (1a & 1b):
-      // Route each direction along whichever of the two painted Trumpet ribbons (Outer Slip-Ramp in (-1, +sy)
-      // vs. Inner Bell Loop in (+1, -sy)) sits on its right-hand carriageway side!
-      if (sy === 1) {
-        // Movement 1a (sy === 1): Mainline Fwd (ly > 0) -> Outer Slip-Ramp (-1, +1) -> Spur Outbound (lx < 0)
-        const rNodesOut = [];
-        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
-          const mt = 1 - t;
-          const lx = mt * mt * -2.15 + 2 * mt * t * -0.72;
-          const ly = 2 * mt * t * (sy * 0.72) + t * t * (sy * 2.15);
-          const wPt = toWorld(lx, ly);
-          rNodesOut.push(
-            addNode(wPt.x, wPt.y, true, false, false, false, true),
-          );
-        }
-        const kMO = findSampleNear(
-          mainEntry.mw,
-          pMainOuter.x,
-          pMainOuter.y,
-          null,
-          nodes[rNodesOut[0]],
-          1,
-        );
-        const kSO = findSampleNear(
-          spurEntry.mw,
-          pSpurOuter.x,
-          pSpurOuter.y,
-          nodes[rNodesOut[rNodesOut.length - 1]],
-          null,
-          spurEndAtIc ? -1 : 1,
-        );
-        const chainOut = [
-          mainEntry.mNodesFwd[kMO],
-          ...rNodesOut,
-          spurOutboundNode[kSO],
-        ];
-        for (let c = 0; c < chainOut.length - 1; c++) {
-          const uN = chainOut[c];
-          const vN = chainOut[c + 1];
-          const segD =
-            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
-            0.4;
-          addEdge(uN, vN, segD * 0.55 + 0.1);
-        }
-
-        // Movement 1b (sy === 1): Spur Inbound (lx > 0) -> Inner Bell Loop (+1, -1) -> Mainline Rev (ly < 0, -lx)
-        const rNodesBell = [];
-        for (const t of [0.0, 0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg1_p0, seg1_p1, seg1_p2, seg1_p3, t);
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
-        }
-        for (const t of [0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg2_p0, seg2_p1, seg2_p2, seg2_p3, t);
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
-        }
-        const kSI = findSampleNear(
-          spurEntry.mw,
-          pSpurInner.x,
-          pSpurInner.y,
-          null,
-          nodes[rNodesBell[0]],
-          spurEndAtIc ? 1 : -1,
-        );
-        const kMI = findSampleNear(
-          mainEntry.mw,
-          pMainInner.x,
-          pMainInner.y,
-          nodes[rNodesBell[rNodesBell.length - 1]],
-          null,
-          -1,
-        );
-        const chainBell = [
-          spurInboundNode[kSI],
-          ...rNodesBell,
-          mainEntry.mNodesRev[kMI],
-        ];
-        for (let c = 0; c < chainBell.length - 1; c++) {
-          const uN = chainBell[c];
-          const vN = chainBell[c + 1];
-          const segD =
-            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
-            0.4;
-          addEdge(uN, vN, segD * 0.55 + 0.1);
-        }
-      } else {
-        // Movement 1a (sy === -1): Mainline Fwd (ly > 0) -> Inner Bell Loop (+1, +1) -> Spur Outbound (lx > 0)
-        const rNodesBell = [];
-        for (const t of [0.0, 0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg2_p3, seg2_p2, seg2_p1, seg2_p0, t);
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
-        }
-        for (const t of [0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg1_p3, seg1_p2, seg1_p1, seg1_p0, t);
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodesBell.push(addNode(wp.x, wp.y, true, false, false, false, true));
-        }
-        const kMI = findSampleNear(
-          mainEntry.mw,
-          pMainInner.x,
-          pMainInner.y,
-          null,
-          nodes[rNodesBell[0]],
-          1,
-        );
-        const kSI = findSampleNear(
-          spurEntry.mw,
-          pSpurInner.x,
-          pSpurInner.y,
-          nodes[rNodesBell[rNodesBell.length - 1]],
-          null,
-          spurEndAtIc ? -1 : 1,
-        );
-        const chainBell = [
-          mainEntry.mNodesFwd[kMI],
-          ...rNodesBell,
-          spurOutboundNode[kSI],
-        ];
-        for (let c = 0; c < chainBell.length - 1; c++) {
-          const uN = chainBell[c];
-          const vN = chainBell[c + 1];
-          const segD =
-            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
-            0.4;
-          addEdge(uN, vN, segD * 0.55 + 0.1);
-        }
-
-        // Movement 1b (sy === -1): Spur Inbound (lx < 0) -> Outer Slip-Ramp (-1, -1) -> Mainline Rev (ly < 0, -lx)
-        const rNodesOut = [];
-        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
-          const mt = 1 - t;
-          const lx = 2 * mt * t * -0.72 + t * t * -2.15;
-          const ly = mt * mt * (sy * 2.15) + 2 * mt * t * (sy * 0.72);
-          const wPt = toWorld(lx, ly);
-          rNodesOut.push(
-            addNode(wPt.x, wPt.y, true, false, false, false, true),
-          );
-        }
-        const kSO = findSampleNear(
-          spurEntry.mw,
-          pSpurOuter.x,
-          pSpurOuter.y,
-          null,
-          nodes[rNodesOut[0]],
-          spurEndAtIc ? 1 : -1,
-        );
-        const kMO = findSampleNear(
-          mainEntry.mw,
-          pMainOuter.x,
-          pMainOuter.y,
-          nodes[rNodesOut[rNodesOut.length - 1]],
-          null,
-          -1,
-        );
-        const chainOut = [
-          spurInboundNode[kSO],
-          ...rNodesOut,
-          mainEntry.mNodesRev[kMO],
-        ];
-        for (let c = 0; c < chainOut.length - 1; c++) {
-          const uN = chainOut[c];
-          const vN = chainOut[c + 1];
-          const segD =
-            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
-            0.4;
-          addEdge(uN, vN, segD * 0.55 + 0.1);
-        }
-      }
-
-      // 2. Inner 270° Trumpet Bell Loop in (+1, -sy) opposite quadrant:
-      // Direction 2a: Spur Inbound -> Mainline Fwd (+lx)
-      {
-        const rNodes = [];
-        for (const t of [0.0, 0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg1_p0, seg1_p1, seg1_p2, seg1_p3, t);
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
-        }
-        for (const t of [0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(
-            seg2Fwd_p0,
-            seg2Fwd_p1,
-            seg2Fwd_p2,
-            seg2Fwd_p3,
-            t,
-          );
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
-        }
-        const firstPt = nodes[rNodes[0]];
-        const lastPt = nodes[rNodes[rNodes.length - 1]];
-        const kSI = findSampleNear(
-          spurEntry.mw,
-          pSpurInner.x,
-          pSpurInner.y,
-          null,
-          firstPt,
-          spurEndAtIc ? 1 : -1,
-        );
-        const kME = findSampleNear(
-          mainEntry.mw,
-          pMainEast.x,
-          pMainEast.y,
-          lastPt,
-          null,
-          1,
-        );
-        const chain = [
-          spurInboundNode[kSI],
-          ...rNodes,
-          mainEntry.mNodesFwd[kME],
-        ];
+      const connectChain = (chain) => {
         for (let c = 0; c < chain.length - 1; c++) {
           const uN = chain[c];
           const vN = chain[c + 1];
@@ -962,52 +986,136 @@ export function ensureVehicleRoutingGraph(world) {
             0.4;
           addEdge(uN, vN, segD * 0.55 + 0.1);
         }
-      }
+      };
 
-      // Direction 2b: Mainline Rev (-lx) -> Spur Outbound
+      // 1. Yellow Ramp (Left Outer Slip-Ramp): Mainline (+u) -> Spur Outbound (+v)
       {
         const rNodes = [];
-        for (const t of [0.0, 0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg2_p3, seg2_p2, seg2_p1, seg2_p0, t);
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
+        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
+          const wp = evalSeg(ramps.yellow, t);
+          rNodes.push(
+            addNode(wp.x, wp.y, true, false, false, false, true, false),
+          );
         }
-        for (const t of [0.33, 0.67, 1.0]) {
-          const lp = evalCubicSeg(seg1_p3, seg1_p2, seg1_p1, seg1_p0, t);
-          const wp = toWorld(lp.lx, lp.ly);
-          rNodes.push(addNode(wp.x, wp.y, true, false, false, false, true));
-        }
-        const firstPt = nodes[rNodes[0]];
-        const lastPt = nodes[rNodes[rNodes.length - 1]];
-        const kMI = findSampleNear(
+        const kMain = findSampleNear(
           mainEntry.mw,
-          pMainInner.x,
-          pMainInner.y,
+          ramps.yellow.p0.x,
+          ramps.yellow.p0.y,
           null,
-          firstPt,
-          -1,
+          nodes[rNodes[0]],
+          sy,
         );
-        const kSI = findSampleNear(
+        const kSpur = findSampleNear(
           spurEntry.mw,
-          pSpurInner.x,
-          pSpurInner.y,
-          lastPt,
+          ramps.yellow.p3.x,
+          ramps.yellow.p3.y,
+          nodes[rNodes[rNodes.length - 1]],
           null,
           spurEndAtIc ? -1 : 1,
         );
-        const chain = [
-          mainEntry.mNodesRev[kMI],
-          ...rNodes,
-          spurOutboundNode[kSI],
-        ];
-        for (let c = 0; c < chain.length - 1; c++) {
-          const uN = chain[c];
-          const vN = chain[c + 1];
-          const segD =
-            Math.hypot(nodes[vN].x - nodes[uN].x, nodes[vN].y - nodes[uN].y) ||
-            0.4;
-          addEdge(uN, vN, segD * 0.55 + 0.1);
+        connectChain([mainPosUNode[kMain], ...rNodes, spurOutboundNode[kSpur]]);
+      }
+
+      // 2. Purple Ramp (Right Outer Slip-Ramp): Spur Inbound (-v) -> Mainline (+u)
+      {
+        const rNodes = [];
+        for (const t of [0.0, 0.25, 0.5, 0.75, 1.0]) {
+          const wp = evalSeg(ramps.purple, t);
+          rNodes.push(
+            addNode(wp.x, wp.y, true, false, false, false, true, false),
+          );
         }
+        const kSpur = findSampleNear(
+          spurEntry.mw,
+          ramps.purple.p0.x,
+          ramps.purple.p0.y,
+          null,
+          nodes[rNodes[0]],
+          spurEndAtIc ? 1 : -1,
+        );
+        const kMain = findSampleNear(
+          mainEntry.mw,
+          ramps.purple.p3.x,
+          ramps.purple.p3.y,
+          nodes[rNodes[rNodes.length - 1]],
+          null,
+          sy,
+        );
+        connectChain([spurInboundNode[kSpur], ...rNodes, mainPosUNode[kMain]]);
+      }
+
+      // 3. Brown Ramp (Inner 270° Trumpet Loop): Mainline (-u) -> 270° Loop -> Bridge -> Spur Outbound (+v)
+      {
+        const bSegs = ramps.brown;
+        const rNodes = [];
+        for (let sIdx = 0; sIdx < bSegs.length; sIdx++) {
+          const seg = bSegs[sIdx];
+          const ts = sIdx === 0 ? [0.0, 0.33, 0.67, 1.0] : [0.33, 0.67, 1.0];
+          for (const t of ts) {
+            const wp = evalSeg(seg, t);
+            const onUpper =
+              (sIdx === bSegs.length - 1 && t >= 0.3) ||
+              Math.hypot(wp.x - ic.x, wp.y - ic.y) <= 0.95;
+            rNodes.push(
+              addNode(wp.x, wp.y, true, false, false, false, true, onUpper),
+            );
+          }
+        }
+        const kMain = findSampleNear(
+          mainEntry.mw,
+          bSegs[0].p0.x,
+          bSegs[0].p0.y,
+          null,
+          nodes[rNodes[0]],
+          -sy,
+        );
+        const lastBSeg = bSegs[bSegs.length - 1];
+        const kSpur = findSampleNear(
+          spurEntry.mw,
+          lastBSeg.p3.x,
+          lastBSeg.p3.y,
+          nodes[rNodes[rNodes.length - 1]],
+          null,
+          spurEndAtIc ? -1 : 1,
+        );
+        connectChain([mainNegUNode[kMain], ...rNodes, spurOutboundNode[kSpur]]);
+      }
+
+      // 4. Blue Ramp (Outer Trumpet Bell): Spur Inbound (-v) -> Bridge -> Parallel Outer Bell -> Diverge into Mainline (-u)
+      {
+        const blSegs = ramps.blue;
+        const rNodes = [];
+        for (let sIdx = 0; sIdx < blSegs.length; sIdx++) {
+          const seg = blSegs[sIdx];
+          const ts = sIdx === 0 ? [0.0, 0.33, 0.67, 1.0] : [0.33, 0.67, 1.0];
+          for (const t of ts) {
+            const wp = evalSeg(seg, t);
+            const onUpper =
+              (sIdx === 0 && t <= 0.7) ||
+              Math.hypot(wp.x - ic.x, wp.y - ic.y) <= 0.95;
+            rNodes.push(
+              addNode(wp.x, wp.y, true, false, false, false, true, onUpper),
+            );
+          }
+        }
+        const kSpur = findSampleNear(
+          spurEntry.mw,
+          blSegs[0].p0.x,
+          blSegs[0].p0.y,
+          null,
+          nodes[rNodes[0]],
+          spurEndAtIc ? 1 : -1,
+        );
+        const lastBlSeg = blSegs[blSegs.length - 1];
+        const kMain = findSampleNear(
+          mainEntry.mw,
+          lastBlSeg.p3.x,
+          lastBlSeg.p3.y,
+          nodes[rNodes[rNodes.length - 1]],
+          null,
+          -sy,
+        );
+        connectChain([spurInboundNode[kSpur], ...rNodes, mainNegUNode[kMain]]);
       }
     }
   }
@@ -1205,6 +1313,7 @@ export function findVehicleNetworkPath(world, sx, sy, ex, ey) {
           isStreet: n.isStreet,
           isRoundabout: n.isRoundabout,
           isSlipRamp: n.isSlipRamp,
+          onUpperBridge: Boolean(n.onUpperBridge),
         });
         cur = parent[cur];
       }
@@ -1296,6 +1405,7 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
         inTunnel: false,
         isStreet: true,
         isDriveway: true,
+        onUpperBridge: false,
       });
     }
   }
@@ -1330,8 +1440,11 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
       const pOut = rawPath[Math.min(rawPath.length - 1, j + 1)];
       const thetaIn = Math.atan2(pIn.y - matchedRb.y, pIn.x - matchedRb.x);
       const thetaOut = Math.atan2(pOut.y - matchedRb.y, pOut.x - matchedRb.x);
-      const rawSweep =
+      let rawSweep =
         (((thetaIn - thetaOut) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      if (rawSweep < 0.65) {
+        rawSweep = Math.PI * 2 - 0.36;
+      }
       const pad = Math.min(0.18, rawSweep * 0.28);
       const thetaStart = thetaIn - pad;
       const sweep = Math.max(0.12, rawSweep - 2 * pad);
@@ -1345,6 +1458,7 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
           inTunnel: false,
           isStreet: false,
           isRoundaboutArc: true,
+          onUpperBridge: false,
         });
       }
       i = j;
@@ -1365,6 +1479,7 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
         inTunnel: false,
         isStreet: true,
         isDriveway: true,
+        onUpperBridge: false,
       });
     }
   }
@@ -1461,6 +1576,7 @@ export function buildDirectedLaneTrajectory(world, srcPt, dstPt, rawPath) {
           ...pCurr,
           x: mt * mt * ax + 2 * mt * t * pCurr.x + t * t * cx,
           y: mt * mt * ay + 2 * mt * t * pCurr.y + t * t * cy,
+          onUpperBridge: pCurr.onUpperBridge,
         });
       }
     } else {

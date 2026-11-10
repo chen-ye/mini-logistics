@@ -461,6 +461,7 @@ export interface VehicleGraphNode {
   isStreet: boolean;
   isRoundabout: boolean;
   isSlipRamp?: boolean;
+  onUpperBridge?: boolean;
 }
 
 export interface RoundaboutSpec {
@@ -534,6 +535,7 @@ export interface DirectedLanePoint {
   isSlipRamp?: boolean;
   isRoundabout?: boolean;
   isRoundaboutArc?: boolean;
+  onUpperBridge?: boolean;
 }
 
 export interface DirectedLaneTrack {

@@ -28,12 +28,12 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
   const baseElevation = new Float32Array(world.elevationField);
 
   /**
-   * Smooth a river polyline with Laplacian passes so meanders are 100% C1 smooth (zero spikes!).
+   * Floating-point Laplacian smoothing helper.
    * @param {RiverPoint[]} pts
    * @param {number} [passes]
    * @returns {RiverPoint[]}
    */
-  const smoothPolyline = (pts, passes = 4) => {
+  const laplacianSmoothFloat = (pts, passes = 4) => {
     if (!pts || pts.length < 5) return pts;
     let cur = pts.map((p) => ({ ...p }));
     for (let pass = 0; pass < passes; pass++) {
@@ -48,38 +48,229 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
       next.push(cur[cur.length - 1]);
       cur = next;
     }
-    // Rasterize smoothed floating-point curve back to 1-tile steps so `waterMask = 1` is continuous
-    const out = [
+    return cur;
+  };
+
+  /**
+   * Smooth a river polyline with Laplacian passes, route via octilinear (0°/45°/90°) runs
+   * between waypoints spaced ~4.0–4.5 tiles, and collapse 1-tile single-step jogs so meanders
+   * consist of clean multi-tile octilinear runs while remaining 8-connected 1-tile integer points.
+   * @param {RiverPoint[]} pts
+   * @param {number} [passes]
+   * @returns {RiverPoint[]}
+   */
+  const smoothPolyline = (pts, passes = 4) => {
+    if (!pts || pts.length < 5) return pts;
+    const cur = laplacianSmoothFloat(pts, passes);
+
+    // Cumulative arc length along smoothed floating-point curve
+    const cumLen = [0];
+    for (let i = 1; i < cur.length; i++) {
+      cumLen.push(
+        cumLen[i - 1] +
+          Math.hypot(cur[i].x - cur[i - 1].x, cur[i].y - cur[i - 1].y),
+      );
+    }
+    const totalDist = cumLen[cumLen.length - 1];
+    if (totalDist < 1.0) {
+      return [
+        {
+          x: Math.round(cur[0].x),
+          y: Math.round(cur[0].y),
+          width: cur[0].width,
+        },
+      ];
+    }
+
+    // Sample waypoints spaced by ~4.0–4.5 tiles of arc length, always including cur[0] and cur[last]
+    const sampleCurAt = (s) => {
+      if (s <= 0) return { x: cur[0].x, y: cur[0].y, width: cur[0].width };
+      if (s >= totalDist) {
+        const last = cur[cur.length - 1];
+        return { x: last.x, y: last.y, width: last.width };
+      }
+      let idx = 1;
+      while (idx < cumLen.length - 1 && cumLen[idx] < s) idx++;
+      const s0 = cumLen[idx - 1];
+      const s1 = cumLen[idx];
+      const t = s1 > s0 ? (s - s0) / (s1 - s0) : 0;
+      const p0 = cur[idx - 1];
+      const p1 = cur[idx];
+      const x = p0.x + (p1.x - p0.x) * t;
+      const y = p0.y + (p1.y - p0.y) * t;
+      const w0 = p0.width !== undefined ? p0.width : 1.5;
+      const w1 = p1.width !== undefined ? p1.width : 1.5;
+      return { x, y, width: w0 + (w1 - w0) * t };
+    };
+
+    const targetSpacing = 4.2;
+    const numSegs = Math.max(1, Math.round(totalDist / targetSpacing));
+    const waypoints = [];
+    for (let k = 0; k <= numSegs; k++) {
+      const s = (k / numSegs) * totalDist;
+      const pt = sampleCurAt(s);
+      let wx = Math.round(pt.x);
+      let wy = Math.round(pt.y);
+      if (k === 0) {
+        wx = Math.round(cur[0].x);
+        wy = Math.round(cur[0].y);
+      } else if (k === numSegs) {
+        const last = cur[cur.length - 1];
+        wx = Math.round(last.x);
+        wy = Math.round(last.y);
+      }
+      wx = Math.max(0, Math.min(W - 1, wx));
+      wy = Math.max(0, Math.min(H - 1, wy));
+      if (
+        waypoints.length === 0 ||
+        wx !== waypoints[waypoints.length - 1].x ||
+        wy !== waypoints[waypoints.length - 1].y
+      ) {
+        waypoints.push({ x: wx, y: wy, width: pt.width, s });
+      }
+    }
+
+    if (waypoints.length === 1) {
+      return [
+        {
+          x: waypoints[0].x,
+          y: waypoints[0].y,
+          width: waypoints[0].width,
+        },
+      ];
+    }
+
+    // Route between waypoints using clean 2-leg octilinear runs
+    let out = [
       {
-        x: Math.round(cur[0].x),
-        y: Math.round(cur[0].y),
-        width: cur[0].width,
+        x: waypoints[0].x,
+        y: waypoints[0].y,
+        width: waypoints[0].width,
       },
     ];
-    for (let i = 1; i < cur.length; i++) {
-      const gx = Math.round(cur[i].x);
-      const gy = Math.round(cur[i].y);
-      const w = cur[i].width;
-      const last = out[out.length - 1];
-      const steps = Math.max(
-        1,
-        Math.ceil(Math.hypot(gx - last.x, gy - last.y)),
-      );
-      for (let k = 1; k <= steps; k++) {
-        const ix = Math.round(last.x + ((gx - last.x) * k) / steps);
-        const iy = Math.round(last.y + ((gy - last.y) * k) / steps);
-        const iw =
-          last.width !== undefined && w !== undefined
-            ? last.width + ((w - last.width) * k) / steps
-            : w;
-        if (
-          world.inBounds(ix, iy, 1) &&
-          (ix !== out[out.length - 1].x || iy !== out[out.length - 1].y)
-        ) {
-          out.push({ x: ix, y: iy, width: iw });
+    let prevDirX = 0;
+    let prevDirY = 0;
+
+    for (let k = 1; k < waypoints.length; k++) {
+      const A = out[out.length - 1];
+      const B = waypoints[k];
+      const dx = B.x - A.x;
+      const dy = B.y - A.y;
+      if (dx === 0 && dy === 0) continue;
+
+      const sx = Math.sign(dx);
+      const sy = Math.sign(dy);
+      const adx = Math.abs(dx);
+      const ady = Math.abs(dy);
+      const dLen = Math.min(adx, ady);
+      const cLen = Math.abs(adx - ady);
+      const cardDx = adx > ady ? sx : 0;
+      const cardDy = ady > adx ? sy : 0;
+
+      let legs;
+      if (dLen === 0) {
+        legs = [{ count: cLen, dx: sx, dy: sy }];
+      } else if (cLen === 0) {
+        legs = [{ count: dLen, dx: sx, dy: sy }];
+      } else {
+        // Evaluate diagonal-first vs cardinal-first
+        const M1 = { x: A.x + sx * dLen, y: A.y + sy * dLen };
+        const M2 = { x: A.x + cardDx * cLen, y: A.y + cardDy * cLen };
+        const sMid = 0.5 * (waypoints[k - 1].s + waypoints[k].s);
+        const Pmid = sampleCurAt(sMid);
+
+        const distSq1 = (M1.x - Pmid.x) ** 2 + (M1.y - Pmid.y) ** 2;
+        const distSq2 = (M2.x - Pmid.x) ** 2 + (M2.y - Pmid.y) ** 2;
+
+        let dot1 = 0;
+        let dot2 = 0;
+        if (prevDirX !== 0 || prevDirY !== 0) {
+          const prevLen = Math.hypot(prevDirX, prevDirY);
+          dot1 = (sx * prevDirX + sy * prevDirY) / (Math.SQRT2 * prevLen);
+          dot2 = (cardDx * prevDirX + cardDy * prevDirY) / prevLen;
+        }
+
+        const score1 = distSq1 - 2.5 * dot1;
+        const score2 = distSq2 - 2.5 * dot2;
+
+        if (score1 <= score2) {
+          legs = [
+            { count: dLen, dx: sx, dy: sy },
+            { count: cLen, dx: cardDx, dy: cardDy },
+          ];
+        } else {
+          legs = [
+            { count: cLen, dx: cardDx, dy: cardDy },
+            { count: dLen, dx: sx, dy: sy },
+          ];
+        }
+      }
+
+      const totalSteps = legs.reduce((acc, leg) => acc + leg.count, 0);
+      let stepCount = 0;
+      let cx = A.x;
+      let cy = A.y;
+
+      for (const leg of legs) {
+        for (let s = 0; s < leg.count; s++) {
+          cx += leg.dx;
+          cy += leg.dy;
+          stepCount++;
+          const frac = stepCount / totalSteps;
+          const w =
+            A.width !== undefined && B.width !== undefined
+              ? A.width + (B.width - A.width) * frac
+              : B.width;
+          if (
+            world.inBounds(cx, cy, 1) &&
+            (cx !== out[out.length - 1].x || cy !== out[out.length - 1].y)
+          ) {
+            out.push({ x: cx, y: cy, width: w });
+            prevDirX = leg.dx;
+            prevDirY = leg.dy;
+          }
         }
       }
     }
+
+    // Post-pass: collapse any remaining 1-tile H-V-H or D-H-D single-step jogs
+    let changed = true;
+    let passesLeft = 3;
+    while (changed && passesLeft-- > 0 && out.length > 3) {
+      changed = false;
+      const collapsed = [out[0]];
+      let i = 0;
+      while (i < out.length - 1) {
+        if (i + 2 < out.length) {
+          const p0 = out[i];
+          const p1 = out[i + 1];
+          const p2 = out[i + 2];
+          const dx = p2.x - p0.x;
+          const dy = p2.y - p0.y;
+          const adx = Math.abs(dx);
+          const ady = Math.abs(dy);
+          // If p0 to p2 is an 8-connected single step (octilinear, length 1)
+          if ((adx === 1 || ady === 1) && Math.max(adx, ady) === 1) {
+            const d1x = p1.x - p0.x;
+            const d1y = p1.y - p0.y;
+            const d2x = p2.x - p1.x;
+            const d2y = p2.y - p1.y;
+            if (d1x !== d2x || d1y !== d2y) {
+              if (world.inBounds(p2.x, p2.y, 1)) {
+                collapsed.push(p2);
+                i += 2;
+                changed = true;
+                continue;
+              }
+            }
+          }
+        }
+        collapsed.push(out[i + 1]);
+        i++;
+      }
+      out = collapsed;
+    }
+
     return out;
   };
 
@@ -95,8 +286,8 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     phaseOffset = 0,
     ampScale = 1.0,
   ) => {
-    if (!rawPath || rawPath.length < 12) return rawPath;
-    const baseSmooth = smoothPolyline(rawPath, 5);
+    if (!rawPath || rawPath.length < 24) return smoothPolyline(rawPath, 4);
+    const baseSmooth = laplacianSmoothFloat(rawPath, 5);
     const n = baseSmooth.length;
     const displaced = baseSmooth.map((pt, i) => {
       if (i === 0 || i === n - 1) return { ...pt };
@@ -449,6 +640,18 @@ export function synthesizeFluvialHydrology(world, basins, primarySink) {
     let path = rawPath.slice(i0);
     const minLen = arch === "island-hopper" ? 8 : isMainOutflow ? 10 : 54;
     if (path.length < minLen) return;
+
+    // Prevent redundant short parallel braids across the same lake isthmus
+    if (path.length < 32 && world.rivers.length > 0) {
+      let nearCount = 0;
+      for (const pt of path) {
+        const isNearExisting = world.rivers.some((r) =>
+          r.points.some((rp) => Math.hypot(rp.x - pt.x, rp.y - pt.y) < 5.0),
+        );
+        if (isNearExisting) nearCount++;
+      }
+      if (nearCount > path.length * 0.35) return;
+    }
 
     if (applyMeanders) {
       path = applyMeanderingDisplacement(path, seedPhase, 1.0);

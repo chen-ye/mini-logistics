@@ -1,6 +1,7 @@
 /** @import { Airport, AirportATC, CarAgent, FlightPhase, FlightTrack, FlightTrackPoint, GateSlot, PlaneAgent, PlaneEndpoint, PlaneFSMState } from './types.js' */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
 import { SIM_CONFIG } from "./constants.js";
+import { SeededRNG } from "./math.js";
 
 /**
  * Transforms local runway-aligned coordinates (lx, ly) in tiles around ap by ap's runway angle.
@@ -41,7 +42,7 @@ function normalizeAngle(a) {
 function capturePoseResidual(p, newRefX, newRefY, newRefAng) {
   const dx = p.x - newRefX;
   const dy = p.y - newRefY;
-  if (Math.hypot(dx, dy) > 1.85) {
+  if (Math.hypot(dx, dy) > 6.0) {
     p._resX = 0;
     p._resY = 0;
     p._resAng = 0;
@@ -721,6 +722,8 @@ export class LogisticsSimulator {
     this.tripsCompleted = SIM_CONFIG.FLEET.initialTrips;
     /** @type {number} */
     this.simTime = 0;
+    /** @type {SeededRNG} */
+    this.rng = new SeededRNG(`${world.config?.seed || "OTTD-METRO-84"}:sim`);
 
     // Phase 1: Initialize ATC on every airport
     for (const ap of this.world.airports) {
@@ -757,7 +760,7 @@ export class LogisticsSimulator {
    * @param {boolean} [isFreightTruck]
    */
   spawnCar(isFreightTruck = false) {
-    const { world } = this;
+    const { world, rng } = this;
     if (isFreightTruck && world.cargoLinks && world.cargoLinks.length > 0) {
       const mwayLinks = world.cargoLinks.filter(
         (l) => l.usesMotorway && l.outboundTrack && l.inboundTrack,
@@ -766,12 +769,12 @@ export class LogisticsSimulator {
         (l) => l.outboundTrack && l.inboundTrack,
       );
       const pool =
-        mwayLinks.length > 0 && Math.random() < 0.45 ? mwayLinks : validLinks;
+        mwayLinks.length > 0 && rng.next() < 0.45 ? mwayLinks : validLinks;
       if (pool.length > 0) {
-        const link = pool[Math.floor(Math.random() * pool.length)];
-        const returning = Math.random() < 0.32;
+        const link = pool[Math.floor(rng.next() * pool.length)];
+        const returning = rng.next() < 0.32;
         const track = returning ? link.inboundTrack : link.outboundTrack;
-        const dist = Math.random() * track.totalLength;
+        const dist = rng.next() * track.totalLength;
         let segIdx = 0;
         while (
           segIdx < track.pts.length - 2 &&
@@ -788,7 +791,7 @@ export class LogisticsSimulator {
           returning,
           dist,
           segIdx,
-          speed: 3.1 + Math.random() * 1.3,
+          speed: 3.1 + rng.next() * 1.3,
           color: link.color,
         });
         return;
@@ -803,14 +806,12 @@ export class LogisticsSimulator {
         (r) => r.outboundTrack && r.inboundTrack,
       );
       const pool =
-        mwayRoutes.length > 0 && Math.random() < 0.42
-          ? mwayRoutes
-          : validRoutes;
+        mwayRoutes.length > 0 && rng.next() < 0.42 ? mwayRoutes : validRoutes;
       if (pool.length > 0) {
-        const route = pool[Math.floor(Math.random() * pool.length)];
-        const returning = Math.random() < 0.5;
+        const route = pool[Math.floor(rng.next() * pool.length)];
+        const returning = rng.next() < 0.5;
         const track = returning ? route.inboundTrack : route.outboundTrack;
-        const dist = Math.random() * track.totalLength;
+        const dist = rng.next() * track.totalLength;
         let segIdx = 0;
         while (
           segIdx < track.pts.length - 2 &&
@@ -826,7 +827,7 @@ export class LogisticsSimulator {
           returning,
           dist,
           segIdx,
-          speed: 3.8 + Math.random() * 1.8,
+          speed: 3.8 + rng.next() * 1.8,
           color: route.color,
         });
       }
@@ -837,9 +838,10 @@ export class LogisticsSimulator {
    * @param {number} [initialProgress]
    */
   spawnPlane(initialProgress = 0) {
-    const { world } = this;
+    const { world, rng } = this;
     if (world.airports.length === 0) return;
-    const originIdx = Math.floor(Math.random() * world.airports.length);
+    const planeIdx = this.planes.length;
+    const originIdx = planeIdx % world.airports.length;
     const origin = world.airports[originIdx];
     if (!origin) return;
 
@@ -847,9 +849,7 @@ export class LogisticsSimulator {
     let dest;
     if (world.airports.length > 1) {
       const destIdx =
-        (originIdx +
-          1 +
-          Math.floor(Math.random() * (world.airports.length - 1))) %
+        (originIdx + 1 + Math.floor(rng.next() * (world.airports.length - 1))) %
         world.airports.length;
       dest = world.airports[destIdx];
     } else {
@@ -863,7 +863,6 @@ export class LogisticsSimulator {
       };
     }
 
-    const planeIdx = this.planes.length;
     const isCargoFreighter = Boolean(
       origin.airportClass === "CRG" ||
       dest.airportClass === "CRG" ||
@@ -900,9 +899,13 @@ export class LogisticsSimulator {
       dSign: dest.activeSign,
     });
 
+    const effProgress =
+      initialProgress <= 0.01 && originAtc && !chosenOriginGate
+        ? 0.5
+        : initialProgress;
     const dist = Math.max(
       0,
-      Math.min(initialProgress * track.totalLength, track.totalLength * 0.999),
+      Math.min(effProgress * track.totalLength, track.totalLength * 0.999),
     );
     const sample = sampleFlightTrack(track, dist);
 
@@ -1373,7 +1376,7 @@ export class LogisticsSimulator {
               const others = this.world.airports.filter(
                 (a) => a.id !== p.origin.id,
               );
-              nextDest = others[Math.floor(Math.random() * others.length)];
+              nextDest = others[Math.floor(this.rng.next() * others.length)];
             } else {
               const ang = p.origin.angleRad ?? 0;
               nextDest = {

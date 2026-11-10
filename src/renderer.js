@@ -17,8 +17,12 @@ import {
   drawTaperingRivers,
   drawTrees,
   drawUrbanBlushAndTrees,
+  extrudeRibbonToPath2D,
 } from "./canvas-layer-cache.js";
-import { deriveRoadTopology } from "./vehicle-routing.js";
+import {
+  deriveRoadTopology,
+  computeTrumpetRampBeziers,
+} from "./vehicle-routing.js";
 import { buildFlightTrack, initAirportATC } from "./simulator.js";
 
 /**
@@ -71,7 +75,7 @@ export class MiniMotorwaysRenderer {
     /** @type {any} */
     this._cachedRoadDiag = null;
 
-    // 5 Retained Vector Display Lists (`VectorLayerRecorder`)
+    // 6 Retained Vector Display Lists (`VectorLayerRecorder`)
     /** @type {{ key: string, contours: VectorLayerRecorder, water: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
     this.hydroDisplayList = null;
     /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, blush: VectorLayerRecorder, treesAndFarms: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
@@ -80,6 +84,8 @@ export class MiniMotorwaysRenderer {
     this.surfaceNetworkDisplayList = null;
     /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, recorder: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
     this.motorwayDisplayList = null;
+    /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, recorder: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
+    this.overpassBridgeDisplayList = null;
     /** @type {{ worldRef: ProceduralLogisticsWorld | null, ts: number, recorder: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
     this.airwayDisplayList = null;
 
@@ -364,6 +370,36 @@ export class MiniMotorwaysRenderer {
   }
 
   /**
+   * Builds or reuses the retained overpass bridge display list (`overpassBridgeDisplayList`:
+   * clipped lower-deck drop shadows, upper bridge decks, core medians, and parapet rails for Cloverleaf & Trumpet overpasses).
+   *
+   * @param {ProceduralLogisticsWorld} world
+   */
+  ensureOverpassBridgeDisplayList(world) {
+    const ts = world.tileSize;
+    if (
+      this.overpassBridgeDisplayList &&
+      this.overpassBridgeDisplayList.worldRef === world &&
+      this.overpassBridgeDisplayList.ts === ts
+    ) {
+      return this.overpassBridgeDisplayList;
+    }
+
+    const rec = new VectorLayerRecorder();
+    this.drawOverpassBridges(rec, world, ts);
+
+    this.overpassBridgeDisplayList = {
+      worldRef: world,
+      ts,
+      recorder: rec,
+      replay(ctx) {
+        rec.replay(ctx);
+      },
+    };
+    return this.overpassBridgeDisplayList;
+  }
+
+  /**
    * Builds or reuses the retained airway corridors display list (`airwayDisplayList`:
    * subtle runway-aligned dashed airway arcs between airport pairs).
    *
@@ -394,7 +430,7 @@ export class MiniMotorwaysRenderer {
   }
 
   /**
-   * Pre-builds all 5 retained `VectorLayerRecorder` display lists for `world`.
+   * Pre-builds all 6 retained `VectorLayerRecorder` display lists for `world`.
    *
    * @param {ProceduralLogisticsWorld} world
    */
@@ -403,6 +439,7 @@ export class MiniMotorwaysRenderer {
     this.ensureUrbanTerrainDisplayList(world);
     this.ensureSurfaceNetworkDisplayList(world);
     this.ensureMotorwayDisplayList(world);
+    this.ensureOverpassBridgeDisplayList(world);
     this.ensureAirwayDisplayList(world);
   }
 
@@ -446,11 +483,17 @@ export class MiniMotorwaysRenderer {
     this.drawCars(ctx, world, sim, ts, "road");
     this.drawPlanes(ctx, world, sim, ts, "ground");
 
-    // 7. Replay Retained Motorway Display List ([1], [2], [3] Overpasses, Interchanges, Tunnels & Shields)
+    // 7. Replay Retained Level-1 Motorway Display List (Coalesced Ground Shadows, Ramps, Mainlines, Tunnels & Shields)
     this.ensureMotorwayDisplayList(world).replay(ctx);
 
-    // 7B. Draw Live Elevated Motorway Vehicles on Top of the Motorway Decks
-    this.drawCars(ctx, world, sim, ts, "motorway");
+    // 7B. Draw Live Lower-Deck Motorway Vehicles
+    this.drawCars(ctx, world, sim, ts, "motorway-lower");
+
+    // 7C. Replay Retained Level-2 Overpass Bridge Display List (Clipped Lower-Deck Shadow + Upper Bridge Deck & Parapets)
+    this.ensureOverpassBridgeDisplayList(world).replay(ctx);
+
+    // 7D. Draw Live Upper-Bridge Motorway Vehicles on Top of Overpass Bridges
+    this.drawCars(ctx, world, sim, ts, "motorway-upper");
 
     // 8. Draw Central Place Hierarchy, RCI Cargo Chain, or Road Grid Vector Graph Overlay if active
     if (this.activeLayer === "hierarchy") {
@@ -1079,6 +1122,27 @@ export class MiniMotorwaysRenderer {
     // PASS 1: UNIFIED SURFACE ROAD CASINGS (Driveways + Streets + Arterials + Airport Loops & Spines + Roundabout Rings)
     // Every grey casing in the surface road network is stroked BEFORE any white asphalt fill is drawn!
     // =========================================================================
+    // Diamond slip-ramp casings (`PALETTE.motorwayBorder`) stroked at the very start of PASS 1
+    // before surface road and roundabout `PALETTE.roadCasing` strokes so the surface road casing and fill cleanly receive the ramp throat!
+    ctx.strokeStyle = PALETTE.motorwayBorder;
+    ctx.lineWidth = ts * 0.36;
+    ctx.beginPath();
+    for (const ic of world.interchanges) {
+      if (ic.type !== "diamond-ramp") continue;
+      for (const ramp of ic.ramps || []) {
+        ctx.moveTo(ramp.p0.x * ts + ts * 0.5, ramp.p0.y * ts + ts * 0.5);
+        ctx.bezierCurveTo(
+          ramp.p1.x * ts + ts * 0.5,
+          ramp.p1.y * ts + ts * 0.5,
+          ramp.p2.x * ts + ts * 0.5,
+          ramp.p2.y * ts + ts * 0.5,
+          ramp.p3.x * ts + ts * 0.5,
+          ramp.p3.y * ts + ts * 0.5,
+        );
+      }
+    }
+    ctx.stroke();
+
     ctx.strokeStyle = PALETTE.roadCasing;
     ctx.lineWidth = ts * 0.42;
     ctx.beginPath();
@@ -1134,27 +1198,6 @@ export class MiniMotorwaysRenderer {
       }
       ctx.stroke();
     }
-
-    // Diamond slip-ramp casings (`PALETTE.motorwayBorder`) drawn in the unified casing pass
-    // before any surface road or roundabout asphalt fill is stroked!
-    ctx.strokeStyle = PALETTE.motorwayBorder;
-    ctx.lineWidth = ts * 0.36;
-    ctx.beginPath();
-    for (const ic of world.interchanges) {
-      if (ic.type !== "diamond-ramp") continue;
-      for (const ramp of ic.ramps || []) {
-        ctx.moveTo(ramp.p0.x * ts + ts * 0.5, ramp.p0.y * ts + ts * 0.5);
-        ctx.bezierCurveTo(
-          ramp.p1.x * ts + ts * 0.5,
-          ramp.p1.y * ts + ts * 0.5,
-          ramp.p2.x * ts + ts * 0.5,
-          ramp.p2.y * ts + ts * 0.5,
-          ramp.p3.x * ts + ts * 0.5,
-          ramp.p3.y * ts + ts * 0.5,
-        );
-      }
-    }
-    ctx.stroke();
 
     // =========================================================================
     // PASS 2: BRIDGE GUARDRAILS OVER WATER (continuous smoothed spans matching `traceSmoothPath`)
@@ -2437,9 +2480,260 @@ export class MiniMotorwaysRenderer {
     const oy = ts * 0.5 + oyOffset;
     ctx.beginPath();
     ctx.moveTo(samples[0].x * ts + ox, samples[0].y * ts + oy);
-    for (let i = 1; i < samples.length; i++) {
-      ctx.lineTo(samples[i].x * ts + ox, samples[i].y * ts + oy);
+    if (samples.length === 2) {
+      ctx.lineTo(samples[1].x * ts + ox, samples[1].y * ts + oy);
+    } else {
+      for (let i = 1; i <= samples.length - 2; i++) {
+        const p1 = samples[i];
+        const p2 = samples[i + 1];
+        ctx.quadraticCurveTo(
+          p1.x * ts + ox,
+          p1.y * ts + oy,
+          (p1.x + p2.x) * 0.5 * ts + ox,
+          (p1.y + p2.y) * 0.5 * ts + oy,
+        );
+      }
+      const last = samples[samples.length - 1];
+      ctx.lineTo(last.x * ts + ox, last.y * ts + oy);
     }
+  }
+
+  /**
+   * Builds the unified Level-1 coalesced ground drop shadow path (z = 0.5) covering all above-ground
+   * motorway surface spans, cloverleaf slip-ramps & loops, trumpet ramps, and tapering diamond slip-ramps.
+   *
+   * @param {ProceduralLogisticsWorld} world
+   * @param {number} ts
+   * @returns {Path2D}
+   */
+  buildCoalescedGroundShadowPath(world, ts) {
+    const groundShadowUnionPath = new Path2DCtor();
+    const ox = ts * 0.5;
+    const oy = ts * 0.5;
+
+    // 1. All elevated motorway surface spans
+    for (const mw of world.motorways || []) {
+      const samples = mw.samples;
+      if (!samples || samples.length < 2) continue;
+
+      const tunnels = mw.tunnels || [];
+      let surfaceSpans = mw.surfaceSpans;
+      if (!surfaceSpans) {
+        surfaceSpans = [];
+        let curStart = 0;
+        for (const tun of tunnels) {
+          if (tun.i0 >= curStart) {
+            const seg = samples.slice(curStart, tun.i0 + 1);
+            if (seg.length >= 2) surfaceSpans.push(seg);
+          }
+          curStart = tun.i1;
+        }
+        if (curStart < samples.length - 1) {
+          const tail = samples.slice(curStart);
+          if (tail.length >= 2) surfaceSpans.push(tail);
+        }
+      }
+
+      const termPts = [];
+      if (!mw.prunedStart) termPts.push({ x: mw.sx, y: mw.sy });
+      if (!mw.prunedEnd) termPts.push({ x: mw.ex, y: mw.ey });
+      const portalPts = [];
+      for (const tun of tunnels) {
+        portalPts.push({ x: tun.x0, y: tun.y0 }, { x: tun.x1, y: tun.y1 });
+      }
+      const evalShadowElevation = (pt) => {
+        let h = 1.0;
+        for (const tp of termPts) {
+          const d = Math.hypot(pt.x - tp.x, pt.y - tp.y);
+          const f = Math.max(0, Math.min(1, (d - 1.5) / 3.6));
+          if (f < h) h = f;
+        }
+        for (const pp of portalPts) {
+          const d = Math.hypot(pt.x - pp.x, pt.y - pp.y);
+          const f = Math.max(0, Math.min(1, d / 2.6));
+          if (f < h) h = f;
+        }
+        return h * h * (3 - 2 * h);
+      };
+
+      for (const seg of surfaceSpans) {
+        const ribbonPts = seg.map((pt) => {
+          const sh = evalShadowElevation(pt);
+          return {
+            x: pt.x * ts + ox + 3.5 * sh,
+            y: pt.y * ts + oy + 4.8 * sh,
+            halfW: ts * (0.22 + 0.2 * sh),
+          };
+        });
+        extrudeRibbonToPath2D(groundShadowUnionPath, ribbonPts, true);
+      }
+    }
+
+    // 2. All Cloverleaf, Trumpet, and Diamond interchange ramps
+    for (const ic of world.interchanges || []) {
+      const cx = ic.x * ts + ox;
+      const cy = ic.y * ts + oy;
+
+      if (ic.type === "cloverleaf") {
+        const uAx = Math.cos(ic.angleA);
+        const uAy = Math.sin(ic.angleA);
+        const uBx = Math.cos(ic.angleB);
+        const uBy = Math.sin(ic.angleB);
+
+        const signsA = ic.activeSignsA || [-1, 1];
+        const signsB = ic.activeSignsB || [-1, 1];
+        const quadrants = [];
+        for (const sA of signsA) {
+          for (const sB of signsB) {
+            quadrants.push([sA, sB]);
+          }
+        }
+
+        const outerDist = ts * 3.65;
+        const outerCtrl = ts * 1.75;
+        const leafSpan = ts * 4.85;
+
+        for (const [sA, sB] of quadrants) {
+          const rAx = sA * uAx;
+          const rAy = sA * uAy;
+          const rBx = sB * uBx;
+          const rBy = sB * uBy;
+
+          // Outer quadratic slip-ramp (outerDist = ts * 3.65, outerCtrl = ts * 1.75, 12 steps, offset +3.5, +4.8, halfW = ts * 0.19)
+          const pStart = { x: cx + rAx * outerDist, y: cy + rAy * outerDist };
+          const pCtrl = {
+            x: cx + (rAx + rBx) * outerCtrl,
+            y: cy + (rAy + rBy) * outerCtrl,
+          };
+          const pEnd = { x: cx + rBx * outerDist, y: cy + rBy * outerDist };
+
+          const outerPts = [];
+          for (let step = 0; step <= 12; step++) {
+            const t = step / 12;
+            const mt = 1 - t;
+            const px =
+              mt * mt * pStart.x + 2 * mt * t * pCtrl.x + t * t * pEnd.x;
+            const py =
+              mt * mt * pStart.y + 2 * mt * t * pCtrl.y + t * t * pEnd.y;
+            outerPts.push({
+              x: px + 3.5,
+              y: py + 4.8,
+              halfW: ts * 0.19,
+            });
+          }
+          extrudeRibbonToPath2D(groundShadowUnionPath, outerPts, true);
+
+          // Inner cubic 270° loop (leafSpan = ts * 4.85), split into TWO open halves
+          // (t in [0, 0.5] and t in [0.5, 1.0], 10 steps each, offset +3.5, +4.8, halfW = ts * 0.20)
+          const p0 = { x: cx, y: cy };
+          const p1 = { x: cx + rAx * leafSpan, y: cy + rAy * leafSpan };
+          const p2 = { x: cx + rBx * leafSpan, y: cy + rBy * leafSpan };
+          const p3 = { x: cx, y: cy };
+
+          const half1Pts = [];
+          for (let step = 0; step <= 10; step++) {
+            const t = (step / 10) * 0.5;
+            const mt = 1 - t;
+            const px =
+              mt * mt * mt * p0.x +
+              3 * mt * mt * t * p1.x +
+              3 * mt * t * t * p2.x +
+              t * t * t * p3.x;
+            const py =
+              mt * mt * mt * p0.y +
+              3 * mt * mt * t * p1.y +
+              3 * mt * t * t * p2.y +
+              t * t * t * p3.y;
+            half1Pts.push({
+              x: px + 3.5,
+              y: py + 4.8,
+              halfW: ts * 0.2,
+            });
+          }
+          extrudeRibbonToPath2D(groundShadowUnionPath, half1Pts, true);
+
+          const half2Pts = [];
+          for (let step = 0; step <= 10; step++) {
+            const t = 0.5 + (step / 10) * 0.5;
+            const mt = 1 - t;
+            const px =
+              mt * mt * mt * p0.x +
+              3 * mt * mt * t * p1.x +
+              3 * mt * t * t * p2.x +
+              t * t * t * p3.x;
+            const py =
+              mt * mt * mt * p0.y +
+              3 * mt * mt * t * p1.y +
+              3 * mt * t * t * p2.y +
+              t * t * t * p3.y;
+            half2Pts.push({
+              x: px + 3.5,
+              y: py + 4.8,
+              halfW: ts * 0.2,
+            });
+          }
+          extrudeRibbonToPath2D(groundShadowUnionPath, half2Pts, true);
+        }
+      } else if (ic.type === "trumpet") {
+        const ramps = computeTrumpetRampBeziers(ic, world.motorways);
+        const sampleSegShadow = (seg) => {
+          const pts = [];
+          for (let step = 0; step <= 12; step++) {
+            const t = step / 12;
+            const mt = 1 - t;
+            const wx =
+              mt * mt * mt * seg.p0.x +
+              3 * mt * mt * t * seg.p1.x +
+              3 * mt * t * t * seg.p2.x +
+              t * t * t * seg.p3.x;
+            const wy =
+              mt * mt * mt * seg.p0.y +
+              3 * mt * mt * t * seg.p1.y +
+              3 * mt * t * t * seg.p2.y +
+              t * t * t * seg.p3.y;
+            pts.push({
+              x: wx * ts + ox + 3.5,
+              y: wy * ts + oy + 4.8,
+              halfW: ts * 0.19,
+            });
+          }
+          extrudeRibbonToPath2D(groundShadowUnionPath, pts, true);
+        };
+
+        sampleSegShadow(ramps.yellow);
+        sampleSegShadow(ramps.purple);
+        for (const seg of ramps.brown) sampleSegShadow(seg);
+        for (const seg of ramps.blue) sampleSegShadow(seg);
+      } else if (ic.type === "diamond-ramp") {
+        for (const ramp of ic.ramps || []) {
+          const rampPts = [];
+          for (let step = 0; step <= 10; step++) {
+            const t = step / 10;
+            const mt = 1 - t;
+            const bx =
+              mt * mt * mt * ramp.p0.x +
+              3 * mt * mt * t * ramp.p1.x +
+              3 * mt * t * t * ramp.p2.x +
+              t * t * t * ramp.p3.x;
+            const by =
+              mt * mt * mt * ramp.p0.y +
+              3 * mt * mt * t * ramp.p1.y +
+              3 * mt * t * t * ramp.p2.y +
+              t * t * t * ramp.p3.y;
+            const rawH = 1 - t;
+            const sh = rawH * rawH * (3 - 2 * rawH);
+            rampPts.push({
+              x: bx * ts + ox + 3.5 * sh,
+              y: by * ts + oy + 4.8 * sh,
+              halfW: ts * (0.08 + 0.1 * sh),
+            });
+          }
+          extrudeRibbonToPath2D(groundShadowUnionPath, rampPts, true);
+        }
+      }
+    }
+
+    return groundShadowUnionPath;
   }
 
   drawInterchangesUnderlay(ctx, world, ts) {
@@ -2469,49 +2763,17 @@ export class MiniMotorwaysRenderer {
           }
         }
 
-        const outerDist = ts * 2.95;
-        const outerCtrl = ts * 1.05;
-        const leafSpan = ts * 3.1;
+        const outerDist = ts * 3.65;
+        const outerCtrl = ts * 1.75;
+        const leafSpan = ts * 4.85;
 
         ctx.save();
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
 
-        // 1. Soft ground shadow under active cloverleaf ramp quadrants
-        setSub(ctx, 0);
-        ctx.strokeStyle = "rgba(54, 56, 62, 0.11)";
-        ctx.lineWidth = ts * 0.42;
-        for (const [sA, sB] of quadrants) {
-          const rAx = sA * uAx,
-            rAy = sA * uAy;
-          const rBx = sB * uBx,
-            rBy = sB * uBy;
-          ctx.beginPath();
-          ctx.moveTo(cx + rAx * outerDist + 5, cy + rAy * outerDist + 7);
-          ctx.quadraticCurveTo(
-            cx + (rAx + rBx) * outerCtrl + 5,
-            cy + (rAy + rBy) * outerCtrl + 7,
-            cx + rBx * outerDist + 5,
-            cy + rBy * outerDist + 7,
-          );
-          ctx.stroke();
-
-          ctx.beginPath();
-          ctx.moveTo(cx + 5, cy + 7);
-          ctx.bezierCurveTo(
-            cx + rAx * leafSpan + 5,
-            cy + rAy * leafSpan + 7,
-            cx + rBx * leafSpan + 5,
-            cy + rBy * leafSpan + 7,
-            cx + 5,
-            cy + 7,
-          );
-          ctx.stroke();
-        }
-
-        // 2. Outer Concave Right-Turn Slip Ramps (Casing + Pink Fill)
+        // 1. Outer Concave Right-Turn Slip Ramps (Casing + Pink Fill)
         for (const pass of ["border", "fill"]) {
-          setSub(ctx, pass === "border" ? 1 : 2);
+          setSub(ctx, pass === "border" ? 0 : 1);
           ctx.strokeStyle =
             pass === "border" ? PALETTE.motorwayBorder : "#f48fb1";
           ctx.lineWidth = pass === "border" ? ts * 0.36 : ts * 0.22;
@@ -2532,9 +2794,9 @@ export class MiniMotorwaysRenderer {
           }
         }
 
-        // 3. Inner 270° Tangent Cloverleaf Loops (Casing + Pink Fill)
+        // 2. Inner 270° Tangent Cloverleaf Loops (Casing + Pink Fill)
         for (const pass of ["border", "fill"]) {
-          setSub(ctx, pass === "border" ? 3 : 4);
+          setSub(ctx, pass === "border" ? 2 : 3);
           ctx.strokeStyle =
             pass === "border" ? PALETTE.motorwayBorder : PALETTE.motorwayFill;
           ctx.lineWidth = pass === "border" ? ts * 0.38 : ts * 0.24;
@@ -2559,87 +2821,57 @@ export class MiniMotorwaysRenderer {
         ctx.restore();
       } else if (ic.type === "trumpet") {
         // =================================================================
-        // AUTHENTIC 3-WAY TRUMPET INTERCHANGE
+        // AUTHENTIC 3-WAY TRUMPET INTERCHANGE (Curve-Anchored C1 4-Ramp Layout)
         // =================================================================
-        const sy = ic.sideSign || 1;
-        const oppSy = -sy;
-        const outerDist = ts * 2.15;
-        const outerCtrl = ts * 0.72;
+        const ramps = computeTrumpetRampBeziers(ic, world.motorways);
 
         ctx.save();
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        ctx.translate(cx, cy);
-        ctx.rotate(ic.angleMain);
 
-        const drawTrumpetRamps = (oxS, oyS) => {
-          // 1. Single Concave Outer Directional Slip-Ramp on the Terminating Highway Side (-1, +sy)
+        const strokeCubicChain = (segs) => {
           ctx.beginPath();
-          ctx.moveTo(-outerDist + oxS, 0 + oyS);
-          ctx.quadraticCurveTo(
-            -outerCtrl + oxS,
-            sy * outerCtrl + oyS,
-            0 + oxS,
-            sy * outerDist + oyS,
-          );
-          ctx.stroke();
-
-          // 2. Proportionate 2-Segment 270° Trumpet Bell Loop on the OPPOSITE Side (+1, -sy)
-          ctx.beginPath();
-          ctx.moveTo(0 + oxS, 0 + oyS);
-          ctx.bezierCurveTo(
-            0 + oxS,
-            oppSy * ts * 1.35 + oyS,
-            ts * 0.38 + oxS,
-            oppSy * ts * 1.85 + oyS,
-            ts * 1.02 + oxS,
-            oppSy * ts * 1.85 + oyS,
-          );
-          ctx.bezierCurveTo(
-            ts * 1.92 + oxS,
-            oppSy * ts * 1.85 + oyS,
-            ts * 1.92 + oxS,
-            0 + oyS,
-            ts * 0.52 + oxS,
-            0 + oyS,
-          );
+          ctx.moveTo(segs[0].p0.x * ts + ox, segs[0].p0.y * ts + oy);
+          for (const seg of segs) {
+            ctx.bezierCurveTo(
+              seg.p1.x * ts + ox,
+              seg.p1.y * ts + oy,
+              seg.p2.x * ts + ox,
+              seg.p2.y * ts + oy,
+              seg.p3.x * ts + ox,
+              seg.p3.y * ts + oy,
+            );
+          }
           ctx.stroke();
         };
 
-        // Ground shadow
-        setSub(ctx, 0);
-        ctx.strokeStyle = "rgba(54, 56, 62, 0.12)";
-        ctx.lineWidth = ts * 0.42;
-        drawTrumpetRamps(5, 7);
-
-        // Casing + Pink Ramp Fill
+        // Casing + Pink Ramp Fill (all 4 ramps)
         for (const pass of ["border", "fill"]) {
-          setSub(ctx, pass === "border" ? 1 : 2);
+          setSub(ctx, pass === "border" ? 0 : 1);
           ctx.strokeStyle =
             pass === "border" ? PALETTE.motorwayBorder : "#f48fb1";
-          ctx.lineWidth = pass === "border" ? ts * 0.38 : ts * 0.24;
-          drawTrumpetRamps(0, 0);
+          ctx.lineWidth = pass === "border" ? ts * 0.34 : ts * 0.21;
+          strokeCubicChain([ramps.yellow]);
+          strokeCubicChain([ramps.purple]);
+          strokeCubicChain(ramps.brown);
+          strokeCubicChain(ramps.blue);
         }
 
         ctx.restore();
       } else if (ic.type === "diamond-ramp") {
         // =================================================================
-        // DIAMOND INTERCHANGE OVERPASS BRIDGE PARAPETS & UNDERPASS SHADOW
+        // DIAMOND INTERCHANGE OVERPASS BRIDGE PARAPETS
         // =================================================================
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(ic.angleRad);
         setSub(ctx, 0);
-        ctx.fillStyle = "rgba(45, 42, 38, 0.16)";
-        ctx.fillRect(-ts * 0.36, -ts * 0.68, ts * 0.72, ts * 1.36);
-
-        setSub(ctx, 1);
         ctx.lineCap = "butt";
         ctx.strokeStyle = "#36383e";
         ctx.lineWidth = ts * 1.04;
         ctx.beginPath();
-        ctx.moveTo(-ts * 0.72, 0);
-        ctx.lineTo(ts * 0.72, 0);
+        ctx.moveTo(-ts * 0.68, 0);
+        ctx.lineTo(ts * 0.68, 0);
         ctx.stroke();
         ctx.restore();
       }
@@ -2647,7 +2879,17 @@ export class MiniMotorwaysRenderer {
   }
 
   drawMotorways(ctx, world, ts) {
-    // 1. Draw Cloverleaf Loops & One-Sided Slip-Ramps underneath the main decks
+    // 0. Unified Coalesced Ground Shadow Plane (z = 0.5)
+    const groundShadowUnionPath = this.buildCoalescedGroundShadowPath(
+      world,
+      ts,
+    );
+    setSub(ctx, 0);
+    ctx.fillStyle = "rgba(45, 42, 38, 0.12)";
+    ctx.fill(groundShadowUnionPath, "nonzero");
+    nextPass(ctx);
+
+    // 1. Draw Cloverleaf Loops & Trumpet Slip-Ramps underneath the main decks
     this.drawInterchangesUnderlay(ctx, world, ts);
     nextPass(ctx);
 
@@ -2717,45 +2959,7 @@ export class MiniMotorwaysRenderer {
         }
       }
 
-      // 1. Soft Elevated Overpass Drop Shadow on the ground below (ONLY for above-ground surface spans!)
-      const termPts = [];
-      if (!mw.prunedStart) termPts.push({ x: mw.sx, y: mw.sy });
-      if (!mw.prunedEnd) termPts.push({ x: mw.ex, y: mw.ey });
-      const portalPts = [];
-      for (const tun of tunnels) {
-        portalPts.push({ x: tun.x0, y: tun.y0 }, { x: tun.x1, y: tun.y1 });
-      }
-      const evalShadowElevation = (pt) => {
-        let h = 1.0;
-        for (const tp of termPts) {
-          const d = Math.hypot(pt.x - tp.x, pt.y - tp.y);
-          const f = Math.max(0, Math.min(1, (d - 1.5) / 3.6));
-          if (f < h) h = f;
-        }
-        for (const pp of portalPts) {
-          const d = Math.hypot(pt.x - pp.x, pt.y - pp.y);
-          const f = Math.max(0, Math.min(1, d / 2.6));
-          if (f < h) h = f;
-        }
-        return h * h * (3 - 2 * h);
-      };
-
-      setSub(ctx, 0);
-      ctx.strokeStyle = "rgba(45, 42, 38, 0.10)";
-      ctx.lineWidth = ts * 0.8;
-      for (const seg of surfaceSpans) {
-        const shadowSeg = seg.map((pt) => {
-          const sh = evalShadowElevation(pt);
-          return {
-            x: pt.x + (2.8 * sh) / ts,
-            y: pt.y + (3.8 * sh) / ts,
-          };
-        });
-        this.traceMotorwaySamples(ctx, shadowSeg, ts, 0, 0);
-        ctx.stroke();
-      }
-
-      // 2. Subterranean Mountain Tunnel Bore (Full-width dashed charcoal bore casing + bold dashed pink deck, zero drop shadow!)
+      // 1. Subterranean Mountain Tunnel Bore (Full-width dashed charcoal bore casing + bold dashed pink deck, zero drop shadow!)
       if (tunnels.length > 0) {
         setSub(ctx, 1);
         ctx.lineCap = "butt";
@@ -2784,7 +2988,7 @@ export class MiniMotorwaysRenderer {
         ctx.lineCap = "round";
       }
 
-      // 3. Vibrant Pink Motorway Outer Casing (above-ground spans only)
+      // 2. Vibrant Pink Motorway Outer Casing (above-ground spans only)
       setSub(ctx, 3);
       ctx.strokeStyle = PALETTE.motorwayBorder;
       ctx.lineWidth = ts * 0.88;
@@ -2793,7 +2997,7 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
       }
 
-      // 4. Translucent Pink Motorway Deck (above-ground spans only)
+      // 3. Translucent Pink Motorway Deck (above-ground spans only)
       setSub(ctx, 4);
       ctx.strokeStyle = PALETTE.motorwayFill;
       ctx.lineWidth = ts * 0.72;
@@ -2802,7 +3006,7 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
       }
 
-      // 5. Crisp Median Divider Line (above-ground spans only)
+      // 4. Crisp Median Divider Line (above-ground spans only)
       setSub(ctx, 5);
       ctx.strokeStyle = PALETTE.motorwayCore;
       ctx.lineWidth = 2.0;
@@ -2811,7 +3015,7 @@ export class MiniMotorwaysRenderer {
         ctx.stroke();
       }
 
-      // 6. Concrete Tunnel Portal Mouths at Entry & Exit of Each Mountain Tunnel
+      // 5. Concrete Tunnel Portal Mouths at Entry & Exit of Each Mountain Tunnel
       if (tunnels.length > 0) {
         for (const tun of tunnels) {
           for (const [px, py, ang] of [
@@ -2900,54 +3104,94 @@ export class MiniMotorwaysRenderer {
       ctx.fillText(String(mw.number), bx, by + 0.5);
       ctx.restore();
     }
+  }
 
-    nextPass(ctx);
+  /**
+   * Draws Level-2 overpass bridge spans (clipped lower-deck drop shadows, upper bridge decks, core medians, and parapet rails)
+   * for Cloverleaf and Trumpet interchanges.
+   *
+   * @param {CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | VectorLayerRecorder} ctx
+   * @param {ProceduralLogisticsWorld} world
+   * @param {number} ts
+   */
+  drawOverpassBridges(ctx, world, ts) {
+    const ox = ts * 0.5;
+    const oy = ts * 0.5;
 
-    // 3. Draw Grade-Separated Overpass Bridge Spans at Cloverleaf & Trumpet Centers
-    for (const ic of world.interchanges) {
+    for (const ic of world.interchanges || []) {
       if (ic.type === "cloverleaf") {
-        const cx = ic.x * ts + ts * 0.5;
-        const cy = ic.y * ts + ts * 0.5;
-        const span = ts * 1.65;
+        const cx = ic.x * ts + ox;
+        const cy = ic.y * ts + oy;
+        const span = ts * 1.32;
         const bridgeAng = ic.prunedBridgeB ? ic.angleA : ic.angleB;
+        const lowerAng = ic.prunedBridgeB ? ic.angleB : ic.angleA;
         const ux = Math.cos(bridgeAng);
         const uy = Math.sin(bridgeAng);
         const nx = -uy;
         const ny = ux;
         const halfDeck = ts * 0.46;
+        const lux = Math.cos(lowerAng);
+        const luy = Math.sin(lowerAng);
 
+        const lowerClip = new Path2DCtor();
+        extrudeRibbonToPath2D(
+          lowerClip,
+          [
+            {
+              x: cx - lux * 2.2 * ts,
+              y: cy - luy * 2.2 * ts,
+              halfW: ts * 0.44,
+            },
+            {
+              x: cx + lux * 2.2 * ts,
+              y: cy + luy * 2.2 * ts,
+              halfW: ts * 0.44,
+            },
+          ],
+          false,
+        );
+
+        ctx.save();
+        ctx.clip(lowerClip);
+        setSub(ctx, 0);
+        ctx.lineCap = "butt";
+        ctx.strokeStyle = "rgba(45, 42, 38, 0.20)";
+        ctx.lineWidth = ts * 0.92;
+        ctx.beginPath();
+        ctx.moveTo(cx - ux * span + 3.2, cy - uy * span + 4.4);
+        ctx.lineTo(cx + ux * span + 3.2, cy + uy * span + 4.4);
+        ctx.stroke();
+        ctx.restore();
+        nextPass(ctx);
+
+        // Upper bridge span (±1.32 * ts, lineCap = "butt")
         ctx.save();
         ctx.lineCap = "butt";
 
-        // Upper deck shadow cast onto the lower motorway
-        setSub(ctx, 0);
-        ctx.strokeStyle = "rgba(54, 56, 62, 0.22)";
-        ctx.lineWidth = ts * 0.96;
-        ctx.beginPath();
-        ctx.moveTo(cx - ux * span + 3, cy - uy * span + 4);
-        ctx.lineTo(cx + ux * span + 3, cy + uy * span + 4);
-        ctx.stroke();
-
-        // Redraw the upper motorway span cleanly over the lower motorway
-        ctx.beginPath();
-        ctx.moveTo(cx - ux * span, cy - uy * span);
-        ctx.lineTo(cx + ux * span, cy + uy * span);
         setSub(ctx, 1);
         ctx.strokeStyle = PALETTE.motorwayBorder;
         ctx.lineWidth = ts * 0.88;
+        ctx.beginPath();
+        ctx.moveTo(cx - ux * span, cy - uy * span);
+        ctx.lineTo(cx + ux * span, cy + uy * span);
         ctx.stroke();
 
         setSub(ctx, 2);
         ctx.strokeStyle = "#ee6998";
         ctx.lineWidth = ts * 0.72;
+        ctx.beginPath();
+        ctx.moveTo(cx - ux * span, cy - uy * span);
+        ctx.lineTo(cx + ux * span, cy + uy * span);
         ctx.stroke();
 
         setSub(ctx, 3);
         ctx.strokeStyle = PALETTE.motorwayCore;
         ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.moveTo(cx - ux * span, cy - uy * span);
+        ctx.lineTo(cx + ux * span, cy + uy * span);
         ctx.stroke();
 
-        // Dark charcoal bridge parapet rails along both sides of the upper overpass deck
         setSub(ctx, 4);
         ctx.strokeStyle = "#36383e";
         ctx.lineWidth = 2.2;
@@ -2964,45 +3208,82 @@ export class MiniMotorwaysRenderer {
           ctx.stroke();
         }
         ctx.restore();
+        nextPass(ctx);
       } else if (ic.type === "trumpet") {
-        const cx = ic.x * ts + ts * 0.5;
-        const cy = ic.y * ts + ts * 0.5;
+        const cx = ic.x * ts + ox;
+        const cy = ic.y * ts + oy;
         const sy = ic.sideSign || 1;
         const spurAng = ic.angleMain + Math.PI * 0.5 * sy;
         const ux = Math.cos(spurAng);
         const uy = Math.sin(spurAng);
         const nx = -uy;
         const ny = ux;
-        const spanIn = ts * 0.82;
-        const spanOut = ts * 0.58;
-        const halfDeck = ts * 0.38;
+        const spanIn = ts * 0.56;
+        const spanOut = ts * 0.44;
+        const halfDeck = ts * 0.45;
+        const lux = Math.cos(ic.angleMain);
+        const luy = Math.sin(ic.angleMain);
+
+        const lowerClip = new Path2DCtor();
+        extrudeRibbonToPath2D(
+          lowerClip,
+          [
+            {
+              x: cx - lux * 2.0 * ts,
+              y: cy - luy * 2.0 * ts,
+              halfW: ts * 0.44,
+            },
+            {
+              x: cx + lux * 2.0 * ts,
+              y: cy + luy * 2.0 * ts,
+              halfW: ts * 0.44,
+            },
+          ],
+          false,
+        );
 
         ctx.save();
-        ctx.lineCap = "round";
-
+        ctx.clip(lowerClip);
         setSub(ctx, 0);
-        ctx.strokeStyle = "rgba(54, 56, 62, 0.20)";
-        ctx.lineWidth = ts * 0.78;
+        ctx.lineCap = "butt";
+        ctx.strokeStyle = "rgba(45, 42, 38, 0.20)";
+        ctx.lineWidth = ts * 0.84;
         ctx.beginPath();
-        ctx.moveTo(cx + ux * spanIn + 3, cy + uy * spanIn + 4);
-        ctx.lineTo(cx - ux * spanOut + 3, cy - uy * spanOut + 4);
+        ctx.moveTo(cx + ux * spanIn + 3.2, cy + uy * spanIn + 4.4);
+        ctx.lineTo(cx - ux * spanOut + 3.2, cy - uy * spanOut + 4.4);
         ctx.stroke();
+        ctx.restore();
+        nextPass(ctx);
 
+        // Upper Trumpet bridge span (lineCap = "butt")
+        ctx.save();
+        ctx.lineCap = "butt";
+
+        setSub(ctx, 1);
+        ctx.strokeStyle = PALETTE.motorwayBorder;
+        ctx.lineWidth = ts * 0.86;
         ctx.beginPath();
         ctx.moveTo(cx + ux * spanIn, cy + uy * spanIn);
         ctx.lineTo(cx - ux * spanOut, cy - uy * spanOut);
-        setSub(ctx, 1);
-        ctx.strokeStyle = PALETTE.motorwayBorder;
-        ctx.lineWidth = ts * 0.72;
         ctx.stroke();
 
         setSub(ctx, 2);
         ctx.strokeStyle = "#ee6998";
-        ctx.lineWidth = ts * 0.56;
+        ctx.lineWidth = ts * 0.7;
+        ctx.beginPath();
+        ctx.moveTo(cx + ux * spanIn, cy + uy * spanIn);
+        ctx.lineTo(cx - ux * spanOut, cy - uy * spanOut);
+        ctx.stroke();
+
+        setSub(ctx, 3);
+        ctx.strokeStyle = PALETTE.motorwayCore;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(cx + ux * spanIn, cy + uy * spanIn);
+        ctx.lineTo(cx - ux * spanOut, cy - uy * spanOut);
         ctx.stroke();
 
         setSub(ctx, 4);
-        ctx.lineCap = "butt";
         ctx.strokeStyle = "#36383e";
         ctx.lineWidth = 2.0;
         for (const side of [-1, 1]) {
@@ -3018,6 +3299,7 @@ export class MiniMotorwaysRenderer {
           ctx.stroke();
         }
         ctx.restore();
+        nextPass(ctx);
       }
     }
   }
@@ -3027,7 +3309,7 @@ export class MiniMotorwaysRenderer {
    * @param {ProceduralLogisticsWorld} _world
    * @param {any} sim
    * @param {number} ts
-   * @param {"road" | "motorway" | null} [modeFilter=null]
+   * @param {"road" | "motorway" | "motorway-lower" | "motorway-upper" | null} [modeFilter=null]
    */
   drawCars(ctx, _world, sim, ts, modeFilter = null) {
     const ox = ts * 0.5;
@@ -3044,7 +3326,22 @@ export class MiniMotorwaysRenderer {
       if (p0.inTunnel && p1.inTunnel) continue;
 
       const curMode = p0.onMotorway || p1.onMotorway ? "motorway" : "road";
-      if (modeFilter && curMode !== modeFilter) continue;
+      if (modeFilter) {
+        if (modeFilter === "road") {
+          if (curMode !== "road") continue;
+        } else if (modeFilter === "motorway") {
+          if (curMode !== "motorway") continue;
+        } else if (modeFilter === "motorway-lower") {
+          if (curMode !== "motorway" || p0.onUpperBridge || p1.onUpperBridge)
+            continue;
+        } else if (modeFilter === "motorway-upper") {
+          if (
+            curMode !== "motorway" ||
+            (!p0.onUpperBridge && !p1.onUpperBridge)
+          )
+            continue;
+        }
+      }
 
       const d0 = track.cumLen[idx];
       const segLen = Math.max(1e-4, track.cumLen[idx + 1] - d0);
