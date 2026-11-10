@@ -4,6 +4,9 @@ import {
   LogisticsSimulator,
   buildFlightTrack,
   sampleFlightTrack,
+  initAirportATC,
+  canPushBackOntoTaxiway,
+  maintainTaxiwayOrder,
 } from "../../src/simulator.js";
 import { SIM_CONFIG } from "../../src/constants.js";
 
@@ -858,5 +861,281 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
     sim.update(0.2, 1.0);
     expect(planeDep.holdingShort).toBe(false);
     expect(planeDep.dist).toBeGreaterThan(trackDep.holdShortDist);
+  });
+
+  test("AirportATC & 10-State Aircraft FSM: Zero Gate Collisions, Zero Taxiway Overtaking & Runway Mutual Exclusion over 2,000 ticks (Phase 6)", () => {
+    const pipeline = createWorldPipeline();
+    for (const [seed, archetype] of /** @type {const} */ ([
+      ["OTTD-METRO-84", "confluence"],
+      ["ISLAND-HOP-101", "island-hopper"],
+    ])) {
+      const world = pipeline({
+        seed,
+        worldSize: archetype === "island-hopper" ? "standard" : "compact",
+        archetype,
+        terrainAlgo: "tectonic-fbm",
+        hydrologyAlgo: "thalweg-astar",
+        airportMix: "hub-reg-cargo",
+        includeIntermediateRamps: true,
+        waterCoverage: 48,
+        townCount: 14,
+        buildingDensity: 200,
+        airportCount: 3,
+        windAxis: -1,
+      });
+
+      const sim = new LogisticsSimulator(world);
+      sim.cars = [];
+      expect(sim.planes.length).toBeGreaterThan(0);
+
+      for (const ap of world.airports) {
+        expect(ap.atc).toBeDefined();
+        expect(ap.atc?.gates.length).toBe(ap.isHub ? 7 : 4);
+      }
+
+      const minSep = SIM_CONFIG.AVIATION.minTaxiSeparation;
+
+      for (let tick = 0; tick < 2000; tick++) {
+        const prevPos = sim.planes.map((pl) => ({ x: pl.x, y: pl.y }));
+        sim.update(0.15, 1.0);
+        for (let pIdx = 0; pIdx < sim.planes.length; pIdx++) {
+          const stepDist = Math.hypot(
+            sim.planes[pIdx].x - prevPos[pIdx].x,
+            sim.planes[pIdx].y - prevPos[pIdx].y,
+          );
+          expect(stepDist).toBeLessThanOrEqual(3.2);
+        }
+
+        for (const ap of world.airports) {
+          const atc = ap.atc;
+          if (!atc) continue;
+
+          // 1. Zero Gate Double-Occupancy & Exact GateSlot World Coordinates
+          const seenGatePlanes = new Set();
+          for (const g of atc.gates) {
+            if (g.occupiedBy !== null) {
+              expect(seenGatePlanes.has(g.occupiedBy)).toBe(false);
+              seenGatePlanes.add(g.occupiedBy);
+              const parkedPlane = sim.planes.find(
+                (pl) => pl.id === g.occupiedBy,
+              );
+              if (
+                parkedPlane &&
+                (parkedPlane.state === "GATE_LOADING" ||
+                  parkedPlane.state === "PUSHBACK_HOLD")
+              ) {
+                expect(
+                  Math.hypot(
+                    parkedPlane.x - g.worldX,
+                    parkedPlane.y - g.worldY,
+                  ),
+                ).toBeLessThan(1e-3);
+              }
+            }
+            if (g.reservedBy !== null && g.reservedBy !== g.occupiedBy) {
+              expect(seenGatePlanes.has(g.reservedBy)).toBe(false);
+              seenGatePlanes.add(g.reservedBy);
+            }
+          }
+
+          // 2. Zero Taxiway Overtaking or Collisions (1D taxiS AND 2D World Coordinates):
+          // Parked gate planes (GATE_LOADING / PUSHBACK_HOLD) are never in taxiwayOccupants,
+          // and consecutive taxiway occupants maintain >= minTaxiSeparation in taxiS and >= 1.5 tiles in (x, y).
+          const occ = atc.taxiwayOccupants;
+          for (let i = 0; i < occ.length; i++) {
+            const p = occ[i];
+            expect(
+              p.state === "GATE_LOADING" || p.state === "PUSHBACK_HOLD",
+            ).toBe(false);
+            if (i > 0) {
+              const leader = occ[i - 1];
+              const leaderS = leader.taxiS ?? 0;
+              const followerS = p.taxiS ?? 0;
+              expect(leaderS - followerS).toBeGreaterThanOrEqual(minSep - 1e-3);
+              const worldDist = Math.hypot(leader.x - p.x, leader.y - p.y);
+              expect(worldDist).toBeGreaterThanOrEqual(1.45);
+            }
+          }
+
+          // 3. Runway & Inter-Runway Crossing Mutual Exclusion
+          if (!ap.isHub) {
+            expect(
+              atc.depRunwayBusyBy !== null &&
+                atc.arrRunwayBusyBy !== null &&
+                atc.depRunwayBusyBy !== atc.arrRunwayBusyBy,
+            ).toBe(false);
+          } else {
+            expect(
+              atc.depRunwayBusyBy !== null && atc.crossingBusyBy !== null,
+            ).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  test("Off-Spine Gate Non-Blocking & 1D Leader-Follower Taxiway Spacing", () => {
+    const hubAp = /** @type {any} */ ({
+      id: 0,
+      x: 100,
+      y: 100,
+      halfLen: 14,
+      halfWid: 4,
+      angleRad: 0,
+      apronSide: 1,
+      isHub: true,
+      airportClass: "HUB",
+    });
+    const atc = initAirportATC(hubAp, { x: -1, y: 0 });
+    expect(atc.gates.length).toBe(7);
+
+    // Park a plane at middle gate (index 3) — off the taxiway spine
+    const middleGate = atc.gates[3];
+    middleGate.state = "OCCUPIED";
+    middleGate.occupiedBy = 99;
+
+    // A plane on the taxiway spine can pass freely past middleGate.taxiS because gate stands are off-spine
+    const leaderPlane = /** @type {any} */ ({
+      id: 1,
+      state: "TAXI_TO_RUNWAY",
+      taxiS: middleGate.taxiS + 4.0,
+    });
+    const followerPlane = /** @type {any} */ ({
+      id: 2,
+      state: "TAXI_TO_RUNWAY",
+      taxiS: middleGate.taxiS + 3.0, // Too close (1.0 < 2.4)
+    });
+    atc.taxiwayOccupants = [leaderPlane, followerPlane];
+    maintainTaxiwayOrder(atc);
+
+    expect(leaderPlane.taxiS - followerPlane.taxiS).toBeGreaterThanOrEqual(
+      SIM_CONFIG.AVIATION.minTaxiSeparation - 1e-4,
+    );
+
+    // While followerPlane is within pushbackClearLead/Trail of middleGate.taxiS, middleGate cannot push back
+    followerPlane.taxiS = middleGate.taxiS;
+    expect(canPushBackOntoTaxiway(atc, middleGate.taxiS)).toBe(false);
+
+    // Once taxiway occupants move clear of middleGate.taxiS, pushback is permitted
+    leaderPlane.taxiS = middleGate.taxiS + 6.0;
+    followerPlane.taxiS = middleGate.taxiS + 3.2;
+    expect(canPushBackOntoTaxiway(atc, middleGate.taxiS)).toBe(true);
+
+    // Verify smooth monotonic acceleration during TAKEOFF_ROLL from taxiSpeed (2.2) to takeoffSpeed (13.5)
+    const destAp = /** @type {any} */ ({
+      id: 1,
+      x: 240,
+      y: 100,
+      halfLen: 10,
+      halfWid: 3,
+      angleRad: 0,
+      apronSide: 1,
+      isHub: false,
+      airportClass: "REG",
+    });
+    const track = buildFlightTrack(hubAp, destAp);
+    const sim = new LogisticsSimulator(
+      /** @type {any} */ ({
+        W: 360,
+        H: 224,
+        config: {},
+        airports: [hubAp, destAp],
+        cargoLinks: [],
+        commuterRoutes: [],
+      }),
+    );
+    sim.cars = [];
+    const plane = sim.planes[0];
+    plane.origin = hubAp;
+    plane.dest = destAp;
+    plane.track = track;
+    plane.dist = track.holdShortDist;
+    plane.state = "TAKEOFF_ROLL";
+    plane.phase = "TAKEOFF";
+    sim.planes = [plane];
+
+    const speeds = [];
+    while (plane.state === "TAKEOFF_ROLL") {
+      sim.update(0.12, 1.0);
+      speeds.push(plane.speed);
+    }
+    expect(speeds.length).toBeGreaterThanOrEqual(8);
+    expect(speeds[0]).toBeLessThanOrEqual(SIM_CONFIG.AVIATION.taxiSpeed + 0.5);
+    expect(speeds[speeds.length - 1]).toBeGreaterThanOrEqual(
+      SIM_CONFIG.AVIATION.takeoffSpeed - 0.5,
+    );
+    for (let i = 1; i < speeds.length; i++) {
+      expect(speeds[i]).toBeGreaterThanOrEqual(speeds[i - 1] - 1e-4);
+    }
+
+    // Verify APPROACH_QUEUE flies a continuous holding pattern (never pauses in mid-air) and exits smoothly onto final
+    const destAtc = initAirportATC(destAp, { x: -1, y: 0 });
+    let landingStartDist = track.totalLength;
+    for (let i = 0; i < track.pts.length; i++) {
+      if (track.pts[i].phase === "LANDING") {
+        landingStartDist = track.cumLen[i];
+        break;
+      }
+    }
+    const blockerPlane = /** @type {any} */ ({
+      id: 777,
+      state: "LANDING_ROLLOUT",
+      phase: "LANDING",
+      origin: hubAp,
+      dest: destAp,
+      track,
+      dist: landingStartDist + 0.2,
+      segIdx: 0,
+      altitude: 0.1,
+      x: destAp.x,
+      y: destAp.y,
+      ang: 0,
+      speed: 0,
+      dwellTimer: 0,
+      holdingShort: false,
+      isCargoFreighter: false,
+      color: "#000000",
+      progress: 0.8,
+    });
+    destAtc.runwayBusyBy = 777;
+
+    plane.dist = landingStartDist - 0.2;
+    plane.state = /** @type {import("../../src/types.js").PlaneFSMState} */ (
+      "ENROUTE_CRUISE"
+    );
+    plane.phase = "CRUISE";
+    const sInit = sampleFlightTrack(track, plane.dist);
+    plane.x = sInit.x;
+    plane.y = sInit.y;
+    plane.ang = sInit.ang;
+    sim.planes = [plane, blockerPlane];
+
+    const dtHold = 0.08;
+    for (let step = 0; step < 12; step++) {
+      blockerPlane.dist = landingStartDist + 0.2;
+      blockerPlane.state = "LANDING_ROLLOUT";
+      destAtc.runwayBusyBy = 777;
+      const prevX = plane.x;
+      const prevY = plane.y;
+      sim.update(dtHold, 1.0);
+      const moved = Math.hypot(plane.x - prevX, plane.y - prevY);
+      // Plane must keep moving in the air every single tick (never pause stationary)
+      expect(moved).toBeGreaterThan(0.45);
+      expect(moved).toBeLessThan(2.5);
+    }
+    expect(plane.state).toBe("APPROACH_QUEUE");
+
+    // Release destination runway lock and verify plane completes its holding turn back to the fix and lands without teleporting
+    sim.planes = [plane];
+    destAtc.runwayBusyBy = null;
+    for (let step = 0; step < 80 && plane.state === "APPROACH_QUEUE"; step++) {
+      const prevX = plane.x;
+      const prevY = plane.y;
+      sim.update(dtHold, 1.0);
+      const moved = Math.hypot(plane.x - prevX, plane.y - prevY);
+      expect(moved).toBeGreaterThan(0.45);
+      expect(moved).toBeLessThan(2.5);
+    }
+    expect(plane.state).toBe("LANDING_ROLLOUT");
   });
 });

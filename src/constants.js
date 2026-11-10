@@ -92,6 +92,10 @@ export const SIM_CONFIG = Object.freeze({
     holdShortLookaheadTiles: 12,
     climbOutAlt: 0.18,
     cruiseAlt: 1.0,
+    minTaxiSeparation: 2.4,
+    minAirborneSeparation: 4.5,
+    pushbackClearLead: 2.5,
+    pushbackClearTrail: 2.6,
   }),
 });
 

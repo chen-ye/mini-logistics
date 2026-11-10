@@ -405,11 +405,108 @@ export class EntityInspectorElement extends BaseElement {
       title.textContent = entity.name;
     }
     if (body) {
+      /** @type {any} */
+      const atc = /** @type {any} */ (entity).atc;
+      /** @type {any[]} */
+      const planes =
+        typeof window !== "undefined" &&
+        /** @type {any} */ (window).simulator?.planes
+          ? /** @type {any} */ (window).simulator.planes
+          : [];
+
+      const totalGates = atc?.gates?.length || (entity.isHub ? 7 : 4);
+      let occupiedGates = 0;
+      if (atc?.gates && Array.isArray(atc.gates)) {
+        occupiedGates = atc.gates.filter(
+          (/** @type {any} */ g) =>
+            g.state === "OCCUPIED" || g.state === "RESERVED",
+        ).length;
+      } else {
+        occupiedGates = planes.filter((/** @type {any} */ p) => {
+          const isHere =
+            (p.origin?.id === entity.id &&
+              (p.phase === "GATE_DWELL" ||
+                p.state === "GATE_LOADING" ||
+                p.state === "PUSHBACK_HOLD")) ||
+            (p.dest?.id === entity.id &&
+              (p.phase === "GATE_DWELL" || p.state === "GATE_LOADING"));
+          return isHere;
+        }).length;
+        occupiedGates = Math.min(occupiedGates, totalGates);
+      }
+
+      let taxiHoldCount = 0;
+      if (atc?.taxiwayOccupants && Array.isArray(atc.taxiwayOccupants)) {
+        taxiHoldCount = atc.taxiwayOccupants.length;
+        if (Array.isArray(atc.runwayCrossQueue)) {
+          taxiHoldCount += atc.runwayCrossQueue.length;
+        } else if (Array.isArray(atc.crossingQueue)) {
+          taxiHoldCount += atc.crossingQueue.length;
+        } else {
+          const crossing = planes.filter(
+            (/** @type {any} */ p) =>
+              (p.origin?.id === entity.id || p.dest?.id === entity.id) &&
+              p.state === "HOLD_CROSSING_RUNWAY",
+          ).length;
+          taxiHoldCount += crossing;
+        }
+      } else {
+        taxiHoldCount = planes.filter((/** @type {any} */ p) => {
+          const isHere = p.origin?.id === entity.id || p.dest?.id === entity.id;
+          const alt = p.altitude ?? 0;
+          return (
+            isHere &&
+            alt <= 0.001 &&
+            (p.phase === "TAXI_OUT" ||
+              p.phase === "TAXI_IN" ||
+              p.state === "TAXI_TO_RUNWAY" ||
+              p.state === "HOLD_SHORT_QUEUE" ||
+              p.state === "HOLD_CROSSING_RUNWAY" ||
+              p.state === "TAXI_TO_GATE")
+          );
+        }).length;
+      }
+
+      let inboundCount = 0;
+      if (typeof atc?.approachQueue?.length === "number") {
+        inboundCount = atc.approachQueue.length;
+      } else if (typeof atc?.inboundQueue?.length === "number") {
+        inboundCount = atc.inboundQueue.length;
+      } else {
+        inboundCount = planes.filter((/** @type {any} */ p) => {
+          if (p.dest?.id !== entity.id) return false;
+          const state = p.state || p.phase;
+          return (
+            state === "ENROUTE_CRUISE" ||
+            state === "APPROACH_QUEUE" ||
+            state === "LANDING_ROLLOUT" ||
+            p.phase === "CRUISE" ||
+            p.phase === "LANDING"
+          );
+        }).length;
+      }
+
+      const activeDir =
+        (atc?.activeSign ?? 1) === -1 ? "Upwind Rev" : "Upwind Fwd";
+      const gateFacilityType = entity.isHub
+        ? "Jetbridge"
+        : entity.airportClass === "CRG"
+          ? "Cargo Ramp"
+          : "Apron";
+
       body.innerHTML = `
       <div class="divide-y divide-stone-300/60 border-y border-stone-300/60">
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">Runways</span>
-          <span class="mono font-bold text-[#36383e] tabular-nums">${entity.runwayCount} Parallel • ${entity.runwayLabel}</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums">${entity.runwayCount} Parallel • ${entity.runwayLabel} (${activeDir})</span>
+        </div>
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">Gate Stands</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums">${occupiedGates} / ${totalGates} Occupied • ${gateFacilityType}</span>
+        </div>
+        <div class="flex items-center justify-between py-1.5">
+          <span class="text-stone-500 font-medium">ATC & Taxi Queue</span>
+          <span class="mono font-bold text-[#36383e] tabular-nums">${taxiHoldCount} Taxiing • ${inboundCount} Inbound</span>
         </div>
         <div class="flex items-center justify-between py-1.5">
           <span class="text-stone-500 font-medium">Approach Cone</span>

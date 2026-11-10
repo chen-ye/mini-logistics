@@ -230,6 +230,17 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
         renderer.surfaceNetworkDisplayList?.recorder.getStats().commandCount,
       ).toBeGreaterThan(0);
 
+      const roadDiag = renderer.computeRoadGraphDiagnostics(world);
+      expect(roadDiag.activeTracks).toBeGreaterThan(0);
+      if (
+        world.cargoLinks.some((l) =>
+          l.outboundTrack?.pts?.some((p) => p.isSlipRamp),
+        )
+      ) {
+        expect(roadDiag.rampTraversals).toBeGreaterThan(0);
+      }
+      expect(roadDiag.anomalies.length).toBe(0);
+
       // 7. Zero Non-Road Surface Steps & Zero Trajectory Reversal Invariants:
       // Every surface-to-surface step (!a.onMotorway && !b.onMotorway) must lie on the same tile or a committed road edge,
       // and no directed vehicle track (cargoLinks or commuterRoutes) may contain a sharp reversal / snap-back (cosTurn < -0.5).

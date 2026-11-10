@@ -1,4 +1,4 @@
-/** @import { Airport, CarAgent, FlightPhase, FlightTrack, FlightTrackPoint, PlaneAgent, PlaneEndpoint } from './types.js' */
+/** @import { Airport, AirportATC, CarAgent, FlightPhase, FlightTrack, FlightTrackPoint, GateSlot, PlaneAgent, PlaneEndpoint, PlaneFSMState } from './types.js' */
 /** @import { ProceduralLogisticsWorld } from './world-generator.js' */
 import { SIM_CONFIG } from "./constants.js";
 
@@ -20,10 +20,295 @@ function toWorld(ap, lx, ly) {
 }
 
 /**
+ * Normalizes an angle in radians to [-PI, PI].
+ * @param {number} a
+ * @returns {number}
+ */
+function normalizeAngle(a) {
+  let r = (a + Math.PI) % (Math.PI * 2);
+  if (r < 0) r += Math.PI * 2;
+  return r - Math.PI;
+}
+
+/**
+ * Captures the residual delta between an aircraft's current pose and a new reference target
+ * so any state or curve transition is 100% C0/C1 jump-free.
+ * @param {PlaneAgent} p
+ * @param {number} newRefX
+ * @param {number} newRefY
+ * @param {number} newRefAng
+ */
+function capturePoseResidual(p, newRefX, newRefY, newRefAng) {
+  const dx = p.x - newRefX;
+  const dy = p.y - newRefY;
+  if (Math.hypot(dx, dy) > 1.35) {
+    p._resX = 0;
+    p._resY = 0;
+    p._resAng = 0;
+    return;
+  }
+  p._resX = dx;
+  p._resY = dy;
+  p._resAng = normalizeAngle(p.ang - newRefAng);
+}
+
+/**
+ * Applies exponentially damped residual offsets so the aircraft smoothly converges
+ * onto (refX, refY, refAng) without 1-frame position jumps or heading snaps.
+ * @param {PlaneAgent} p
+ * @param {number} refX
+ * @param {number} refY
+ * @param {number} refAng
+ * @param {number} effDt
+ */
+function applySmoothedPose(p, refX, refY, refAng, effDt) {
+  const decayPos = Math.exp(-7.0 * effDt);
+  const decayAng = Math.exp(-8.5 * effDt);
+  const rx = (p._resX ?? 0) * decayPos;
+  const ry = (p._resY ?? 0) * decayPos;
+  const ra = (p._resAng ?? 0) * decayAng;
+  p._resX = Math.abs(rx) > 1e-4 ? rx : 0;
+  p._resY = Math.abs(ry) > 1e-4 ? ry : 0;
+  p._resAng = Math.abs(ra) > 1e-4 ? ra : 0;
+  p.x = refX + p._resX;
+  p.y = refY + p._resY;
+  p.ang = refAng + p._resAng;
+}
+
+/**
+ * Initializes Airport ATC, gate slots, 1D taxiway spine, and into-the-wind active runway direction.
+ * @param {Airport} ap
+ * @param {{ x: number, y: number, rad?: number } | null} [windVector]
+ * @returns {AirportATC}
+ */
+export function initAirportATC(ap, windVector = null) {
+  let activeSign = ap.activeSign ?? 1;
+  if (
+    windVector &&
+    typeof windVector.x === "number" &&
+    typeof windVector.y === "number"
+  ) {
+    const ang = ap.angleRad ?? 0;
+    const rwyCos = Math.cos(ang);
+    const rwySin = Math.sin(ang);
+    const headwindDot = -windVector.x * rwyCos + -windVector.y * rwySin;
+    activeSign = headwindDot >= 0 ? 1 : -1;
+  }
+
+  const side = ap.apronSide || 1;
+  const isHub = ap.isHub ?? false;
+  const rwyLen = ap.halfLen * 2;
+  const termW = rwyLen * (isHub ? 0.46 : 0.4);
+  const taxiY = side * (isHub ? 0.4 : 0.45);
+  const termY = side * (isHub ? 1.05 : 0.95);
+  // Hold short on the cross-field connector clear of the runway asphalt edge (±0.575..0.675 tiles)
+  const holdShortY = side * (isHub ? 0.16 : 0.24);
+
+  const exitCrossX = activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+  const depCrossX = -activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+  const spineLen = Math.abs(depCrossX - exitCrossX);
+  const holdShortS = spineLen + Math.abs(taxiY - holdShortY);
+
+  const gateConfigs = isHub
+    ? [-3, -2, -1, 0, 1, 2, 3].map((g) => g * 0.12 * termW)
+    : ap.airportClass === "CRG"
+      ? [-0.42, -0.22, 0.22, 0.42].map((frac) => frac * termW)
+      : [-0.36, -0.12, 0.12, 0.36].map((frac) => frac * termW);
+
+  const noseAngle =
+    (ap.angleRad ?? 0) + (side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5);
+
+  /** @type {GateSlot[]} */
+  const gates = [];
+  for (let i = 0; i < gateConfigs.length; i++) {
+    const lx = gateConfigs[i];
+    const ly = termY;
+    const taxiS = (exitCrossX - lx) * activeSign;
+    const w = toWorld(ap, lx, ly);
+    gates.push({
+      id: i,
+      lx,
+      ly,
+      taxiY,
+      taxiS,
+      worldX: w.x,
+      worldY: w.y,
+      noseAngle,
+      state: "FREE",
+      occupiedBy: null,
+      reservedBy: null,
+    });
+  }
+
+  gates.sort((a, b) => a.taxiS - b.taxiS);
+  for (let i = 0; i < gates.length; i++) {
+    gates[i].id = i;
+  }
+
+  const minTaxiS =
+    gates.length > 0 ? Math.min(...gates.map((g) => g.taxiS)) : 1.6;
+  const preGateHoldS = Math.max(0.4, minTaxiS - 1.2);
+
+  /** @type {AirportATC} */
+  const atc = {
+    airportId: ap.id ?? 0,
+    isHub,
+    activeSign,
+    rwyLen,
+    termW,
+    taxiY,
+    holdShortY,
+    exitRwyX: exitCrossX,
+    crossTaxiX: exitCrossX,
+    depCrossX,
+    holdShortS,
+    preGateHoldS,
+    gates,
+    taxiwayOccupants: [],
+    holdShortQueue: [],
+    crossingQueue: [],
+    approachQueue: [],
+    runwayBusyBy: null,
+    depRunwayBusyBy: null,
+    arrRunwayBusyBy: null,
+    crossingBusyBy: null,
+    lastOp: "DEPARTURE",
+  };
+
+  ap.atc = atc;
+  ap.activeSign = activeSign;
+  return atc;
+}
+
+/**
+ * Maps 1D taxiway coordinate s in [0, holdShortS] to world coordinates { x, y, ang }.
+ * @param {Airport | PlaneEndpoint} ap
+ * @param {number} s
+ * @returns {{ x: number, y: number, ang: number }}
+ */
+export function taxiSpinePosToWorld(ap, s) {
+  const atc = ap.atc;
+  const isHub = Boolean(ap.isHub);
+  const side = ap.apronSide || 1;
+  const rwyLen = ap.halfLen * 2;
+  const activeSign = atc?.activeSign ?? ap.activeSign ?? 1;
+  const exitCrossX = atc
+    ? atc.exitRwyX
+    : activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+  const depCrossX = atc
+    ? atc.depCrossX
+    : -activeSign * (isHub ? 0.41 : 0.38) * rwyLen;
+  const taxiY = atc ? atc.taxiY : side * (isHub ? 0.4 : 0.45);
+  const holdShortY = atc ? atc.holdShortY : side * (isHub ? 0.16 : 0.24);
+  const spineLen = Math.abs(depCrossX - exitCrossX);
+  const holdShortS = atc
+    ? atc.holdShortS
+    : spineLen + Math.abs(taxiY - holdShortY);
+
+  const clampedS = Math.min(s, holdShortS);
+  const angRad = ap.angleRad ?? 0;
+  let lx = 0;
+  let ly = 0;
+  let ang = 0;
+
+  const crossFromY = -side * (isHub ? 1.7 : 0.58);
+  const crossSpan = Math.abs(taxiY - crossFromY);
+
+  if (clampedS < -crossSpan) {
+    lx = exitCrossX - activeSign * (clampedS + crossSpan);
+    ly = crossFromY;
+    ang = angRad + (activeSign > 0 ? 0 : Math.PI);
+  } else if (clampedS < 0) {
+    lx = exitCrossX;
+    const t = crossSpan > 1e-4 ? (clampedS + crossSpan) / crossSpan : 1;
+    ly = crossFromY + (taxiY - crossFromY) * t;
+    ang = angRad + (side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5);
+  } else if (clampedS <= spineLen) {
+    lx = exitCrossX - activeSign * clampedS;
+    ly = taxiY;
+    ang = angRad + (activeSign > 0 ? Math.PI : 0);
+  } else {
+    lx = depCrossX;
+    const turnSpan = holdShortS - spineLen;
+    const t =
+      turnSpan > 1e-4
+        ? Math.max(0, Math.min(1, (clampedS - spineLen) / turnSpan))
+        : 1;
+    ly = taxiY + (holdShortY - taxiY) * t;
+    ang = angRad + (side > 0 ? -Math.PI * 0.5 : Math.PI * 0.5);
+  }
+
+  const w = toWorld(ap, lx, ly);
+  return { x: w.x, y: w.y, ang };
+}
+
+/**
+ * Checks whether the taxiway spine behind a gate is clear of moving aircraft for pushback.
+ * @param {AirportATC} atc
+ * @param {number} gateTaxiS
+ * @returns {boolean}
+ */
+export function canPushBackOntoTaxiway(atc, gateTaxiS) {
+  const trail = SIM_CONFIG.AVIATION.pushbackClearTrail;
+  const lead = SIM_CONFIG.AVIATION.pushbackClearLead;
+  const sMin = gateTaxiS - trail;
+  const sMax = gateTaxiS + lead;
+  for (const plane of atc.taxiwayOccupants) {
+    const s = plane.taxiS ?? 0;
+    if (s >= sMin && s <= sMax) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Releases any gate occupied or reserved by planeId across all airports.
+ * @param {ProceduralLogisticsWorld} world
+ * @param {number} planeId
+ */
+function releaseAllGatesForPlane(world, planeId) {
+  for (const ap of world.airports || []) {
+    if (!ap.atc) continue;
+    for (const g of ap.atc.gates) {
+      if (g.occupiedBy === planeId || g.reservedBy === planeId) {
+        g.occupiedBy = null;
+        g.reservedBy = null;
+        g.state = "FREE";
+      }
+    }
+  }
+}
+
+/**
+ * Enforces FIFO non-overtaking separation (minTaxiSeparation) on the 1D taxiway spine.
+ * @param {AirportATC} atc
+ */
+export function maintainTaxiwayOrder(atc) {
+  const occupants = atc.taxiwayOccupants;
+  if (occupants.length === 0) return;
+
+  occupants.sort((a, b) => (b.taxiS ?? 0) - (a.taxiS ?? 0));
+
+  if ((occupants[0].taxiS ?? 0) > atc.holdShortS) {
+    occupants[0].taxiS = atc.holdShortS;
+  }
+
+  const minSep = SIM_CONFIG.AVIATION.minTaxiSeparation;
+  for (let i = 1; i < occupants.length; i++) {
+    const prevS = occupants[i - 1].taxiS ?? 0;
+    const maxAllowed = prevS - minSep;
+    if ((occupants[i].taxiS ?? 0) > maxAllowed) {
+      occupants[i].taxiS = maxAllowed;
+    }
+  }
+}
+
+/**
  * Builds an arc-length parameterized 5-phase gate-to-gate flight track in world tile coordinates.
  * @param {Airport | PlaneEndpoint} origin
  * @param {Airport | PlaneEndpoint} dest
- * @param {{ isCargoFreighter?: boolean, gateIndex?: number }} [options]
+ * @param {{ isCargoFreighter?: boolean, gateIndex?: number, gateLx?: number, destGateLx?: number, oSign?: 1 | -1, dSign?: 1 | -1 }} [options]
  * @returns {FlightTrack}
  */
 export function buildFlightTrack(origin, dest, options = {}) {
@@ -37,9 +322,9 @@ export function buildFlightTrack(origin, dest, options = {}) {
   const oAng = origin.angleRad ?? 0;
   const dAng = dest.angleRad ?? 0;
   const oDot = dx * Math.cos(oAng) + dy * Math.sin(oAng);
-  const oSign = oDot >= 0 ? 1 : -1;
   const dDot = dx * Math.cos(dAng) + dy * Math.sin(dAng);
-  const dSign = dDot >= 0 ? 1 : -1;
+  const oSign = options.oSign ?? origin.activeSign ?? (oDot >= 0 ? 1 : -1);
+  const dSign = options.dSign ?? dest.activeSign ?? (dDot >= 0 ? 1 : -1);
 
   // Dual-Runway Hub & Single-Runway Alignment (Phase 2)
   const oRwyLen = origin.halfLen * 2;
@@ -52,24 +337,35 @@ export function buildFlightTrack(origin, dest, options = {}) {
   const oTermW = oRwyLen * (oIsHub ? 0.46 : 0.4);
   const dTermW = dBaseRwyLen * (dIsHub ? 0.46 : 0.4);
   const gateIndex = options.gateIndex ?? 0;
-  const gateSlotFrac = ((gateIndex % 5) - 2) * 0.12;
-  const crgPadSign = gateIndex % 2 === 0 ? 1 : -1;
+  const hubFracs = [-0.36, -0.24, -0.12, 0, 0.12, 0.24, 0.36];
+  const crgFracs = [-0.42, -0.22, 0.22, 0.42];
+  const regFracs = [-0.36, -0.12, 0.12, 0.36];
 
-  // Origin gate and taxi geometry
+  // Origin gate and taxi geometry (matches initAirportATC & drawAirports gate stands)
+  const oFracs = oIsHub
+    ? hubFracs
+    : origin.airportClass === "CRG"
+      ? crgFracs
+      : regFracs;
   const oGateX =
-    origin.airportClass === "CRG"
-      ? crgPadSign * oTermW * 0.32
-      : gateSlotFrac * oTermW;
+    options.gateLx !== undefined
+      ? options.gateLx
+      : oFracs[gateIndex % oFracs.length] * oTermW;
   const oTermY = oSide * (oIsHub ? 1.05 : 0.95);
   const oTaxiY = oSide * (oIsHub ? 0.4 : 0.45);
   const oCrossTaxiX = -oSign * (oIsHub ? 0.41 : 0.38) * oRwyLen;
-  const oHoldShortY = depRwyY + oSide * 0.28;
+  const oHoldShortY = oSide * (oIsHub ? 0.16 : 0.24);
 
   // Destination gate and taxi geometry (matches unscaled concourse & cross-field taxiways in drawAirports)
+  const dFracs = dIsHub
+    ? hubFracs
+    : dest.airportClass === "CRG"
+      ? crgFracs
+      : regFracs;
   const dGateX =
-    dest.airportClass === "CRG"
-      ? crgPadSign * dTermW * 0.32
-      : gateSlotFrac * dTermW;
+    options.destGateLx !== undefined
+      ? options.destGateLx
+      : dFracs[gateIndex % dFracs.length] * dTermW;
   const dTermY = dSide * (dIsHub ? 1.05 : 0.95);
   const dTaxiY = dSide * (dIsHub ? 0.4 : 0.45);
   const dExitRwyX = dSign * (dIsHub ? 0.41 * 1.04 : 0.38) * dBaseRwyLen;
@@ -127,15 +423,24 @@ export function buildFlightTrack(origin, dest, options = {}) {
     speed: taxiSpeed,
   });
 
-  // 2. TAKEOFF (altitude: 0 -> 0.18, speed: 2.2 -> 13.5 tiles/sec)
+  // 2. TAKEOFF (altitude: 0 -> 0.18, speed: 2.2 -> 13.5 tiles/sec smooth acceleration roll)
   const takeoffSpeed = SIM_CONFIG.AVIATION.takeoffSpeed;
+  const pEarlyRoll = toWorld(origin, -oSign * oRwyLen * 0.22, depRwyY);
+  rawPts.push({
+    x: pEarlyRoll.x,
+    y: pEarlyRoll.y,
+    altitude: 0,
+    phase: "TAKEOFF",
+    speed: taxiSpeed + (takeoffSpeed - taxiSpeed) * 0.22,
+  });
+
   const pMidRoll = toWorld(origin, 0, depRwyY);
   rawPts.push({
     x: pMidRoll.x,
     y: pMidRoll.y,
     altitude: 0,
     phase: "TAKEOFF",
-    speed: (taxiSpeed + takeoffSpeed) * 0.5,
+    speed: taxiSpeed + (takeoffSpeed - taxiSpeed) * 0.55,
   });
 
   const pLiftoff = toWorld(origin, oSign * oRwyLen * 0.32, depRwyY);
@@ -383,6 +688,12 @@ export class LogisticsSimulator {
     this.tripsCompleted = SIM_CONFIG.FLEET.initialTrips;
     /** @type {number} */
     this.simTime = 0;
+
+    // Phase 1: Initialize ATC on every airport
+    for (const ap of this.world.airports) {
+      initAirportATC(ap, this.world.windVector);
+    }
+
     this.initAgents();
   }
 
@@ -526,9 +837,34 @@ export class LogisticsSimulator {
       (origin.isHub && dest.isHub && planeIdx % 3 === 2),
     );
 
+    const originAtc = origin.atc;
+    const destAtc = dest.atc;
+    /** @type {number | null} */
+    let gateId = null;
+    /** @type {GateSlot | null} */
+    let chosenOriginGate = null;
+    if (originAtc && originAtc.gates.length > 0) {
+      const freeGate = originAtc.gates.find((g) => g.state === "FREE");
+      if (freeGate) {
+        freeGate.state = "OCCUPIED";
+        freeGate.occupiedBy = planeIdx;
+        gateId = freeGate.id;
+        chosenOriginGate = freeGate;
+      }
+    }
+    const chosenDestGate =
+      destAtc && destAtc.gates.length > 0
+        ? (destAtc.gates.find((g) => g.state === "FREE") ??
+          destAtc.gates[planeIdx % destAtc.gates.length])
+        : null;
+
     const track = buildFlightTrack(origin, dest, {
       isCargoFreighter,
       gateIndex: planeIdx,
+      gateLx: chosenOriginGate?.lx,
+      destGateLx: chosenDestGate?.lx,
+      oSign: origin.activeSign,
+      dSign: dest.activeSign,
     });
 
     const dist = Math.max(
@@ -537,7 +873,97 @@ export class LogisticsSimulator {
     );
     const sample = sampleFlightTrack(track, dist);
 
-    this.planes.push({
+    /** @type {PlaneFSMState} */
+    let state = "GATE_LOADING";
+    let taxiS = 0;
+    const targetTaxiS = originAtc?.holdShortS ?? 10;
+    /** @type {number | null} */
+    let reservedGateId = null;
+
+    if (dist <= 0.01) {
+      state = "GATE_LOADING";
+      if (originAtc && gateId !== null) {
+        const g = originAtc.gates.find((x) => x.id === gateId);
+        if (g) taxiS = g.taxiS;
+      }
+    } else if (sample.phase === "TAXI_OUT") {
+      if (dist >= track.holdShortDist - 0.25) {
+        state = "HOLD_SHORT_QUEUE";
+        taxiS = originAtc?.holdShortS ?? 10;
+      } else {
+        state = "TAXI_TO_RUNWAY";
+        taxiS = originAtc
+          ? (dist / Math.max(0.01, track.holdShortDist)) * originAtc.holdShortS
+          : 5;
+      }
+      if (originAtc && gateId !== null) {
+        const g = originAtc.gates.find((x) => x.id === gateId);
+        if (g) {
+          g.state = "FREE";
+          g.occupiedBy = null;
+          gateId = null;
+        }
+      }
+    } else if (sample.phase === "TAKEOFF") {
+      state = "TAKEOFF_ROLL";
+      if (originAtc) {
+        originAtc.runwayBusyBy = planeIdx;
+        if (originAtc.isHub) originAtc.depRunwayBusyBy = planeIdx;
+      }
+    } else if (sample.phase === "CRUISE") {
+      state = "ENROUTE_CRUISE";
+    } else if (sample.phase === "LANDING") {
+      state = "LANDING_ROLLOUT";
+      if (destAtc) {
+        destAtc.runwayBusyBy = planeIdx;
+        if (destAtc.isHub) destAtc.arrRunwayBusyBy = planeIdx;
+      }
+    } else if (sample.phase === "TAXI_IN") {
+      state = "TAXI_TO_GATE";
+      if (destAtc && destAtc.gates.length > 0) {
+        const freeGate = destAtc.gates.find((g) => g.state === "FREE");
+        if (freeGate) {
+          freeGate.state = "RESERVED";
+          freeGate.reservedBy = planeIdx;
+          reservedGateId = freeGate.id;
+          taxiS = Math.max(0, freeGate.taxiS * 0.5);
+        }
+      }
+    } else {
+      state = "GATE_LOADING";
+    }
+
+    let initX = sample.x;
+    let initY = sample.y;
+    let initAng = sample.ang;
+    if (state === "GATE_LOADING" && chosenOriginGate) {
+      initX = chosenOriginGate.worldX;
+      initY = chosenOriginGate.worldY;
+      initAng = chosenOriginGate.noseAngle;
+    } else if (
+      (state === "TAXI_TO_RUNWAY" || state === "HOLD_SHORT_QUEUE") &&
+      originAtc
+    ) {
+      const wPos = taxiSpinePosToWorld(origin, taxiS);
+      initX = wPos.x;
+      initY = wPos.y;
+      initAng = wPos.ang;
+    } else if (state === "TAXI_TO_GATE" && destAtc) {
+      const wPos = taxiSpinePosToWorld(dest, taxiS);
+      initX = wPos.x;
+      initY = wPos.y;
+      initAng = wPos.ang;
+    }
+
+    const planeAgent = {
+      id: planeIdx,
+      state,
+      gateId,
+      reservedGateId,
+      taxiS,
+      targetTaxiS,
+      pushbackTimer: 0,
+      holdingPatternAngle: 0,
       origin,
       dest,
       track,
@@ -545,16 +971,33 @@ export class LogisticsSimulator {
       segIdx: sample.segIdx,
       phase: sample.phase,
       altitude: sample.altitude,
-      x: sample.x,
-      y: sample.y,
-      ang: sample.ang,
+      x: initX,
+      y: initY,
+      ang: initAng,
       speed: sample.speed,
       dwellTimer: 0,
-      holdingShort: false,
+      holdingShort: state === "HOLD_SHORT_QUEUE",
       isCargoFreighter,
       color: origin.palette?.roof || "#e65100",
       progress: Math.min(0.9999, dist / Math.max(0.001, track.totalLength)),
-    });
+    };
+
+    if (state === "TAXI_TO_RUNWAY" || state === "HOLD_SHORT_QUEUE") {
+      if (originAtc) {
+        originAtc.taxiwayOccupants.push(planeAgent);
+        maintainTaxiwayOrder(originAtc);
+        if (state === "HOLD_SHORT_QUEUE") {
+          originAtc.holdShortQueue.push(planeAgent);
+        }
+      }
+    } else if (state === "TAXI_TO_GATE") {
+      if (dest.atc) {
+        dest.atc.taxiwayOccupants.push(planeAgent);
+        maintainTaxiwayOrder(dest.atc);
+      }
+    }
+
+    this.planes.push(planeAgent);
   }
 
   /**
@@ -594,148 +1037,1085 @@ export class LogisticsSimulator {
       }
     }
 
-    // Update Aircraft
+    // Pass 0: Normalize Plane State & Handle External Test Mutations
+    for (let pIdx = 0; pIdx < this.planes.length; pIdx++) {
+      const p = this.planes[pIdx];
+      if (p.id === undefined) p.id = pIdx;
+      if (p.pushbackTimer === undefined) p.pushbackTimer = 0;
+      if (p.holdingPatternAngle === undefined) p.holdingPatternAngle = 0;
+      if (p.gateId === undefined) p.gateId = null;
+      if (p.reservedGateId === undefined) p.reservedGateId = null;
+      if (p.taxiS === undefined) p.taxiS = 0;
+      if (p.targetTaxiS === undefined) p.targetTaxiS = 0;
+
+      // Initialize state from phase if undefined (e.g. synthetic test objects)
+      if (!p.state) {
+        if (p.phase === "GATE_DWELL") p.state = "GATE_LOADING";
+        else if (p.phase === "TAXI_OUT") {
+          p.state =
+            p.dist >= p.track.holdShortDist - 0.25
+              ? "HOLD_SHORT_QUEUE"
+              : "TAXI_TO_RUNWAY";
+        } else if (p.phase === "TAKEOFF") p.state = "TAKEOFF_ROLL";
+        else if (p.phase === "CRUISE") p.state = "ENROUTE_CRUISE";
+        else if (p.phase === "LANDING") p.state = "LANDING_ROLLOUT";
+        else if (p.phase === "TAXI_IN") p.state = "TAXI_TO_GATE";
+        else p.state = "GATE_LOADING";
+      }
+
+      // If external test modified p.dist away from gate while state was GATE_LOADING or PUSHBACK_HOLD:
+      if (
+        (p.state === "GATE_LOADING" || p.state === "PUSHBACK_HOLD") &&
+        p.dist > 0.05
+      ) {
+        const s = sampleFlightTrack(p.track, p.dist);
+        p.phase = s.phase;
+        if (s.phase === "TAXI_OUT") {
+          p.state =
+            p.dist >= p.track.holdShortDist - 0.25
+              ? "HOLD_SHORT_QUEUE"
+              : "TAXI_TO_RUNWAY";
+        } else if (s.phase === "TAKEOFF") {
+          p.state = "TAKEOFF_ROLL";
+        } else if (s.phase === "CRUISE") {
+          p.state = "ENROUTE_CRUISE";
+        } else if (s.phase === "LANDING") {
+          p.state = "LANDING_ROLLOUT";
+        } else if (s.phase === "TAXI_IN") {
+          p.state = "TAXI_TO_GATE";
+          const dAtc = p.dest.atc;
+          if (dAtc && dAtc.gates.length > 0) {
+            const g =
+              dAtc.gates.find(
+                (x) => x.state === "FREE" && x.occupiedBy === null,
+              ) ?? dAtc.gates[0];
+            p.reservedGateId = g.id;
+            p.taxiS = Math.max(
+              0,
+              g.taxiS - Math.max(0, p.track.totalLength - p.dist),
+            );
+          }
+        }
+      }
+
+      // External mutation check: test 5.4 step 2 planeArr.phase = "TAXI_IN"
+      if (p.phase === "TAXI_IN" && p.state === "LANDING_ROLLOUT") {
+        p.state = "TAXI_TO_GATE";
+        const destAtc = p.dest.atc;
+        if (destAtc) {
+          if (destAtc.runwayBusyBy === p.id) destAtc.runwayBusyBy = null;
+          if (destAtc.arrRunwayBusyBy === p.id) destAtc.arrRunwayBusyBy = null;
+        }
+      } else if (
+        p.phase === "TAXI_OUT" &&
+        (p.state === "GATE_LOADING" || p.state === "PUSHBACK_HOLD")
+      ) {
+        p.state = "TAXI_TO_RUNWAY";
+      } else if (
+        p.phase === "GATE_DWELL" &&
+        p.state !== "GATE_LOADING" &&
+        p.state !== "PUSHBACK_HOLD"
+      ) {
+        p.state = "GATE_LOADING";
+      }
+    }
+
+    // Pass 1: Airport ATC Queue Management across all airports
+    for (const ap of this.world.airports) {
+      const atc = ap.atc;
+      if (!atc) continue;
+
+      // 1. Release runway locks if holding plane is no longer in roll
+      if (atc.runwayBusyBy !== null) {
+        const holder = this.planes.find((p) => p.id === atc.runwayBusyBy);
+        if (
+          !holder ||
+          (holder.state !== "TAKEOFF_ROLL" &&
+            holder.state !== "LANDING_ROLLOUT")
+        ) {
+          atc.runwayBusyBy = null;
+        }
+      }
+      if (atc.depRunwayBusyBy !== null) {
+        const holder = this.planes.find((p) => p.id === atc.depRunwayBusyBy);
+        if (!holder || holder.state !== "TAKEOFF_ROLL") {
+          atc.depRunwayBusyBy = null;
+        }
+      }
+      if (atc.arrRunwayBusyBy !== null) {
+        const holder = this.planes.find((p) => p.id === atc.arrRunwayBusyBy);
+        if (!holder || holder.state !== "LANDING_ROLLOUT") {
+          atc.arrRunwayBusyBy = null;
+        }
+      }
+      if (atc.crossingBusyBy !== null) {
+        const holder = this.planes.find((p) => p.id === atc.crossingBusyBy);
+        const stillCrossing =
+          holder &&
+          (holder.state === "HOLD_CROSSING_RUNWAY" ||
+            (holder.state === "TAXI_TO_GATE" && (holder.taxiS ?? 0) < 0));
+        if (!stillCrossing) {
+          atc.crossingBusyBy = null;
+        }
+      }
+
+      // 2. Check pushbacks for planes at gates in PUSHBACK_HOLD
+      for (const gate of atc.gates) {
+        if (gate.state === "OCCUPIED" && gate.occupiedBy !== null) {
+          const plane = this.planes.find((p) => p.id === gate.occupiedBy);
+          if (plane && plane.state === "PUSHBACK_HOLD") {
+            if (canPushBackOntoTaxiway(atc, gate.taxiS)) {
+              const taxiS = gate.taxiS;
+              const wPos = taxiSpinePosToWorld(ap, taxiS);
+              capturePoseResidual(plane, wPos.x, wPos.y, wPos.ang);
+              releaseAllGatesForPlane(this.world, plane.id ?? 0);
+              plane.gateId = null;
+              plane.reservedGateId = null;
+              plane.taxiS = taxiS;
+              plane.targetTaxiS = atc.holdShortS;
+              plane.speed = 0;
+              if (!atc.taxiwayOccupants.includes(plane)) {
+                atc.taxiwayOccupants.push(plane);
+                maintainTaxiwayOrder(atc);
+              }
+              plane.state = "TAXI_TO_RUNWAY";
+              plane.phase = "TAXI_OUT";
+            }
+          }
+        }
+      }
+
+      // 3. Runway crossing queue clearance (Hub & Taxiway Entry)
+      // On Dual-Runway Hubs, landed outer-runway aircraft hold at the inner-runway intersection
+      // until the inner departure runway has no active roll AND no aircraft holding short at the threshold.
+      if (atc.crossingQueue.length > 0) {
+        const depClear =
+          atc.depRunwayBusyBy === null &&
+          atc.crossingBusyBy === null &&
+          atc.holdShortQueue.length === 0;
+        const startS = atc.isHub ? -2.1 : 0;
+        const entryClear = atc.taxiwayOccupants.every(
+          (o) =>
+            (o.taxiS ?? 0) - startS >= SIM_CONFIG.AVIATION.minTaxiSeparation,
+        );
+        if (depClear && entryClear) {
+          const crosser = atc.crossingQueue.shift();
+          if (crosser) {
+            if (atc.isHub) {
+              atc.crossingBusyBy = crosser.id ?? null;
+            }
+            const wPos = taxiSpinePosToWorld(ap, startS);
+            capturePoseResidual(crosser, wPos.x, wPos.y, wPos.ang);
+            crosser.taxiS = startS;
+            if (!atc.taxiwayOccupants.includes(crosser)) {
+              atc.taxiwayOccupants.push(crosser);
+              maintainTaxiwayOrder(atc);
+            }
+            crosser.state = "TAXI_TO_GATE";
+            crosser.phase = "TAXI_IN";
+          }
+        }
+      }
+
+      // 4. Approach queue cleanup (remove any plane no longer in APPROACH_QUEUE)
+      for (let q = atc.approachQueue.length - 1; q >= 0; q--) {
+        if (atc.approachQueue[q].state !== "APPROACH_QUEUE") {
+          atc.approachQueue.splice(q, 1);
+        }
+      }
+
+      // 5. Departure queue clearance (Hold-short)
+      if (atc.holdShortQueue.length > 0) {
+        const depClear = atc.isHub
+          ? atc.depRunwayBusyBy === null && atc.crossingBusyBy === null
+          : atc.runwayBusyBy === null;
+        const departer = atc.holdShortQueue[0];
+        const atHoldShort =
+          departer && (departer.taxiS ?? 0) >= atc.holdShortS - 0.25;
+        if (depClear && atHoldShort) {
+          let arrivalInbound = false;
+          if (!atc.isHub) {
+            for (const other of this.planes) {
+              if (other === departer) continue;
+              if (other.dest && other.dest.id === ap.id) {
+                let landingDist = other.track.totalLength;
+                for (let i = 0; i < other.track.pts.length; i++) {
+                  if (other.track.pts[i].phase === "LANDING") {
+                    landingDist = other.track.cumLen[i];
+                    break;
+                  }
+                }
+                const distRemaining = landingDist - other.dist;
+                if (
+                  other.phase === "LANDING" ||
+                  other.state === "LANDING_ROLLOUT" ||
+                  other.state === "APPROACH_QUEUE" ||
+                  (other.phase === "CRUISE" &&
+                    distRemaining <=
+                      SIM_CONFIG.AVIATION.holdShortLookaheadTiles)
+                ) {
+                  arrivalInbound = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!arrivalInbound) {
+            atc.holdShortQueue.shift();
+            const occIdx = atc.taxiwayOccupants.indexOf(departer);
+            if (occIdx !== -1) atc.taxiwayOccupants.splice(occIdx, 1);
+
+            if (atc.isHub) {
+              atc.depRunwayBusyBy = departer.id ?? null;
+            } else {
+              atc.runwayBusyBy = departer.id ?? null;
+            }
+            atc.lastOp = "DEPARTURE";
+            departer.holdingShort = false;
+            departer.dist = departer.track.holdShortDist;
+            const sHold = sampleFlightTrack(departer.track, departer.dist);
+            capturePoseResidual(departer, sHold.x, sHold.y, sHold.ang);
+            departer.state = "TAKEOFF_ROLL";
+            departer.phase = "TAKEOFF";
+          }
+        }
+      }
+
+      // Maintain taxiway order & separation
+      maintainTaxiwayOrder(atc);
+    }
+
+    // Pass 2: Agent Physics & FSM State Updates
     for (let pIdx = 0; pIdx < this.planes.length; pIdx++) {
       const p = this.planes[pIdx];
 
-      if (p.phase === "GATE_DWELL") {
-        p.altitude = 0;
-        p.progress = 0.999;
-        p.dwellTimer += effDt;
-        if (p.dwellTimer >= SIM_CONFIG.AVIATION.gateDwellSec) {
-          this.tripsCompleted += SIM_CONFIG.FLEET.flightTripWeight;
-          const newOrigin = p.dest.id !== undefined ? p.dest : p.origin;
-          p.origin = newOrigin;
-          /** @type {Airport | PlaneEndpoint | null} */
-          let nextDest = null;
-          if (this.world.airports.length > 1) {
-            const others = this.world.airports.filter(
-              (a) => a.id !== p.origin.id,
+      switch (p.state) {
+        case "GATE_LOADING": {
+          p.altitude = 0;
+          p.speed = 0;
+          p.progress = 0.999;
+          p.phase = "GATE_DWELL";
+          p.dwellTimer += effDt;
+
+          const planeId = p.id ?? pIdx;
+          const atc = p.origin.atc;
+          if (atc && p.gateId === null) {
+            releaseAllGatesForPlane(this.world, planeId);
+            const freeGate = atc.gates.find(
+              (g) => g.state === "FREE" && g.occupiedBy === null,
             );
-            nextDest = others[Math.floor(Math.random() * others.length)];
-          } else {
-            const ang = p.origin.angleRad ?? 0;
-            nextDest = {
-              x: p.origin.x + Math.cos(ang + 0.35) * 95,
-              y: p.origin.y + Math.sin(ang + 0.35) * 95,
-              angleRad: ang,
-              halfLen: 6,
-            };
+            if (freeGate) {
+              freeGate.state = "OCCUPIED";
+              freeGate.occupiedBy = planeId;
+              p.gateId = freeGate.id;
+            }
           }
-          if (!nextDest) continue;
-          p.dest = nextDest;
-          p.isCargoFreighter = Boolean(
-            p.origin.airportClass === "CRG" ||
-            p.dest.airportClass === "CRG" ||
-            (p.origin.isHub && p.dest.isHub && pIdx % 3 === 2),
-          );
-          p.track = buildFlightTrack(p.origin, p.dest, {
-            isCargoFreighter: p.isCargoFreighter,
-            gateIndex: pIdx,
-          });
-          p.dist = 0;
-          p.segIdx = 0;
-          p.dwellTimer = 0;
-          p.progress = 0;
-          p.holdingShort = false;
-          const sample = sampleFlightTrack(p.track, 0);
-          p.x = sample.x;
-          p.y = sample.y;
-          p.ang = sample.ang;
-          p.altitude = sample.altitude;
-          p.speed = sample.speed;
-          p.phase = sample.phase;
-        }
-        continue;
-      }
+          if (atc && p.gateId !== null) {
+            const g = atc.gates.find((x) => x.id === p.gateId);
+            if (g) {
+              p.x = g.worldX;
+              p.y = g.worldY;
+              p.ang = g.noseAngle;
+            }
+          }
 
-      const step = p.speed * effDt;
+          if (p.dwellTimer >= SIM_CONFIG.AVIATION.gateDwellSec) {
+            this.tripsCompleted += SIM_CONFIG.FLEET.flightTripWeight;
+            if (p.dest && p.dest.id !== undefined && p.gateId === null) {
+              p.origin = p.dest;
+            }
+            /** @type {Airport | PlaneEndpoint | null} */
+            let nextDest = null;
+            if (this.world.airports.length > 1) {
+              const others = this.world.airports.filter(
+                (a) => a.id !== p.origin.id,
+              );
+              nextDest = others[Math.floor(Math.random() * others.length)];
+            } else {
+              const ang = p.origin.angleRad ?? 0;
+              nextDest = {
+                x: p.origin.x + Math.cos(ang + 0.35) * 95,
+                y: p.origin.y + Math.sin(ang + 0.35) * 95,
+                angleRad: ang,
+                halfLen: 6,
+              };
+            }
+            if (nextDest) {
+              p.dest = nextDest;
+              p.isCargoFreighter = Boolean(
+                p.origin.airportClass === "CRG" ||
+                p.dest.airportClass === "CRG" ||
+                (p.origin.isHub && p.dest.isHub && pIdx % 3 === 2),
+              );
 
-      // Single-Runway Hold-Short Traffic Control (Phase 2.2)
-      if (
-        !p.origin.isHub &&
-        p.phase === "TAXI_OUT" &&
-        p.dist <= p.track.holdShortDist &&
-        p.dist + step >= p.track.holdShortDist - 0.25
-      ) {
-        let arrivalInbound = false;
-        for (let oIdx = 0; oIdx < this.planes.length; oIdx++) {
-          if (oIdx === pIdx) continue;
-          const other = this.planes[oIdx];
-          if (
-            other.dest &&
-            other.dest.id !== undefined &&
-            p.origin.id !== undefined &&
-            other.dest.id === p.origin.id
-          ) {
-            let landingDist = other.track.totalLength;
-            for (let i = 0; i < other.track.pts.length; i++) {
-              if (other.track.pts[i].phase === "LANDING") {
-                landingDist = other.track.cumLen[i];
-                break;
+              const newAtc = p.origin.atc;
+              const curGate = newAtc
+                ? newAtc.gates.find((g) => g.occupiedBy === planeId) ||
+                  newAtc.gates.find(
+                    (g) => g.state === "FREE" && g.occupiedBy === null,
+                  ) ||
+                  null
+                : null;
+              const destGate =
+                p.dest.atc && p.dest.atc.gates.length > 0
+                  ? (p.dest.atc.gates.find(
+                      (g) =>
+                        g.state === "FREE" &&
+                        g.occupiedBy === null &&
+                        g.reservedBy === null,
+                    ) ?? p.dest.atc.gates[pIdx % p.dest.atc.gates.length])
+                  : null;
+
+              p.track = buildFlightTrack(p.origin, p.dest, {
+                isCargoFreighter: p.isCargoFreighter,
+                gateIndex: pIdx,
+                gateLx: curGate?.lx,
+                destGateLx: destGate?.lx,
+                oSign: p.origin.activeSign,
+                dSign: p.dest.activeSign,
+              });
+              p.dist = 0;
+              p.segIdx = 0;
+              p.dwellTimer = 0;
+              p.progress = 0;
+              p.holdingShort = false;
+              const sample = sampleFlightTrack(p.track, 0);
+              p.x = curGate ? curGate.worldX : sample.x;
+              p.y = curGate ? curGate.worldY : sample.y;
+              p.ang = curGate ? curGate.noseAngle : sample.ang;
+              p.altitude = sample.altitude;
+              p.speed = sample.speed;
+
+              if (newAtc && curGate) {
+                releaseAllGatesForPlane(this.world, planeId);
+                curGate.state = "OCCUPIED";
+                curGate.occupiedBy = planeId;
+                p.gateId = curGate.id;
+                p.taxiS = curGate.taxiS;
+                p.targetTaxiS = newAtc.holdShortS;
+                p.state = "PUSHBACK_HOLD";
+                p.phase = "TAXI_OUT";
+              } else {
+                releaseAllGatesForPlane(this.world, planeId);
+                p.state = "TAXI_TO_RUNWAY";
+                p.phase = "TAXI_OUT";
               }
             }
-            const distRemaining = landingDist - other.dist;
+          }
+          break;
+        }
+
+        case "PUSHBACK_HOLD": {
+          p.altitude = 0;
+          p.speed = 0;
+          p.phase = "TAXI_OUT";
+          p.pushbackTimer = (p.pushbackTimer ?? 0) + effDt;
+          const atc = p.origin.atc;
+          if (atc && p.gateId !== null) {
+            const g = atc.gates.find((x) => x.id === p.gateId);
+            if (g) {
+              p._resX = 0;
+              p._resY = 0;
+              p._resAng = 0;
+              p.x = g.worldX;
+              p.y = g.worldY;
+              p.ang = g.noseAngle;
+            }
+          }
+          if (!atc) {
+            p.state = "TAXI_TO_RUNWAY";
+            p.phase = "TAXI_OUT";
+          }
+          break;
+        }
+
+        case "TAXI_TO_RUNWAY": {
+          p.phase = "TAXI_OUT";
+          p.altitude = 0;
+          const maxTaxiSpeed = SIM_CONFIG.AVIATION.taxiSpeed;
+          const atc = p.origin.atc;
+
+          if (atc) {
+            if (!atc.taxiwayOccupants.includes(p)) {
+              if ((p.taxiS ?? 0) === 0 && p.dist > 0) {
+                p.taxiS =
+                  (p.dist / Math.max(0.01, p.track.holdShortDist)) *
+                  atc.holdShortS;
+              }
+              atc.taxiwayOccupants.push(p);
+            }
+            maintainTaxiwayOrder(atc);
+            const occIdx = atc.taxiwayOccupants.indexOf(p);
+            const maxAllowedS =
+              occIdx > 0
+                ? (atc.taxiwayOccupants[occIdx - 1].taxiS ?? 0) -
+                  SIM_CONFIG.AVIATION.minTaxiSeparation
+                : atc.holdShortS;
+
+            const gap = Math.max(0, maxAllowedS - (p.taxiS ?? 0));
+            const desiredSpeed =
+              occIdx > 0 ? maxTaxiSpeed * Math.min(1, gap / 1.4) : maxTaxiSpeed;
+            const accel = 6.5;
+            p.speed = Math.max(
+              0,
+              Math.min(
+                maxTaxiSpeed,
+                (p.speed || maxTaxiSpeed * 0.4) +
+                  Math.max(
+                    -accel * effDt,
+                    Math.min(accel * effDt, desiredSpeed - (p.speed || 0)),
+                  ),
+              ),
+            );
+            const step = p.speed * effDt;
+
+            // Single-runway arrival inbound check at the hold-short line
+            let arrivalInbound = false;
             if (
-              other.phase === "LANDING" ||
-              (other.phase === "CRUISE" &&
-                distRemaining <= SIM_CONFIG.AVIATION.holdShortLookaheadTiles)
+              !p.origin.isHub &&
+              (p.taxiS ?? 0) + step >= atc.holdShortS - 0.25
             ) {
-              arrivalInbound = true;
+              for (let oIdx = 0; oIdx < this.planes.length; oIdx++) {
+                if (oIdx === pIdx) continue;
+                const other = this.planes[oIdx];
+                if (
+                  other.dest &&
+                  other.dest.id !== undefined &&
+                  p.origin.id !== undefined &&
+                  other.dest.id === p.origin.id
+                ) {
+                  let landingDist = other.track.totalLength;
+                  for (let i = 0; i < other.track.pts.length; i++) {
+                    if (other.track.pts[i].phase === "LANDING") {
+                      landingDist = other.track.cumLen[i];
+                      break;
+                    }
+                  }
+                  const distRemaining = landingDist - other.dist;
+                  if (
+                    other.phase === "LANDING" ||
+                    other.state === "LANDING_ROLLOUT" ||
+                    other.state === "APPROACH_QUEUE" ||
+                    (other.phase === "CRUISE" &&
+                      distRemaining <=
+                        SIM_CONFIG.AVIATION.holdShortLookaheadTiles)
+                  ) {
+                    arrivalInbound = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            p.taxiS = Math.min(maxAllowedS, (p.taxiS ?? 0) + step);
+            p.dist =
+              (Math.max(0, p.taxiS) / Math.max(0.01, atc.holdShortS)) *
+              p.track.holdShortDist;
+
+            if (p.taxiS >= atc.holdShortS - 0.1 || arrivalInbound) {
+              if (p.taxiS >= atc.holdShortS - 0.1) {
+                p.taxiS = Math.min(maxAllowedS, atc.holdShortS);
+              }
+              p.dist = Math.min(p.dist, p.track.holdShortDist);
+              p.holdingShort = true;
+              p.state = "HOLD_SHORT_QUEUE";
+              if (!atc.holdShortQueue.includes(p)) {
+                atc.holdShortQueue.push(p);
+              }
+            } else {
+              p.holdingShort = false;
+            }
+
+            const wPos = taxiSpinePosToWorld(p.origin, p.taxiS);
+            applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
+            const sample = sampleFlightTrack(p.track, p.dist);
+            p.segIdx = sample.segIdx;
+            p.progress = Math.min(
+              0.9999,
+              p.dist / Math.max(0.001, p.track.totalLength),
+            );
+          } else {
+            const step = maxTaxiSpeed * effDt;
+            p.speed = maxTaxiSpeed;
+            if (p.dist + step >= p.track.holdShortDist - 0.25) {
+              p.dist = Math.min(p.dist, p.track.holdShortDist);
+              p.state = "HOLD_SHORT_QUEUE";
+            } else {
+              p.dist += step;
+            }
+            const sample = sampleFlightTrack(p.track, p.dist);
+            applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+            p.segIdx = sample.segIdx;
+            p.progress = Math.min(
+              0.9999,
+              p.dist / Math.max(0.001, p.track.totalLength),
+            );
+          }
+          break;
+        }
+
+        case "HOLD_SHORT_QUEUE": {
+          p.phase = "TAXI_OUT";
+          p.altitude = 0;
+          p.speed = 0;
+          p.holdingShort = true;
+          p.dist = Math.min(p.dist, p.track.holdShortDist);
+
+          const atc = p.origin.atc;
+          let occIdx = -1;
+          if (atc) {
+            if (!atc.taxiwayOccupants.includes(p)) {
+              if ((p.taxiS ?? 0) === 0) p.taxiS = atc.holdShortS;
+              atc.taxiwayOccupants.push(p);
+            }
+            if (!atc.holdShortQueue.includes(p)) {
+              atc.holdShortQueue.push(p);
+            }
+            maintainTaxiwayOrder(atc);
+            occIdx = atc.taxiwayOccupants.indexOf(p);
+            const maxAllowedS =
+              occIdx > 0
+                ? (atc.taxiwayOccupants[occIdx - 1].taxiS ?? 0) -
+                  SIM_CONFIG.AVIATION.minTaxiSeparation
+                : atc.holdShortS;
+            p.taxiS = Math.min(
+              maxAllowedS,
+              (p.taxiS ?? 0) + SIM_CONFIG.AVIATION.taxiSpeed * effDt,
+            );
+            p.dist =
+              (Math.max(0, p.taxiS) / Math.max(0.01, atc.holdShortS)) *
+              p.track.holdShortDist;
+          }
+
+          // Inbound arrival check (for mock / test compatibility)
+          let arrivalInbound = false;
+          if (!p.origin.isHub) {
+            for (let oIdx = 0; oIdx < this.planes.length; oIdx++) {
+              if (oIdx === pIdx) continue;
+              const other = this.planes[oIdx];
+              if (
+                other.dest &&
+                other.dest.id !== undefined &&
+                p.origin.id !== undefined &&
+                other.dest.id === p.origin.id
+              ) {
+                let landingDist = other.track.totalLength;
+                for (let i = 0; i < other.track.pts.length; i++) {
+                  if (other.track.pts[i].phase === "LANDING") {
+                    landingDist = other.track.cumLen[i];
+                    break;
+                  }
+                }
+                const distRemaining = landingDist - other.dist;
+                if (
+                  other.phase === "LANDING" ||
+                  other.state === "LANDING_ROLLOUT" ||
+                  other.state === "APPROACH_QUEUE" ||
+                  (other.phase === "CRUISE" &&
+                    distRemaining <=
+                      SIM_CONFIG.AVIATION.holdShortLookaheadTiles)
+                ) {
+                  arrivalInbound = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          const isHeadOfLine =
+            !atc || (occIdx === 0 && (p.taxiS ?? 0) >= atc.holdShortS - 0.25);
+
+          if (!arrivalInbound && isHeadOfLine) {
+            const rwyClear = atc
+              ? atc.isHub
+                ? atc.depRunwayBusyBy === null && atc.crossingBusyBy === null
+                : atc.runwayBusyBy === null
+              : true;
+            if (rwyClear) {
+              if (atc) {
+                if (atc.isHub) atc.depRunwayBusyBy = p.id ?? null;
+                else atc.runwayBusyBy = p.id ?? null;
+                atc.lastOp = "DEPARTURE";
+                const qIdx = atc.holdShortQueue.indexOf(p);
+                if (qIdx !== -1) atc.holdShortQueue.splice(qIdx, 1);
+                const oIdx = atc.taxiwayOccupants.indexOf(p);
+                if (oIdx !== -1) atc.taxiwayOccupants.splice(oIdx, 1);
+              }
+              p.holdingShort = false;
+              p.state = "TAKEOFF_ROLL";
+              p.phase = "TAKEOFF";
+              p.dist = p.track.holdShortDist;
+              const curSample = sampleFlightTrack(p.track, p.dist);
+              capturePoseResidual(p, curSample.x, curSample.y, curSample.ang);
+              p.speed = curSample.speed;
+              p.dist += p.speed * effDt;
+              const sample = sampleFlightTrack(p.track, p.dist);
+              applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+              p.speed = sample.speed;
+              p.segIdx = sample.segIdx;
+              p.progress = Math.min(
+                0.9999,
+                p.dist / Math.max(0.001, p.track.totalLength),
+              );
               break;
             }
           }
+
+          if (atc) {
+            const wPos = taxiSpinePosToWorld(p.origin, p.taxiS ?? 0);
+            applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
+          } else {
+            const sample = sampleFlightTrack(p.track, p.dist);
+            applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+          }
+          p.speed = 0;
+          p.progress = Math.min(
+            0.9999,
+            p.dist / Math.max(0.001, p.track.totalLength),
+          );
+          break;
         }
 
-        if (arrivalInbound) {
-          p.dist = Math.min(p.dist, p.track.holdShortDist);
-          p.holdingShort = true;
+        case "TAKEOFF_ROLL": {
+          p.phase = "TAKEOFF";
+          p.holdingShort = false;
+          const curSample = sampleFlightTrack(p.track, p.dist);
+          p.speed = curSample.speed;
+          p.dist += p.speed * effDt;
+
           const sample = sampleFlightTrack(p.track, p.dist);
-          p.x = sample.x;
-          p.y = sample.y;
-          p.ang = sample.ang;
+          applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
           p.altitude = sample.altitude;
           p.speed = sample.speed;
-          p.phase = "TAXI_OUT";
           p.segIdx = sample.segIdx;
           p.progress = Math.min(
             0.9999,
             p.dist / Math.max(0.001, p.track.totalLength),
           );
-          continue;
+
+          if (
+            sample.phase === "CRUISE" ||
+            p.altitude >= SIM_CONFIG.AVIATION.climbOutAlt * 0.95
+          ) {
+            const atc = p.origin.atc;
+            if (atc) {
+              if (atc.runwayBusyBy === p.id) atc.runwayBusyBy = null;
+              if (atc.depRunwayBusyBy === p.id) atc.depRunwayBusyBy = null;
+            }
+            p.state = "ENROUTE_CRUISE";
+            p.phase = "CRUISE";
+          }
+          break;
+        }
+
+        case "ENROUTE_CRUISE": {
+          p.phase = "CRUISE";
+          p.speed = SIM_CONFIG.AVIATION.cruiseSpeed;
+          p.dist += p.speed * effDt;
+
+          const sample = sampleFlightTrack(p.track, p.dist);
+          applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+          p.altitude = sample.altitude;
+          p.segIdx = sample.segIdx;
+          p.progress = Math.min(
+            0.9999,
+            p.dist / Math.max(0.001, p.track.totalLength),
+          );
+
+          if (sample.phase === "LANDING") {
+            const destAtc = p.dest.atc;
+            // Never permit a single-runway landing while a departure is holding short at the runway threshold
+            const rwyClear =
+              !destAtc ||
+              (destAtc.isHub
+                ? destAtc.arrRunwayBusyBy === null
+                : destAtc.runwayBusyBy === null &&
+                  destAtc.holdShortQueue.length === 0);
+            if (rwyClear) {
+              if (destAtc) {
+                if (destAtc.isHub) destAtc.arrRunwayBusyBy = p.id ?? null;
+                else destAtc.runwayBusyBy = p.id ?? null;
+                destAtc.lastOp = "ARRIVAL";
+              }
+              p.state = "LANDING_ROLLOUT";
+              p.phase = "LANDING";
+            } else {
+              p.state = "APPROACH_QUEUE";
+              p.phase = "CRUISE";
+              p.holdingPatternAngle = 0;
+              if (destAtc && !destAtc.approachQueue.includes(p)) {
+                destAtc.approachQueue.push(p);
+              }
+            }
+          }
+          break;
+        }
+
+        case "APPROACH_QUEUE": {
+          p.phase = "CRUISE";
+          const sample = sampleFlightTrack(p.track, p.dist);
+          const destAtc = p.dest.atc;
+          const qIdx = destAtc
+            ? Math.max(0, destAtc.approachQueue.indexOf(p))
+            : 0;
+          const rAlong = 5.2 + qIdx * 1.2;
+          const rCross = 3.2 + qIdx * 0.9;
+          const holdSpeed = SIM_CONFIG.AVIATION.landingSpeed * 0.85;
+          const prevTheta = p.holdingPatternAngle ?? 0;
+          const ds0 = Math.max(
+            1.0,
+            Math.hypot(
+              rAlong * Math.cos(prevTheta),
+              rCross * Math.sin(prevTheta),
+            ),
+          );
+          const midTheta = prevTheta + (0.5 * holdSpeed * effDt) / ds0;
+          const dsMid = Math.max(
+            1.0,
+            Math.hypot(
+              rAlong * Math.cos(midTheta),
+              rCross * Math.sin(midTheta),
+            ),
+          );
+          const theta = prevTheta + (holdSpeed * effDt) / dsMid;
+          const nextTurn =
+            prevTheta > 0
+              ? Math.ceil(prevTheta / (Math.PI * 2)) * (Math.PI * 2)
+              : Math.PI * 2;
+
+          // If the aircraft completes its holding orbit back to the approach fix (theta crosses 2*PI*k)
+          // and is head-of-line with a clear arrival runway (and no single-runway hold-short departure), roll out onto final!
+          if (prevTheta > 0 && theta >= nextTurn && qIdx === 0) {
+            const arrClear =
+              !destAtc ||
+              (destAtc.isHub
+                ? destAtc.arrRunwayBusyBy === null
+                : destAtc.runwayBusyBy === null &&
+                  destAtc.holdShortQueue.length === 0);
+            let sepOk = arrClear;
+            if (sepOk && destAtc) {
+              for (const other of this.planes) {
+                if (other === p) continue;
+                if (
+                  other.dest &&
+                  other.dest.id === p.dest.id &&
+                  other.state === "LANDING_ROLLOUT" &&
+                  Math.abs(other.dist - p.dist) <
+                    SIM_CONFIG.AVIATION.minAirborneSeparation
+                ) {
+                  sepOk = false;
+                  break;
+                }
+              }
+            }
+            if (sepOk) {
+              if (destAtc) {
+                const idx = destAtc.approachQueue.indexOf(p);
+                if (idx !== -1) destAtc.approachQueue.splice(idx, 1);
+                if (destAtc.isHub) destAtc.arrRunwayBusyBy = p.id ?? null;
+                else destAtc.runwayBusyBy = p.id ?? null;
+                destAtc.lastOp = "ARRIVAL";
+              }
+              const remDist = Math.max(0, (theta - nextTurn) * rAlong);
+              p.holdingPatternAngle = 0;
+              p.state = "LANDING_ROLLOUT";
+              p.phase = "LANDING";
+              p.dist += remDist;
+              const sLand = sampleFlightTrack(p.track, p.dist);
+              p._resX = 0;
+              p._resY = 0;
+              p._resAng = 0;
+              p.x = sLand.x;
+              p.y = sLand.y;
+              p.ang = sLand.ang;
+              p.altitude = sLand.altitude;
+              p.speed = sLand.speed;
+              p.segIdx = sLand.segIdx;
+              p.progress = Math.min(
+                0.9999,
+                p.dist / Math.max(0.001, p.track.totalLength),
+              );
+              break;
+            }
+          }
+
+          p.holdingPatternAngle = theta;
+          p.speed = holdSpeed;
+
+          const ux = Math.cos(sample.ang);
+          const uy = Math.sin(sample.ang);
+          const turnSign = -(p.dest.apronSide || 1);
+          const nx = -uy * turnSign;
+          const ny = ux * turnSign;
+          const uOff = rAlong * Math.sin(theta);
+          const vOff = rCross * (1 - Math.cos(theta));
+
+          const hx = sample.x + uOff * ux + vOff * nx;
+          const hy = sample.y + uOff * uy + vOff * ny;
+          const vx =
+            rAlong * Math.cos(theta) * ux + rCross * Math.sin(theta) * nx;
+          const vy =
+            rAlong * Math.cos(theta) * uy + rCross * Math.sin(theta) * ny;
+          const hang = Math.atan2(vy, vx);
+          applySmoothedPose(p, hx, hy, hang, effDt);
+          p.altitude = Math.max(
+            SIM_CONFIG.AVIATION.climbOutAlt,
+            sample.altitude,
+          );
+          p.segIdx = sample.segIdx;
+          p.progress = Math.min(
+            0.9999,
+            p.dist / Math.max(0.001, p.track.totalLength),
+          );
+          break;
+        }
+
+        case "LANDING_ROLLOUT": {
+          p.phase = "LANDING";
+          const curSample = sampleFlightTrack(p.track, p.dist);
+          p.speed = curSample.speed;
+          p.dist += p.speed * effDt;
+
+          const sample = sampleFlightTrack(p.track, p.dist);
+          applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+          p.altitude = sample.altitude;
+          p.speed = sample.speed;
+          p.segIdx = sample.segIdx;
+          p.progress = Math.min(
+            0.9999,
+            p.dist / Math.max(0.001, p.track.totalLength),
+          );
+
+          // Roll all the way to the high-speed exit turnoff (sample.phase === "TAXI_IN")
+          if (sample.phase === "TAXI_IN") {
+            const destAtc = p.dest.atc;
+            const planeId = p.id ?? pIdx;
+            if (destAtc) {
+              if (destAtc.runwayBusyBy === p.id) destAtc.runwayBusyBy = null;
+              if (destAtc.arrRunwayBusyBy === p.id)
+                destAtc.arrRunwayBusyBy = null;
+              if (p.reservedGateId === null) {
+                const freeGate = destAtc.gates.find(
+                  (g) =>
+                    g.state === "FREE" &&
+                    g.occupiedBy === null &&
+                    g.reservedBy === null,
+                );
+                if (freeGate) {
+                  freeGate.state = "RESERVED";
+                  freeGate.reservedBy = planeId;
+                  p.reservedGateId = freeGate.id;
+                  p.targetTaxiS = freeGate.taxiS;
+                }
+              }
+            }
+            const entryClear = destAtc
+              ? destAtc.taxiwayOccupants.every(
+                  (o) =>
+                    (o.taxiS ?? 0) >= SIM_CONFIG.AVIATION.minTaxiSeparation,
+                )
+              : true;
+            if (destAtc && (destAtc.isHub || !entryClear)) {
+              p.state = "HOLD_CROSSING_RUNWAY";
+              p.phase = "TAXI_IN";
+              if (!destAtc.crossingQueue.includes(p)) {
+                destAtc.crossingQueue.push(p);
+              }
+              const qIdx = Math.max(0, destAtc.crossingQueue.indexOf(p));
+              p.taxiS = -2.1 - qIdx * SIM_CONFIG.AVIATION.minTaxiSeparation;
+              const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
+              capturePoseResidual(p, wPos.x, wPos.y, wPos.ang);
+              applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
+            } else {
+              p.state = "TAXI_TO_GATE";
+              p.phase = "TAXI_IN";
+              p.taxiS = 0;
+              if (destAtc) {
+                if (!destAtc.taxiwayOccupants.includes(p)) {
+                  destAtc.taxiwayOccupants.push(p);
+                  maintainTaxiwayOrder(destAtc);
+                }
+                const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
+                capturePoseResidual(p, wPos.x, wPos.y, wPos.ang);
+                applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
+              }
+            }
+          }
+          break;
+        }
+
+        case "HOLD_CROSSING_RUNWAY": {
+          p.phase = "TAXI_IN";
+          p.altitude = 0;
+          p.speed = 0;
+          const destAtc = p.dest.atc;
+          if (!destAtc) {
+            p.state = "TAXI_TO_GATE";
+            p.phase = "TAXI_IN";
+            const sample = sampleFlightTrack(p.track, p.dist);
+            applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+            p.segIdx = sample.segIdx;
+          } else {
+            const qIdx = Math.max(0, destAtc.crossingQueue.indexOf(p));
+            p.taxiS = -2.1 - qIdx * SIM_CONFIG.AVIATION.minTaxiSeparation;
+            const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
+            applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
+          }
+          p.progress = Math.min(
+            0.9999,
+            p.dist / Math.max(0.001, p.track.totalLength),
+          );
+          break;
+        }
+
+        case "TAXI_TO_GATE": {
+          p.phase = "TAXI_IN";
+          p.altitude = 0;
+          const maxTaxiSpeed = SIM_CONFIG.AVIATION.taxiSpeed;
+          const destAtc = p.dest.atc;
+          const planeId = p.id ?? pIdx;
+
+          if (destAtc) {
+            if (!destAtc.taxiwayOccupants.includes(p)) {
+              destAtc.taxiwayOccupants.push(p);
+            }
+            maintainTaxiwayOrder(destAtc);
+
+            let gate = destAtc.gates.find(
+              (g) =>
+                g.id === p.reservedGateId &&
+                (g.reservedBy === planeId || g.occupiedBy === null),
+            );
+            if (!gate) {
+              const freeGate = destAtc.gates.find(
+                (g) =>
+                  g.state === "FREE" &&
+                  g.occupiedBy === null &&
+                  g.reservedBy === null,
+              );
+              if (freeGate) {
+                freeGate.state = "RESERVED";
+                freeGate.reservedBy = planeId;
+                p.reservedGateId = freeGate.id;
+                gate = freeGate;
+              }
+            }
+
+            const occIdx = destAtc.taxiwayOccupants.indexOf(p);
+            const maxAllowedS =
+              occIdx > 0
+                ? (destAtc.taxiwayOccupants[occIdx - 1].taxiS ?? 0) -
+                  SIM_CONFIG.AVIATION.minTaxiSeparation
+                : destAtc.holdShortS;
+            const targetS = gate ? gate.taxiS : destAtc.preGateHoldS;
+            p.targetTaxiS = targetS;
+            const limitS = Math.min(maxAllowedS, targetS);
+            const gap = Math.max(0, limitS - (p.taxiS ?? 0));
+            const desiredSpeed =
+              !gate || occIdx > 0
+                ? maxTaxiSpeed * Math.min(1, gap / 1.4)
+                : maxTaxiSpeed;
+            const accel = 6.5;
+            p.speed = Math.max(
+              0,
+              Math.min(
+                maxTaxiSpeed,
+                (p.speed || maxTaxiSpeed * 0.4) +
+                  Math.max(
+                    -accel * effDt,
+                    Math.min(accel * effDt, desiredSpeed - (p.speed || 0)),
+                  ),
+              ),
+            );
+            const step = p.speed * effDt;
+            p.taxiS = Math.min(limitS, (p.taxiS ?? 0) + step);
+            const notBlockedByLeader =
+              occIdx === 0 || (p.taxiS ?? 0) < maxAllowedS - 0.05;
+            if (notBlockedByLeader && gate) {
+              p.dist += step;
+            }
+
+            if (gate && p.taxiS >= gate.taxiS - 0.08) {
+              const idx = destAtc.taxiwayOccupants.indexOf(p);
+              if (idx !== -1) destAtc.taxiwayOccupants.splice(idx, 1);
+              releaseAllGatesForPlane(this.world, planeId);
+              gate.state = "OCCUPIED";
+              gate.occupiedBy = planeId;
+              gate.reservedBy = null;
+              p.gateId = gate.id;
+              p.reservedGateId = null;
+              if (p.dest.id !== undefined) {
+                p.origin = p.dest;
+              }
+              p.dist = p.track.totalLength;
+              p.phase = "GATE_DWELL";
+              p.state = "GATE_LOADING";
+              p.altitude = 0;
+              p.speed = 0;
+              p.progress = 0.999;
+              p.dwellTimer = 0;
+              p._resX = 0;
+              p._resY = 0;
+              p._resAng = 0;
+              p.x = gate.worldX;
+              p.y = gate.worldY;
+              p.ang = gate.noseAngle;
+              continue;
+            }
+
+            const wPos = taxiSpinePosToWorld(p.dest, p.taxiS);
+            applySmoothedPose(p, wPos.x, wPos.y, wPos.ang, effDt);
+            p.progress = Math.min(
+              0.9999,
+              p.dist / Math.max(0.001, p.track.totalLength),
+            );
+          } else {
+            const step = maxTaxiSpeed * effDt;
+            p.speed = maxTaxiSpeed;
+            p.dist += step;
+            if (p.dist >= p.track.totalLength) {
+              p.dist = p.track.totalLength;
+              p.phase = "GATE_DWELL";
+              p.state = "GATE_LOADING";
+              p.altitude = 0;
+              p.progress = 0.999;
+              p.dwellTimer = 0;
+              releaseAllGatesForPlane(this.world, planeId);
+              if (p.dest.id !== undefined) {
+                p.origin = p.dest;
+              }
+              const sample = sampleFlightTrack(p.track, p.dist);
+              applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+              p.speed = sample.speed;
+              p.segIdx = sample.segIdx;
+              continue;
+            }
+            const sample = sampleFlightTrack(p.track, p.dist);
+            applySmoothedPose(p, sample.x, sample.y, sample.ang, effDt);
+            p.speed = sample.speed;
+            p.segIdx = sample.segIdx;
+            p.progress = Math.min(
+              0.9999,
+              p.dist / Math.max(0.001, p.track.totalLength),
+            );
+          }
+          break;
         }
       }
+    }
 
-      p.holdingShort = false;
-      p.dist += step;
-
-      if (p.dist >= p.track.totalLength) {
-        p.dist = p.track.totalLength;
-        p.phase = "GATE_DWELL";
-        p.altitude = 0;
-        p.progress = 0.999;
-        p.dwellTimer = 0;
-        const sample = sampleFlightTrack(p.track, p.dist);
-        p.x = sample.x;
-        p.y = sample.y;
-        p.ang = sample.ang;
-        p.speed = sample.speed;
-        p.segIdx = sample.segIdx;
-        continue;
+    // Post-Pass: Enforce 1D leader-follower non-overtaking spacing & world coordinates across all airports
+    for (const ap of this.world.airports) {
+      if (ap.atc) {
+        maintainTaxiwayOrder(ap.atc);
+        for (const occ of ap.atc.taxiwayOccupants) {
+          const wPos = taxiSpinePosToWorld(ap, occ.taxiS ?? 0);
+          occ.x = wPos.x + (occ._resX ?? 0);
+          occ.y = wPos.y + (occ._resY ?? 0);
+          occ.ang = wPos.ang + (occ._resAng ?? 0);
+        }
       }
-
-      const sample = sampleFlightTrack(p.track, p.dist);
-      p.x = sample.x;
-      p.y = sample.y;
-      p.ang = sample.ang;
-      p.altitude = sample.altitude;
-      p.speed = sample.speed;
-      p.phase = sample.phase;
-      p.segIdx = sample.segIdx;
-      p.progress = Math.min(
-        0.9999,
-        p.dist / Math.max(0.001, p.track.totalLength),
-      );
     }
   }
 }

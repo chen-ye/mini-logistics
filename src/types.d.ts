@@ -211,6 +211,8 @@ export interface Airport {
   landsideLoopPts?: Point2D[];
   accessStubPts?: Point2D[];
   demandSchedule?: AirportDemandSchedule;
+  atc?: AirportATC;
+  activeSign?: 1 | -1;
 }
 
 export interface RoadPoint {
@@ -736,9 +738,73 @@ export interface PlaneEndpoint {
   airportClass?: string;
   isHub?: boolean;
   palette?: TownPalette;
+  atc?: AirportATC;
+  activeSign?: 1 | -1;
+}
+
+export type PlaneFSMState =
+  | "GATE_LOADING"
+  | "PUSHBACK_HOLD"
+  | "TAXI_TO_RUNWAY"
+  | "HOLD_SHORT_QUEUE"
+  | "TAKEOFF_ROLL"
+  | "ENROUTE_CRUISE"
+  | "APPROACH_QUEUE"
+  | "LANDING_ROLLOUT"
+  | "HOLD_CROSSING_RUNWAY"
+  | "TAXI_TO_GATE";
+
+export interface GateSlot {
+  id: number;
+  lx: number;
+  ly: number;
+  taxiY: number;
+  taxiS: number;
+  worldX: number;
+  worldY: number;
+  noseAngle: number;
+  state: "FREE" | "RESERVED" | "OCCUPIED";
+  occupiedBy: number | null;
+  reservedBy: number | null;
+}
+
+export interface AirportATC {
+  airportId: number;
+  isHub: boolean;
+  activeSign: 1 | -1;
+  rwyLen: number;
+  termW: number;
+  taxiY: number;
+  holdShortY: number;
+  exitRwyX: number;
+  crossTaxiX: number;
+  depCrossX: number;
+  holdShortS: number;
+  preGateHoldS: number;
+  gates: GateSlot[];
+  taxiwayOccupants: PlaneAgent[];
+  holdShortQueue: PlaneAgent[];
+  crossingQueue: PlaneAgent[];
+  approachQueue: PlaneAgent[];
+  runwayBusyBy: number | null;
+  depRunwayBusyBy: number | null;
+  arrRunwayBusyBy: number | null;
+  crossingBusyBy: number | null;
+  lastOp: "ARRIVAL" | "DEPARTURE";
 }
 
 export interface PlaneAgent {
+  id?: number;
+  state?: PlaneFSMState;
+  gateId?: number | null;
+  reservedGateId?: number | null;
+  taxiS?: number;
+  targetTaxiS?: number;
+  pushbackTimer?: number;
+  holdingPatternAngle?: number;
+  _resX?: number;
+  _resY?: number;
+  _resAng?: number;
   origin: Airport | PlaneEndpoint;
   dest: Airport | PlaneEndpoint;
   track: FlightTrack;
@@ -773,6 +839,10 @@ export interface RoadGraphDiagnostics {
   junctionCount: number;
   rampEdgeCount: number;
   laneTrackCount: number;
+  activeTracks?: number;
+  rampTraversals?: number;
+  roundaboutOrbits?: number;
+  reversalAnomalies?: number;
   anomalies: RoadGraphAnomaly[];
 }
 

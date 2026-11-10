@@ -19,7 +19,7 @@ import {
   drawUrbanBlushAndTrees,
 } from "./canvas-layer-cache.js";
 import { deriveRoadTopology } from "./vehicle-routing.js";
-import { buildFlightTrack } from "./simulator.js";
+import { buildFlightTrack, initAirportATC } from "./simulator.js";
 
 /**
  * @param {any} ctx
@@ -66,6 +66,10 @@ export class MiniMotorwaysRenderer {
     this._cachedVectorHydroVersion = -1;
     /** @type {{ elevRef: Float32Array, waterRef: Uint8Array, ts: number, arableFillPath: Path2D, arableStrokePath: Path2D } | null} */
     this._cachedArablePaths = null;
+    /** @type {ProceduralLogisticsWorld | null} */
+    this._cachedRoadDiagWorld = null;
+    /** @type {any} */
+    this._cachedRoadDiag = null;
 
     // 5 Retained Vector Display Lists (`VectorLayerRecorder`)
     /** @type {{ key: string, contours: VectorLayerRecorder, water: VectorLayerRecorder, replay: (ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) => void } | null} */
@@ -2118,6 +2122,22 @@ export class MiniMotorwaysRenderer {
           ctx.stroke();
         }
 
+        // Apron gate stand T-markings at the 7 jetbridge gate positions
+        setSub(ctx, 1);
+        ctx.strokeStyle = "#f4c24f";
+        ctx.lineWidth = 1.2;
+        const hubStandY = centralTaxiY + side * (ts * 0.35);
+        const hubStopBarHalf = ts * 0.16;
+        ctx.beginPath();
+        for (let g = -3; g <= 3; g++) {
+          const gx = g * (termW * 0.12);
+          ctx.moveTo(gx, centralTaxiY);
+          ctx.lineTo(gx, hubStandY);
+          ctx.moveTo(gx - hubStopBarHalf, hubStandY);
+          ctx.lineTo(gx + hubStopBarHalf, hubStandY);
+        }
+        ctx.stroke();
+
         // Terminal Shadow, Base & Roof
         setSub(ctx, 4);
         ctx.fillStyle = PALETTE.shadowColor;
@@ -2210,6 +2230,26 @@ export class MiniMotorwaysRenderer {
         const termW = rwyLen * 0.4;
         const termH = ts * 1.02;
         const termY = side * (ts * 1.18);
+
+        // Subtle yellow gate stand T-markings at the 4 gate bays
+        setSub(ctx, 1);
+        ctx.strokeStyle = "#f4c24f";
+        ctx.lineWidth = 1.2;
+        const regFracs =
+          ap.airportClass === "CRG"
+            ? [-0.42, -0.22, 0.22, 0.42]
+            : [-0.36, -0.12, 0.12, 0.36];
+        const regStandY = taxiY + side * (ts * 0.35);
+        const regStopBarHalf = ts * 0.14;
+        ctx.beginPath();
+        for (const frac of regFracs) {
+          const gx = frac * termW;
+          ctx.moveTo(gx, taxiY);
+          ctx.lineTo(gx, regStandY);
+          ctx.moveTo(gx - regStopBarHalf, regStandY);
+          ctx.lineTo(gx + regStopBarHalf, regStandY);
+        }
+        ctx.stroke();
 
         if (ap.airportClass === "CRG") {
           // Cargo Airfield: Twin Modular Warehouse Sortation Pads
@@ -3038,6 +3078,12 @@ export class MiniMotorwaysRenderer {
   drawAirwayCorridors(ctx, world, ts) {
     if (!world.airports || world.airports.length === 0) return;
 
+    for (const ap of world.airports) {
+      if (!ap.atc) {
+        initAirportATC(ap, world.windVector || null);
+      }
+    }
+
     ctx.save();
     ctx.strokeStyle = "rgba(54, 56, 62, 0.12)";
     ctx.lineWidth = 1.1;
@@ -3048,7 +3094,10 @@ export class MiniMotorwaysRenderer {
       for (const apA of world.airports) {
         for (const apB of world.airports) {
           if (apA.id === apB.id) continue;
-          const track = buildFlightTrack(apA, apB);
+          const track = buildFlightTrack(apA, apB, {
+            oSign: apA.activeSign,
+            dSign: apB.activeSign,
+          });
           const { sx, sy, c1x, c1y, c2x, c2y, ex, ey } = track.airwayCurve;
           ctx.beginPath();
           ctx.moveTo(sx * ts + halfTs, sy * ts + halfTs);
@@ -3148,6 +3197,41 @@ export class MiniMotorwaysRenderer {
         accent,
         isCargo,
       );
+
+      // Active ATC hold indicator for grounded aircraft
+      const planeState = p.state;
+      const isHolding =
+        isGround &&
+        Boolean(
+          p.holdingShort ||
+          planeState === "HOLD_SHORT_QUEUE" ||
+          planeState === "HOLD_CROSSING_RUNWAY" ||
+          planeState === "PUSHBACK_HOLD",
+        );
+
+      if (isHolding) {
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(ang);
+        const noseX = (isCargo ? 12.2 : 11.0) * bodyScale + 2.8;
+
+        // Subtle amber hold-bar indicator perpendicular to heading
+        ctx.strokeStyle = "#f59e0b";
+        ctx.lineWidth = 1.6;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(noseX, -3.2);
+        ctx.lineTo(noseX, 3.2);
+        ctx.stroke();
+
+        // Subtle amber beacon dot near nose
+        ctx.fillStyle = "#f59e0b";
+        ctx.beginPath();
+        ctx.arc(noseX - 1.0, 0, 1.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+      }
     }
   }
 
@@ -3638,18 +3722,91 @@ export class MiniMotorwaysRenderer {
    * world road topology or via the memoized vehicle routing topology solver.
    *
    * @param {ProceduralLogisticsWorld} world
-   * @returns {RoadGraphDiagnostics}
+   * @returns {RoadGraphDiagnostics & {
+   *   activeTracks: number,
+   *   rampTraversals: number,
+   *   roundaboutOrbits: number,
+   *   reversalAnomalies: number,
+   * }}
    */
   computeRoadGraphDiagnostics(world) {
+    if (!world || !world.roads) {
+      return {
+        deg: new Uint8Array(0),
+        edgeCount: 0,
+        streetTiles: 0,
+        arterialTiles: 0,
+        bridgeTiles: 0,
+        junctionCount: 0,
+        rampEdgeCount: 0,
+        laneTrackCount: 0,
+        activeTracks: 0,
+        rampTraversals: 0,
+        roundaboutOrbits: 0,
+        reversalAnomalies: 0,
+        anomalies: [],
+      };
+    }
+
+    if (this._cachedRoadDiagWorld === world && this._cachedRoadDiag) {
+      return this._cachedRoadDiag;
+    }
+
     const topo =
       world.roadTopology ||
       deriveRoadTopology(world.W, world.H, world.roads, world.buildingMask);
     const rampEdges =
       world.routingGraph?.rampEdges || world._vehicleGraph?.rampEdges || [];
-    const laneTrackCount =
-      (world.cargoLinks?.length || 0) * 2 +
-      (world.commuterRoutes?.length || 0) * 2;
-    return {
+
+    const allTracks = [];
+    for (const rt of world.commuterRoutes || []) {
+      if (rt.outboundTrack?.pts?.length >= 2) allTracks.push(rt.outboundTrack);
+      if (rt.inboundTrack?.pts?.length >= 2) allTracks.push(rt.inboundTrack);
+    }
+    for (const lk of world.cargoLinks || []) {
+      if (lk.outboundTrack?.pts?.length >= 2) allTracks.push(lk.outboundTrack);
+      if (lk.inboundTrack?.pts?.length >= 2) allTracks.push(lk.inboundTrack);
+    }
+
+    const activeTracks = allTracks.length;
+    let rampTraversals = 0;
+    let roundaboutOrbits = 0;
+    let reversalAnomalies = 0;
+
+    for (const tr of allTracks) {
+      const pts = tr.pts;
+      let hasRamp = false;
+      let hasRoundabout = false;
+
+      for (let i = 0; i < pts.length; i++) {
+        const pt = pts[i];
+        if (pt.isSlipRamp) hasRamp = true;
+        if (pt.isRoundabout || pt.isRoundaboutArc) hasRoundabout = true;
+
+        if (i >= 1 && i < pts.length - 1) {
+          const pPrev = pts[i - 1];
+          const pCurr = pt;
+          const pNext = pts[i + 1];
+          const dx1 = pCurr.x - pPrev.x;
+          const dy1 = pCurr.y - pPrev.y;
+          const dx2 = pNext.x - pCurr.x;
+          const dy2 = pNext.y - pCurr.y;
+          const len1 = Math.hypot(dx1, dy1);
+          const len2 = Math.hypot(dx2, dy2);
+          if (len1 > 1e-4 && len2 > 1e-4) {
+            const cosTurn = (dx1 * dx2 + dy1 * dy2) / (len1 * len2);
+            if (cosTurn < -0.5) {
+              reversalAnomalies++;
+            }
+          }
+        }
+      }
+
+      if (hasRamp) rampTraversals++;
+      if (hasRoundabout) roundaboutOrbits++;
+    }
+
+    const diag = {
       deg: topo.vertexDeg,
       edgeCount: topo.edgeCount,
       streetTiles: topo.streetTiles,
@@ -3657,9 +3814,17 @@ export class MiniMotorwaysRenderer {
       bridgeTiles: topo.bridgeTiles,
       junctionCount: topo.junctionCount,
       rampEdgeCount: rampEdges.length,
-      laneTrackCount,
+      laneTrackCount: activeTracks,
+      activeTracks,
+      rampTraversals,
+      roundaboutOrbits,
+      reversalAnomalies,
       anomalies: topo.anomalies,
     };
+
+    this._cachedRoadDiagWorld = world;
+    this._cachedRoadDiag = diag;
+    return diag;
   }
 
   drawRoadGridUnderlay(ctx, world, ts) {
@@ -3823,7 +3988,22 @@ export class MiniMotorwaysRenderer {
       ctx.fill();
     }
 
-    // 2C. Directed Interchange Ramp & Roundabout Portal Graph (`rampEdges` & `rampNodes`)
+    // 2C. Roundabout Circulatory Orbits (`isRoundaboutArc` in emerald-teal #0d9488)
+    ctx.strokeStyle = "rgba(13, 148, 136, 0.85)";
+    ctx.lineWidth = 1.9;
+    ctx.beginPath();
+    for (const tr of [...outboundTracks, ...inboundTracks]) {
+      const pts = tr.pts;
+      for (let i = 0; i < pts.length - 1; i++) {
+        if (pts[i].isRoundaboutArc || pts[i + 1].isRoundaboutArc) {
+          ctx.moveTo(pts[i].x * ts + ox, pts[i].y * ts + oy);
+          ctx.lineTo(pts[i + 1].x * ts + ox, pts[i + 1].y * ts + oy);
+        }
+      }
+    }
+    ctx.stroke();
+
+    // 2D. Directed Interchange Ramp & Roundabout Portal Graph (`rampEdges` & `rampNodes`)
     if (rampEdges.length > 0) {
       for (const [isPortalFlag, edgeCol, arrowCol] of /** @type {const} */ ([
         [true, "rgba(13, 148, 136, 0.82)", "#0f766e"],
@@ -3933,7 +4113,7 @@ export class MiniMotorwaysRenderer {
     ctx.save();
     const drawerOpen = canvas.width >= 640 && this.drawerOpen;
     const leftSafe = drawerOpen ? 412 : 14;
-    const boxW = Math.min(canvas.width - leftSafe - 14, 1020);
+    const boxW = Math.min(canvas.width - leftSafe - 14, 1080);
     const boxH = 38;
     const bx = leftSafe;
     const by = canvas.height - boxH - 14;
@@ -3950,11 +4130,10 @@ export class MiniMotorwaysRenderer {
     const items = [
       { col: "#0284c7", label: `Street Tiles (${diag.streetTiles})` },
       { col: "#ea580c", label: `Arterial Tiles (${diag.arterialTiles})` },
-      { col: "#0891b2", label: `Bridge Tiles (${diag.bridgeTiles})` },
-      { col: "#334155", label: `Vector Edges (${diag.edgeCount})` },
       { col: "#dc2626", label: `Junctions deg≥3 (${diag.junctionCount})` },
-      { col: "#db2777", label: `Ramp Edges (${diag.rampEdgeCount})` },
-      { col: "#10b981", label: `Lane Tracks (${diag.laneTrackCount})` },
+      { col: "#10b981", label: `Lane Tracks (${diag.activeTracks})` },
+      { col: "#db2777", label: `Ramp Flows (${diag.rampTraversals})` },
+      { col: "#0d9488", label: `Roundabout Orbits (${diag.roundaboutOrbits})` },
       {
         col: anomCount === 0 ? "#16a34a" : "#e11d48",
         label: `Anomalies (${anomCount})`,
@@ -3966,14 +4145,14 @@ export class MiniMotorwaysRenderer {
     let curX = bx + 14;
     const midY = by + boxH * 0.5;
     for (const it of items) {
-      if (curX + 95 > bx + boxW) break;
+      if (curX + 85 > bx + boxW) break;
       ctx.fillStyle = it.col;
       ctx.beginPath();
       ctx.arc(curX + 4, midY, 4.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#36383e";
       ctx.fillText(it.label, curX + 12, midY + 0.5);
-      curX += ctx.measureText(it.label).width + 22;
+      curX += ctx.measureText(it.label).width + 20;
     }
     ctx.restore();
   }
