@@ -249,6 +249,7 @@ export interface Airport {
   gx?: number;
   gy?: number;
   angleRad: number;
+  angle?: number;
   runwayLabel: string;
   runwayCount: number;
   halfLen: number;
@@ -257,6 +258,8 @@ export interface Airport {
   apronSide?: number;
   stubDist?: number;
   isHub: boolean;
+  tier?: string;
+  dualRunway?: boolean;
   airportClass: "HUB" | "REG" | "CRG" | (string & {});
   classLabel: string;
   hostTownId: number;
@@ -781,6 +784,10 @@ export interface Stage9RampsAndCargoState {
 }
 
 export interface CarAgent {
+  id?: number;
+  pose?: Pose2D;
+  manifest?: CargoManifest | null;
+  cargoLink?: CargoLink | null;
   isFreightTruck: boolean;
   isCargoLink: boolean;
   cargoStage?: string;
@@ -834,11 +841,14 @@ export interface PlaneEndpoint {
   x: number;
   y: number;
   angleRad: number;
+  angle?: number;
   halfLen: number;
   halfWid?: number;
   approachLen?: number;
   apronSide?: number;
   airportClass?: string;
+  tier?: string;
+  dualRunway?: boolean;
   isHub?: boolean;
   palette?: TownPalette;
   atc?: AirportATC;
@@ -916,6 +926,8 @@ export interface PlaneAgent {
   holdingPatternAngle?: number;
   pushbackOriginGateId?: number | null;
   pushbackOriginS?: number | null;
+  pose?: Pose2D;
+  manifest?: CargoManifest | null;
   accel?: number;
   steerKappa?: number;
   gearDir?: 1 | -1;
@@ -970,18 +982,356 @@ export interface RoadGraphDiagnostics {
   anomalies: RoadGraphAnomaly[];
 }
 
-export type InspectedEntity = Destination | Airport | Town;
+export type VehicleZLayer =
+  "road" | "motorway-lower" | "motorway-upper" | "ground" | "air";
+
+export interface Pose2D {
+  x: number;
+  y: number;
+  ang: number;
+  zLayer: VehicleZLayer;
+  speed: number;
+  altitude: number;
+  inTunnel?: boolean;
+}
+
+export interface CargoManifest {
+  commodity: string;
+  stage: string;
+  originId: number;
+  destId: number;
+  gatewayId: number | null;
+  units: number;
+}
+
+export type EntityKind = "airport" | "building" | "town" | "plane" | "truck";
+export type InspectedEntityType = EntityKind;
+
+export type InspectedEntity =
+  Destination | Airport | Town | PlaneAgent | CarAgent;
+export type AnyInspectedEntity = InspectedEntity;
+
+export interface EntityRef {
+  kind: EntityKind;
+  id: number | string;
+}
+
+export interface ZLayerRecorders {
+  urbanBlush?: any;
+  treesAndFarms?: any;
+  surfacePad?: any;
+  surfaceStructures?: any;
+  motorwayLower?: any;
+  overpassUpper?: any;
+  airways?: any;
+}
 
 export interface CameraTarget {
-  readonly cx: number;
-  readonly cy: number;
-  readonly zoom: number;
+  x?: number;
+  y?: number;
+  cx: number;
+  cy: number;
+  zoom: number;
+  followLive?: boolean;
 }
 
 export interface InspectedSelection {
-  readonly type: "airport" | "building" | "town" | null;
+  readonly type: EntityKind | null;
   readonly id: number | null;
   readonly entity: InspectedEntity | null;
+}
+
+export interface EntityInspectSpec<T = any> {
+  resolve?: (id: number | string, world: any, sim?: any) => T | null;
+  hitTest?: (
+    wx: number,
+    wy: number,
+    pad: number,
+    world: any,
+    sim?: any,
+  ) => { id: number | string; entity: T } | null;
+  getCameraTarget?: (entity: T, world: any) => CameraTarget;
+  drawHighlight?: (
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    entity: T,
+    world: any,
+    ts: number,
+  ) => void;
+  renderDossier?: (entity: T, world: any, sim?: any) => any;
+  describeLivePatch?: (entity: T, world: any, sim?: any) => any;
+}
+
+export interface EntityDefinition<T = any, TActor = any> {
+  id?: string;
+  kind: EntityKind | "interchange";
+  hitPriority: number;
+  computeLayout?: (...args: any[]) => any;
+  place?: (...args: any[]) => any;
+  connectRoadNet?: (entity: T, world: any) => any;
+  onCorridorClearance?: (world: any, corridor: any) => any;
+  recordStaticZLayers?: (
+    slotName: string,
+    rec: any,
+    world: any,
+    ts: number,
+  ) => void;
+  createActor?: (entity: T, world: any, sim?: any) => TActor;
+  drawLiveZPass?: (
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    pass: string,
+    world: any,
+    sim: any,
+  ) => void;
+  drawOverlay?: (
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    world: any,
+    layer: ViewLayer,
+  ) => void;
+  inspect?: EntityInspectSpec<T>;
+}
+
+export interface WorldSummaryTown {
+  id: number;
+  name: string;
+  tier: number;
+  x: number;
+  y: number;
+  urbanRadius: number;
+}
+
+export interface WorldSummaryAirport {
+  id: number;
+  code: string;
+  name: string;
+  tier?: string;
+  airportClass: string;
+  x: number;
+  y: number;
+  halfLen: number;
+}
+
+export interface WorldSummary {
+  W: number;
+  H: number;
+  tileSize: number;
+  seed: string;
+  config: GeneratorConfig;
+  wallTimeMs: number;
+  genTimeMs: number;
+  reusedThroughStage: number;
+  housesCount: number;
+  destinationsCount: number;
+  towns: WorldSummaryTown[];
+  airports: WorldSummaryAirport[];
+  systemInterchangeCount: number;
+  diamondRampCount: number;
+  logs: string[];
+}
+
+export interface DossierSnapshot {
+  badgeText: string;
+  badgeClass: string;
+  codeText: string;
+  titleText: string;
+  bodyHtml: string;
+}
+
+export interface SelectionPayload {
+  found: boolean;
+  ref: EntityRef | null;
+  dossier: DossierSnapshot | null;
+  cameraTarget: CameraTarget | null;
+  focusedCamera: boolean;
+}
+
+export type WorldToRenderMessage = {
+  type: "WORLD_READY";
+  requestId: number;
+  preserveCamera?: boolean;
+  preserveUrlHydration?: boolean;
+  isMobile?: boolean;
+  world: any;
+  worldSummary: WorldSummary;
+};
+
+export type MainToRenderMessage =
+  | {
+      type: "INIT";
+      canvas: OffscreenCanvas;
+      worldPort: MessagePort;
+      width: number;
+      height: number;
+      activeLayer: ViewLayer;
+      simSpeed: number;
+      drawerOpen: boolean;
+      camera: CameraTarget | null;
+      inspectedRef: EntityRef | null;
+      isMobile?: boolean;
+    }
+  | {
+      type: "RESIZE";
+      width: number;
+      height: number;
+    }
+  | {
+      type: "SET_CAMERA";
+      x: number;
+      y: number;
+      zoom: number;
+      breakFollow?: boolean;
+    }
+  | {
+      type: "FIT_CAMERA";
+      requestId?: number;
+    }
+  | {
+      type: "SET_VIEW_STATE";
+      activeLayer?: ViewLayer;
+      simSpeed?: number;
+      drawerOpen?: boolean;
+      hydratedCamera?: CameraTarget | null;
+      inspectedRef?: EntityRef | null;
+    }
+  | {
+      type: "HOVER_AT";
+      wx: number;
+      wy: number;
+      pad?: number;
+    }
+  | {
+      type: "TAP_AT";
+      tapId: number;
+      wx: number;
+      wy: number;
+      pad?: number;
+      isMobile?: boolean;
+      clientX?: number;
+      clientY?: number;
+      pointerType?: string;
+    }
+  | {
+      type: "SELECT_REF";
+      requestId: number;
+      ref: EntityRef | null;
+      shouldFocus?: boolean;
+      pushHistory?: boolean;
+      isMobile?: boolean;
+      fromHistory?: boolean;
+    }
+  | {
+      type: "FOCUS_SELECTED";
+      isMobile?: boolean;
+    }
+  | {
+      type: "TEST_RENDER_AT_CAMERA";
+      requestId: number;
+      x: number;
+      y: number;
+      zoom: number;
+    }
+  | {
+      type: "TEST_STEP_SIM";
+      requestId: number;
+      ticks: number;
+      dt?: number;
+      speed?: number;
+    };
+
+export type RenderToMainMessage =
+  | {
+      type: "SCENE_APPLIED";
+      requestId: number;
+      preserveCamera?: boolean;
+      worldSummary: WorldSummary;
+      camera: { x: number; y: number; zoom: number };
+      displayListsReady: boolean;
+      tripsCompleted: number;
+      simTime: number;
+      selectionPayload: SelectionPayload | null;
+    }
+  | {
+      type: "CAMERA_FOLLOW_TICK";
+      x: number;
+      y: number;
+      zoom: number;
+    }
+  | {
+      type: "HUD_TICK";
+      tripsCompleted: number;
+      simTime: number;
+      livePatch: Record<string, any> | null;
+      liveCamera: { x: number; y: number; zoom: number } | null;
+    }
+  | {
+      type: "HOVER_CURSOR";
+      cursor: "pointer" | "grab";
+    }
+  | {
+      type: "TAP_RESULT";
+      tapId: number;
+      hit: boolean;
+      ref: EntityRef | null;
+      dossier: DossierSnapshot | null;
+      cameraTarget: CameraTarget | null;
+    }
+  | {
+      type: "SELECTION_APPLIED";
+      requestId: number;
+      found: boolean;
+      ref: EntityRef | null;
+      dossier: DossierSnapshot | null;
+      camera: { x: number; y: number; zoom: number } | null;
+      focused: boolean;
+      pushHistory: boolean;
+      fromHistory?: boolean;
+    }
+  | {
+      type: "CAMERA_UPDATED";
+      requestId?: number;
+      camera: { x: number; y: number; zoom: number };
+      commitToStore?: boolean;
+    }
+  | {
+      type: "TEST_RENDER_DONE";
+      requestId: number;
+      displayListsReady: boolean;
+    }
+  | {
+      type: "TEST_STEP_DONE";
+      requestId: number;
+      tripsCompleted: number;
+      simTime: number;
+      livePatch: Record<string, any> | null;
+    };
+
+export interface AppBridge {
+  isReady: () => boolean;
+  getWorldSummary: () => WorldSummary | null;
+  getStoreState: () => AppState;
+  getCamera: () => {
+    x: number;
+    y: number;
+    zoom: number;
+    cx: number;
+    cy: number;
+  };
+  getActiveLayer: () => ViewLayer;
+  hasDisplayLists: () => boolean;
+  renderAtZooms: (zooms: number[]) => Promise<boolean>;
+  selectEntity: (
+    kind: EntityKind,
+    id: number | string,
+    shouldFocus?: boolean,
+  ) => Promise<boolean>;
+  stepSimulation: (
+    ticks: number,
+    dt?: number,
+    speed?: number,
+  ) => Promise<{ tripsCompleted: number; simTime: number }>;
+  rebuildWorld: (
+    preserveCamera?: boolean,
+    preserveUrlHydration?: boolean,
+  ) => Promise<any>;
 }
 
 export interface ControlLabels {
@@ -1010,20 +1360,11 @@ export interface AppState {
 
 declare global {
   interface Window {
-    renderer: import("./renderer.js").MiniMotorwaysRenderer;
-    currentWorld:
-      import("./world-generator.js").ProceduralLogisticsWorld | null;
-    simulator: import("./simulator.js").LogisticsSimulator | null;
+    appBridge?: AppBridge;
     rebuildWorld: (
       preserveCamera?: boolean,
-    ) => Promise<
-      import("./world-generator.js").ProceduralLogisticsWorld | void
-    >;
-    openEntityInspector: (
-      type: string,
-      entity: InspectedEntity,
-      shouldFocus?: boolean,
-    ) => void;
+      preserveUrlHydration?: boolean,
+    ) => Promise<any>;
     scheduler?: {
       yield: () => Promise<void>;
     };

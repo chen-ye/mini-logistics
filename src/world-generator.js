@@ -31,7 +31,6 @@
  */
 import { SeededRNG, FastNoise2D } from "./math.js";
 import {
-  PALETTE,
   SYLLABLES_START,
   SYLLABLES_PRE,
   SYLLABLES_ROOT_VALLEY,
@@ -51,37 +50,54 @@ import {
   doesSegmentCrossAirport,
   doesPolylineCrossAirport,
   buildAirportLandsideNetwork,
-} from "./airport-solver.js";
+} from "./entities/airport/placement.js";
 
 import {
   buildFarmEstate,
   finalizeFarmEstateFromParcels,
   buildBrokenGridTractorTracks,
   traceSmoothEstateLoops,
-} from "./farm-estate-solver.js";
+} from "./entities/farm-estate/placement.js";
+
+import {
+  seedSettlements,
+  seedSecondaryTownsAlongTrunks,
+  carveTownStreetGrids,
+  carveStreetFromCenter,
+} from "./entities/town/placement.js";
+
+import {
+  seedOutOfTownResourceNiches,
+  placeTownCommercialAndIndustrial,
+  tryPlaceNeighborhoodHouses,
+} from "./entities/rci-building/placement.js";
 
 import {
   buildRegionalRoadNetwork,
-  seedSecondaryTownsAlongTrunks,
   findRoadPathAStar,
   commitRoadPath,
-  carveTownStreetGrids,
   growUrbanFabric,
-  seedOutOfTownResourceNiches,
   pruneEmptyOuterStreets,
-  carveStreetFromCenter,
-  placeTownCommercialAndIndustrial,
-  tryPlaceNeighborhoodHouses,
   populateLandscapeTrees,
 } from "./urban-fabric-solver.js";
+
+import {
+  isCloverleafFootprintDry,
+  isTrumpetFootprintDry,
+  interchangeRoadOverlapCost,
+  tryBuildTrumpetSpurToTrunk,
+  detectAndBuildCloverleafs,
+  displaceAndRerouteRoadsAtInterchange,
+  intersectUnderpassWithMotorway,
+  buildFlexibleDiamondRamps,
+  findExistingOctilinearUnderpass,
+  buildIntermediateExpresswayRamps,
+} from "./entities/interchange/placement.js";
 
 import {
   displaceBuildingsInRadius,
   findPassThroughStubAtTown,
   createTerminalStreetStub,
-  isCloverleafFootprintDry,
-  isTrumpetFootprintDry,
-  interchangeRoadOverlapCost,
   scoreMotorwaySamples,
   ensureCoarseValleyCostTable,
   findValleyMotorwayWaypoints,
@@ -89,16 +105,9 @@ import {
   sampleMotorwayCurve,
   polylineArcLength,
   removeOrphanedTerminalStub,
-  tryBuildTrumpetSpurToTrunk,
-  detectAndBuildCloverleafs,
   findPolylineIntersection,
   segmentIntersection,
   rebindOrDisplaceOrphanedFrontage,
-  displaceAndRerouteRoadsAtInterchange,
-  intersectUnderpassWithMotorway,
-  buildFlexibleDiamondRamps,
-  findExistingOctilinearUnderpass,
-  buildIntermediateExpresswayRamps,
   buildNumberedMotorways,
   displaceBuildingsAlongMotorwayCorridors,
   applyRightOfWayClearance,
@@ -713,189 +722,7 @@ export class ProceduralLogisticsWorld {
   }
 
   seedSettlements() {
-    const targetCount = this.config.townCount || 20;
-    const usedNames = new Set();
-
-    const numMetros = 2;
-    const numRegional = Math.min(6, Math.max(4, Math.round(targetCount * 0.3)));
-    this.clusters = [];
-
-    const sectorCenters = [
-      { x: this.W * 0.24, y: this.H * 0.34 },
-      { x: this.W * 0.76, y: this.H * 0.64 },
-      { x: this.W * 0.74, y: this.H * 0.24 },
-      { x: this.W * 0.24, y: this.H * 0.74 },
-      { x: this.W * 0.5, y: this.H * 0.48 },
-    ];
-
-    const isIslandHopper = this.config.archetype === "island-hopper";
-    const landmassTownCount = new Int16Array(
-      Math.max(1, this.landmasses.length),
-    );
-    const spanScale = Math.sqrt(this.W / 360);
-
-    // Pre-collect dry-land settlement candidate sites once (`O(N)`)
-    const candidateSites = [];
-    for (let y = 14; y < this.H - 14; y += 3) {
-      for (let x = 14; x < this.W - 14; x += 3) {
-        const id = this.idx(x, y);
-        if (this.waterMask[id] > 0 || this.distToWater[id] < 2.8) continue;
-        const lmId = this.landmassId[id];
-        if (lmId < 0) continue;
-        const lmSize = this.landmasses[lmId]?.size ?? 0;
-        if (lmId > 0 && lmSize < (isIslandHopper ? 360 : 600)) continue;
-        const slope = this.slopeField[id];
-        if (slope > 0.48 || this.elevationField[id] > this.seaLevel + 0.42)
-          continue;
-        const dW = this.distToWater[id];
-        candidateSites.push({
-          x,
-          y,
-          lmId,
-          slope,
-          baseSuit: this.urbanSuitability[id] * 0.72,
-          wfBonus13: Math.exp(-Math.pow((dW - 3.0) / 3.8, 2)) * 0.34,
-          wfBonus4: Math.exp(-Math.pow((dW - 6.0) / 7.5, 2)) * 0.16,
-        });
-      }
-    }
-
-    const majorIslandsCount = isIslandHopper
-      ? this.landmasses.filter((lm) => lm.size >= 160).length
-      : 0;
-    const phase1Count = Math.min(
-      targetCount,
-      Math.max(
-        numRegional,
-        isIslandHopper ? majorIslandsCount + 2 : numRegional,
-      ),
-    );
-
-    for (let i = 0; i < phase1Count; i++) {
-      const isClusterAnchor = i < numRegional;
-      const tier = i < numMetros ? 1 : i < numRegional ? 2 : 3;
-      const urbanRadius =
-        tier === 1 ? (isIslandHopper ? 17 : 21) : tier === 2 ? 12 : 8;
-      const minSpacing =
-        (tier === 1
-          ? isIslandHopper
-            ? 78
-            : 105
-          : tier === 2
-            ? isIslandHopper
-              ? 38
-              : 52
-            : 25) * (tier <= 2 ? spanScale : 1.0);
-      const maxSlope = tier <= 2 ? 0.38 : 0.46;
-
-      let bestScore = -1;
-      /** @type {{ x: number, y: number, score: number, lmId: number } | null} */
-      let bestPt = null;
-
-      for (let cIdx = 0; cIdx < candidateSites.length; cIdx++) {
-        const site = candidateSites[cIdx];
-        if (site.slope > maxSlope) continue;
-        const { x, y, lmId } = site;
-
-        let tooClose = false;
-        for (const t of this.towns) {
-          const reqDist =
-            tier === 1 && t.tier === 1
-              ? (isIslandHopper ? 78 : 105) * spanScale
-              : Math.max(minSpacing, (t.urbanRadius + urbanRadius) * 1.38);
-          const dx = x - t.x;
-          const dy = y - t.y;
-          if (dx * dx + dy * dy < reqDist * reqDist) {
-            tooClose = true;
-            break;
-          }
-        }
-        if (tooClose) continue;
-
-        let score =
-          site.baseSuit + site.wfBonus13 + this.rng.range(-0.025, 0.025);
-
-        if (
-          isIslandHopper &&
-          landmassTownCount[lmId] === 0 &&
-          this.landmasses[lmId].size >= 160
-        ) {
-          score += 0.65;
-        } else if (isClusterAnchor) {
-          const sec = sectorCenters[i % sectorCenters.length];
-          const dSec = Math.hypot(x - sec.x, y - sec.y);
-          score += Math.exp(-Math.pow(dSec / (this.W * 0.24), 2)) * 0.42;
-        }
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestPt = { x, y, score, lmId };
-        }
-      }
-
-      if (bestPt) {
-        landmassTownCount[bestPt.lmId]++;
-        let clusterId = i;
-        if (!isClusterAnchor && this.clusters.length > 0) {
-          let minCD = Infinity;
-          for (const cl of this.clusters) {
-            const cd = Math.hypot(bestPt.x - cl.x, bestPt.y - cl.y);
-            if (cd < minCD) {
-              minCD = cd;
-              clusterId = cl.clusterId;
-            }
-          }
-        }
-        const colorIdx =
-          (isClusterAnchor ? i : clusterId + (i % 2)) %
-          PALETTE.districtColors.length;
-        const tierTitle =
-          tier === 1
-            ? "Metropolis"
-            : tier === 2
-              ? "Regional City"
-              : "Market Town";
-        const name = this.generateTopographicTownName(
-          bestPt.x,
-          bestPt.y,
-          usedNames,
-        );
-        const iata = name
-          .replace(/[^A-Za-z]/g, "")
-          .slice(0, 3)
-          .toUpperCase();
-
-        const townObj = {
-          id: this.towns.length,
-          clusterId,
-          landmassId: bestPt.lmId,
-          name,
-          iata,
-          tier,
-          tierTitle,
-          x: bestPt.x,
-          y: bestPt.y,
-          urbanRadius,
-          colorIdx,
-          palette: PALETTE.districtColors[colorIdx],
-          suitabilityScore: Math.round(Math.min(99, bestPt.score * 100)),
-          housesCount: 0,
-          destinationsCount: 0,
-          commercialCount: 0,
-          industrialCount: 0,
-          airportId: null,
-          _seededInPhase1: true,
-          boroughs: [{ x: bestPt.x, y: bestPt.y, r: urbanRadius }],
-        };
-        this.towns.push(townObj);
-        if (isClusterAnchor) {
-          this.clusters.push(townObj);
-        }
-      }
-    }
-    this.logs.push(
-      `Seeded <b>${this.towns.length} founding capitals & regional cities</b> (2 Metropolises, ${this.towns.length - 2} Regional Ports).`,
-    );
+    return seedSettlements(this);
   }
 
   // --- Thin Delegation Methods to Extracted Stage Solvers ---

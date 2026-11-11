@@ -464,6 +464,26 @@ describe("URL State Pure Boundary Parser & Serializer", () => {
       expect(restoredBuilding.inspected.type).toBe("building");
       expect(restoredBuilding.inspected.id).toBe(42);
     });
+
+    test("round-trips plane and truck inspected selections (?inspect=plane:0 and ?inspect=truck:4)", () => {
+      const planeParsed = parseUrlState("?inspect=plane:0");
+      expect(planeParsed.inspected.type).toBe("plane");
+      expect(planeParsed.inspected.id).toBe(0);
+      const serializedPlane = serializeUrlState(planeParsed);
+      expect(decodeURIComponent(serializedPlane)).toContain("inspect=plane:0");
+      const restoredPlane = parseUrlState(serializedPlane);
+      expect(restoredPlane.inspected.type).toBe("plane");
+      expect(restoredPlane.inspected.id).toBe(0);
+
+      const truckParsed = parseUrlState("?inspect=truck:4");
+      expect(truckParsed.inspected.type).toBe("truck");
+      expect(truckParsed.inspected.id).toBe(4);
+      const serializedTruck = serializeUrlState(truckParsed);
+      expect(decodeURIComponent(serializedTruck)).toContain("inspect=truck:4");
+      const restoredTruck = parseUrlState(serializedTruck);
+      expect(restoredTruck.inspected.type).toBe("truck");
+      expect(restoredTruck.inspected.id).toBe(4);
+    });
   });
 
   describe("Archetype Presets & Geomorphology Scalar Serialization", () => {

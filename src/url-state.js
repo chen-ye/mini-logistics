@@ -10,6 +10,7 @@
  * @import {
  *   AppState,
  *   CameraTarget,
+ *   EntityKind,
  *   GeneratorConfig,
  *   InspectedSelection,
  *   ViewLayer,
@@ -361,13 +362,29 @@ export function parseUrlState(search, isMobileViewport = false) {
   });
   const rawInspect = params.get("inspect");
   if (rawInspect) {
-    const match = rawInspect.match(/^(airport|town|building):(\d+)$/);
+    const match = rawInspect.match(
+      /^(airport|town|building|plane|truck):(.+)$/,
+    );
     if (match) {
-      inspected = Object.freeze({
-        type: /** @type {"airport" | "building" | "town"} */ (match[1]),
-        id: parseInt(match[2], 10),
-        entity: null,
-      });
+      const type = /** @type {EntityKind} */ (match[1]);
+      const rawId = match[2];
+      /** @type {number | null} */
+      let id = null;
+      if (/^\d+$/.test(rawId)) {
+        id = parseInt(rawId, 10);
+      } else if (type === "plane") {
+        const numMatch = rawId.match(/(\d+)$/);
+        if (numMatch) {
+          id = parseInt(numMatch[1], 10);
+        }
+      }
+      if (id !== null && Number.isFinite(id) && id >= 0) {
+        inspected = Object.freeze({
+          type,
+          id,
+          entity: null,
+        });
+      }
     }
   }
 
@@ -580,7 +597,13 @@ export function serializeUrlState(state, options = {}) {
       /** @type {string} */ (inspected.type) === "resource"
         ? "building"
         : inspected.type;
-    if (rawType === "airport" || rawType === "town" || rawType === "building") {
+    if (
+      rawType === "airport" ||
+      rawType === "town" ||
+      rawType === "building" ||
+      rawType === "plane" ||
+      rawType === "truck"
+    ) {
       params.set("inspect", `${rawType}:${inspected.id}`);
     }
   }

@@ -5,6 +5,17 @@ import {
   describeBuildingDossier,
   getPartnerStageBadgeClass,
 } from "../../src/inspector-component.js";
+import {
+  ALL_ENTITY_DEFINITIONS,
+  hitTestEntities,
+  resolveEntityByRef,
+  getEntityCameraTarget,
+  getEntityDefinition,
+} from "../../src/entities/index.js";
+import { LogisticsSimulator } from "../../src/simulator.js";
+import { BUILDING_MASK } from "../../src/constants.js";
+import { displaceBuildingsInRadius } from "../../src/expressway-solver.js";
+import { hitTestRoadVehicle } from "../../src/entities/road-vehicle/inspect.js";
 
 const TERRAIN_ALGOS = ["tectonic-fbm", "quilez-erosion", "voronoi-plates"];
 const HYDRO_ALGOS = ["thalweg-astar", "d8-strahler", "meandering-plain"];
@@ -921,4 +932,202 @@ describe("Hourglass 3x3 Terrain x Hydrology Solver Matrix & Domain Invariants", 
       "Harborview CBD Food & Retail Rotunda",
     );
   }, 20000);
+
+  test("Holistic ALL_ENTITY_DEFINITIONS Registry & Inspection Round-Trip across 5 domains with zero window globals", () => {
+    // 1. Verify all 7 definitions registered in ascending hitPriority order (10, 12, 20, 30, 35, 40, 50)
+    expect(ALL_ENTITY_DEFINITIONS.length).toBe(7);
+    const priorities = ALL_ENTITY_DEFINITIONS.map((d) => d.hitPriority);
+    expect(priorities).toEqual([10, 12, 20, 30, 35, 40, 50]);
+    for (let i = 0; i < ALL_ENTITY_DEFINITIONS.length - 1; i++) {
+      expect(ALL_ENTITY_DEFINITIONS[i].hitPriority).toBeLessThan(
+        ALL_ENTITY_DEFINITIONS[i + 1].hitPriority,
+      );
+    }
+
+    // 2. Synthesize benchmark world
+    const pipeline = createWorldPipeline();
+    const world = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainAlgo: "tectonic-fbm",
+      hydrologyAlgo: "thalweg-astar",
+      airportMix: "hub-reg-cargo",
+      includeIntermediateRamps: true,
+      waterCoverage: 48,
+      townCount: 14,
+      buildingDensity: 200,
+      airportCount: 3,
+      windAxis: -1,
+    });
+
+    expect(world.airports.length).toBeGreaterThan(0);
+    for (const ap of world.airports) {
+      expect(ap.atc).toBeUndefined();
+    }
+
+    // 3. Verify prepareDisplayLists / recordAirwayCorridors does NOT mutate world.airports[i].atc
+    const mockCanvas = /** @type {any} */ ({
+      width: 1600,
+      height: 1000,
+      getContext: () => null,
+    });
+    const renderer = new MiniMotorwaysRenderer(mockCanvas);
+    renderer.prepareDisplayLists(world);
+
+    for (const ap of world.airports) {
+      expect(ap.atc).toBeUndefined();
+    }
+
+    // 4. Instantiate LogisticsSimulator and test inspection round-trips
+    const sim = new LogisticsSimulator(world);
+
+    // Verify resolve -> hitTest -> getCameraTarget -> renderDossier -> describeLivePatch
+    // across airport, building, town, plane, truck
+    const kinds = /** @type {const} */ ([
+      "airport",
+      "building",
+      "town",
+      "plane",
+      "truck",
+    ]);
+
+    for (const kind of kinds) {
+      const def = getEntityDefinition(kind);
+      expect(def).not.toBeNull();
+      if (!def || !def.inspect) continue;
+
+      let ref;
+      let targetWx = 0;
+      let targetWy = 0;
+
+      if (kind === "airport") {
+        const ap = world.airports[0];
+        ref = { kind, id: ap.id };
+        targetWx = ap.x;
+        targetWy = ap.y;
+      } else if (kind === "building") {
+        const b = world.destinations[0];
+        ref = { kind, id: b.id };
+        targetWx = b.gx + (b.wTiles || 2) * 0.5;
+        targetWy = b.gy + (b.hTiles || 2) * 0.5;
+      } else if (kind === "town") {
+        const t = world.towns[0];
+        ref = { kind, id: t.id };
+        targetWx = t.x;
+        targetWy = t.y;
+      } else if (kind === "plane") {
+        const p = sim.planes[0];
+        ref = { kind, id: p.id };
+        targetWx = (p.pose?.x ?? p.x) + 0.5;
+        targetWy = (p.pose?.y ?? p.y) + 0.5;
+      } else if (kind === "truck") {
+        const c = sim.cars.find((car) => !car.pose?.inTunnel) || sim.cars[0];
+        ref = { kind, id: c.id };
+        targetWx = (c.pose?.x ?? 0) + 0.5;
+        targetWy = (c.pose?.y ?? 0) + 0.5;
+      }
+
+      // Step A: resolveEntityByRef
+      const resolved = resolveEntityByRef(ref, world, sim);
+      expect(resolved).not.toBeNull();
+      expect(resolved.id).toBe(ref.id);
+
+      // Step B: hitTest
+      const hit = hitTestEntities(targetWx, targetWy, 2.0, world, sim);
+      expect(hit).not.toBeNull();
+      expect(hit?.entity).toBeDefined();
+
+      const directHit = def.inspect.hitTest
+        ? def.inspect.hitTest(targetWx, targetWy, 2.0, world, sim)
+        : null;
+      expect(directHit).not.toBeNull();
+      expect(directHit?.entity).toBe(resolved);
+
+      // Step C: getEntityCameraTarget
+      const camTarget = getEntityCameraTarget(kind, resolved, world);
+      expect(camTarget).toBeDefined();
+      expect(Number.isFinite(camTarget.cx)).toBe(true);
+      expect(Number.isFinite(camTarget.cy)).toBe(true);
+      expect(Number.isFinite(camTarget.zoom)).toBe(true);
+      expect(camTarget.zoom).toBeGreaterThan(0);
+
+      // Step D: renderDossier
+      expect(typeof def.inspect.renderDossier).toBe("function");
+      if (typeof def.inspect.renderDossier === "function") {
+        const dossier = def.inspect.renderDossier(resolved, world, sim);
+        expect(dossier).toBeDefined();
+        expect(typeof dossier.titleText).toBe("string");
+        expect(dossier.titleText.length).toBeGreaterThan(0);
+        expect(typeof dossier.badgeText).toBe("string");
+        expect(dossier.badgeText.length).toBeGreaterThan(0);
+        expect(typeof dossier.badgeClass).toBe("string");
+      }
+
+      // Step E: describeLivePatch
+      expect(typeof def.inspect.describeLivePatch).toBe("function");
+      if (typeof def.inspect.describeLivePatch === "function") {
+        const patch = def.inspect.describeLivePatch(resolved, world, sim);
+        expect(patch).not.toBeNull();
+        expect(typeof patch).toBe("object");
+      }
+    }
+
+    // Verify that a CarAgent with pose.inTunnel = true is NEVER returned by hitTestRoadVehicle or hitTestEntities
+    const realCar = sim.cars[0];
+    expect(realCar?.pose).toBeDefined();
+    if (realCar && realCar.pose) {
+      const origTunnel = realCar.pose.inTunnel;
+      realCar.pose.inTunnel = true;
+      const testSim = { cars: [realCar], planes: [] };
+      const truckHit = hitTestRoadVehicle(
+        realCar.pose.x + 0.5,
+        realCar.pose.y + 0.5,
+        2.0,
+        world,
+        testSim,
+      );
+      expect(truckHit).toBeNull();
+      const entityHit = hitTestEntities(
+        realCar.pose.x + 0.5,
+        realCar.pose.y + 0.5,
+        2.0,
+        world,
+        testSim,
+      );
+      expect(entityHit?.entity).not.toBe(realCar);
+      realCar.pose.inTunnel = origTunnel;
+    }
+
+    // Verify displaceBuildingsInRadius sets demolished destination perimeter tiles to BUILDING_MASK.TRANSIT_RESERVE (4), not 0
+    const testWorld = {
+      W: 20,
+      H: 20,
+      idx: (x, y) => y * 20 + x,
+      inBounds: (x, y, margin = 0) =>
+        x >= margin && x < 20 - margin && y >= margin && y < 20 - margin,
+      houses: [],
+      destinations: [
+        { id: 1, x: 10, y: 10, gx: 9, gy: 9, wTiles: 2, hTiles: 2, townId: 0 },
+      ],
+      towns: [{ id: 0, destinationsCount: 1, housesCount: 0 }],
+      buildingMask: new Uint8Array(400),
+      trees: [],
+    };
+    for (let dy = 0; dy < 2; dy++) {
+      for (let dx = 0; dx < 2; dx++) {
+        testWorld.buildingMask[testWorld.idx(9 + dx, 9 + dy)] =
+          BUILDING_MASK.DESTINATION;
+      }
+    }
+    displaceBuildingsInRadius(testWorld, 10, 10, 1.5);
+    expect(testWorld.destinations.length).toBe(0);
+    for (let dy = 0; dy < 2; dy++) {
+      for (let dx = 0; dx < 2; dx++) {
+        expect(testWorld.buildingMask[testWorld.idx(9 + dx, 9 + dy)]).toBe(
+          BUILDING_MASK.TRANSIT_RESERVE,
+        );
+      }
+    }
+  });
 });

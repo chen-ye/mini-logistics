@@ -2161,4 +2161,222 @@ describe("Multi-Modal Traffic & Aviation Simulation (LogisticsSimulator)", () =>
       }
     }
   });
+
+  test("Single-Writer AirportATCController Bijection & Pose2D Fleet Invariant across 1,500 substeps", () => {
+    const pipeline = createWorldPipeline();
+    const benchmarkWorlds = [
+      { seed: "OTTD-METRO-84", size: "compact", arch: "confluence" },
+      { seed: "ISLAND-HOP-101", size: "standard", arch: "island-hopper" },
+    ];
+
+    for (const { seed, size, arch } of benchmarkWorlds) {
+      const world = pipeline({
+        seed,
+        worldSize: size,
+        archetype: arch,
+        terrainAlgo: "tectonic-fbm",
+        hydrologyAlgo: "thalweg-astar",
+        airportMix: "hub-reg-cargo",
+        includeIntermediateRamps: true,
+        waterCoverage: 48,
+        townCount: 14,
+        buildingDensity: 200,
+        airportCount: 3,
+        windAxis: -1,
+      });
+
+      const sim = new LogisticsSimulator(world);
+      expect(sim.planes.length).toBeGreaterThan(0);
+      expect(sim.cars.length).toBeGreaterThan(0);
+      expect(sim.atcControllers.size).toBeGreaterThan(0);
+
+      // Run 1,500 physical substeps (dt = 1/60, speed = 1.0)
+      for (let step = 0; step < 1500; step++) {
+        sim.update(1 / 60, 1.0);
+
+        // Every 50 substeps and on the final step, verify the invariants
+        if (step % 50 === 0 || step === 1499) {
+          // 1. AirportATCController Bijection with sim.planes
+          for (const ctrl of sim.atcControllers.values()) {
+            const atc = ctrl.state;
+            const ap = ctrl.airport;
+
+            // Gate occupiedBy / reservedBy
+            for (const gate of atc.gates) {
+              if (gate.occupiedBy !== null) {
+                const p = sim.planes.find((pl) => pl.id === gate.occupiedBy);
+                expect(p).toBeDefined();
+              }
+              if (gate.reservedBy !== null) {
+                const p = sim.planes.find((pl) => pl.id === gate.reservedBy);
+                expect(p).toBeDefined();
+              }
+            }
+
+            // Runway reservations
+            if (atc.runwayBusyBy !== null) {
+              const p = sim.planes.find((pl) => pl.id === atc.runwayBusyBy);
+              expect(p).toBeDefined();
+            }
+            if (atc.depRunwayBusyBy !== null) {
+              const p = sim.planes.find((pl) => pl.id === atc.depRunwayBusyBy);
+              expect(p).toBeDefined();
+            }
+            if (atc.arrRunwayBusyBy !== null) {
+              const p = sim.planes.find((pl) => pl.id === atc.arrRunwayBusyBy);
+              expect(p).toBeDefined();
+            }
+
+            // inboundPlaneIds consistency
+            for (const pIdStr of atc.inboundPlaneIds) {
+              const p = sim.planes.find(
+                (pl) => String(pl.id) === pIdStr || pl.id === Number(pIdStr),
+              );
+              expect(p).toBeDefined();
+              if (p && p.dest && typeof p.dest.id === "number") {
+                expect(p.dest.id).toBe(ap.id);
+              }
+            }
+          }
+
+          // 2. Pose2D & Manifest Invariants across PlaneAgent fleet
+          for (const p of sim.planes) {
+            const pose = p.pose;
+            expect(pose).toBeDefined();
+            if (pose) {
+              expect(Number.isFinite(pose.x)).toBe(true);
+              expect(Number.isFinite(pose.y)).toBe(true);
+              expect(Number.isFinite(pose.ang)).toBe(true);
+              expect(["ground", "air"]).toContain(pose.zLayer);
+              expect(Number.isFinite(pose.speed)).toBe(true);
+              expect(pose.speed).toBeGreaterThanOrEqual(0);
+              expect(Number.isFinite(pose.altitude)).toBe(true);
+              expect(pose.altitude).toBeGreaterThanOrEqual(0);
+            }
+
+            if (p.isCargoFreighter || p.aircraftType === "WIDEBODY_FREIGHTER") {
+              const manifest = p.manifest;
+              expect(manifest).toBeDefined();
+              expect(manifest).not.toBeNull();
+              if (manifest) {
+                expect(typeof manifest.commodity).toBe("string");
+                expect(manifest.commodity.length).toBeGreaterThan(0);
+                expect(typeof manifest.stage).toBe("string");
+                expect(typeof manifest.units).toBe("number");
+                expect(manifest.units).toBeGreaterThan(0);
+              }
+            }
+          }
+
+          // 3. Pose2D & Manifest Invariants across CarAgent fleet
+          for (const c of sim.cars) {
+            const cPose = c.pose;
+            expect(cPose).toBeDefined();
+            if (cPose) {
+              expect(Number.isFinite(cPose.x)).toBe(true);
+              expect(Number.isFinite(cPose.y)).toBe(true);
+              expect(Number.isFinite(cPose.ang)).toBe(true);
+              expect(["road", "motorway-lower", "motorway-upper"]).toContain(
+                cPose.zLayer,
+              );
+              expect(Number.isFinite(cPose.speed)).toBe(true);
+              expect(cPose.speed).toBeGreaterThanOrEqual(0);
+              expect(Number.isFinite(cPose.altitude)).toBe(true);
+              const activeTrack = c.returning
+                ? c.inboundTrack
+                : c.outboundTrack;
+              if (activeTrack?.pts && activeTrack.pts.length >= 2) {
+                const idx = Math.min(c.segIdx ?? 0, activeTrack.pts.length - 2);
+                const segInTunnel = Boolean(
+                  activeTrack.pts[idx]?.inTunnel &&
+                  activeTrack.pts[idx + 1]?.inTunnel,
+                );
+                expect(Boolean(cPose.inTunnel)).toBe(segInTunnel);
+              }
+            }
+
+            if (c.isFreightTruck) {
+              const manifest = c.manifest;
+              expect(manifest).toBeDefined();
+              expect(manifest).not.toBeNull();
+              if (manifest) {
+                expect(typeof manifest.commodity).toBe("string");
+                expect(manifest.commodity.length).toBeGreaterThan(0);
+                expect(typeof manifest.stage).toBe("string");
+                expect(typeof manifest.units).toBe("number");
+                expect(manifest.units).toBeGreaterThan(0);
+              }
+            }
+          }
+        }
+      }
+    }
+  }, 45000);
+
+  test("AirportATCController Queue Bijection Pruning on Plane Splicing & Monotonic ID Allocation", () => {
+    const pipeline = createWorldPipeline();
+    const world = pipeline({
+      seed: "OTTD-METRO-84",
+      worldSize: "compact",
+      archetype: "confluence",
+      terrainAlgo: "tectonic-fbm",
+      hydrologyAlgo: "thalweg-astar",
+      airportMix: "hub-regional",
+      includeIntermediateRamps: true,
+      waterCoverage: 48,
+      townCount: 14,
+      buildingDensity: 200,
+      airportCount: 2,
+      windAxis: -1,
+    });
+
+    const sim = new LogisticsSimulator(world);
+    expect(sim.planes.length).toBeGreaterThan(1);
+    const ap = world.airports[0];
+    const atcCtrl = sim.getATCController(ap);
+    expect(atcCtrl).not.toBeNull();
+    if (!atcCtrl) return;
+    const atc = atcCtrl.state;
+
+    // Pick a plane and put it in taxiwayOccupants, holdShortQueue, and approachQueue
+    const targetPlane = sim.planes[0];
+    const targetId = targetPlane.id;
+    if (!atc.taxiwayOccupants.includes(targetPlane)) {
+      atc.taxiwayOccupants.push(targetPlane);
+    }
+    if (!atc.holdShortQueue.includes(targetPlane)) {
+      atc.holdShortQueue.push(targetPlane);
+    }
+    if (!atc.approachQueue.includes(targetPlane)) {
+      atc.approachQueue.push(targetPlane);
+    }
+
+    // Verify it is in the queues
+    expect(atc.taxiwayOccupants.some((p) => p.id === targetId)).toBe(true);
+    expect(atc.holdShortQueue.some((p) => p.id === targetId)).toBe(true);
+    expect(atc.approachQueue.some((p) => p.id === targetId)).toBe(true);
+
+    // Splice targetPlane out of sim.planes
+    const targetIdx = sim.planes.indexOf(targetPlane);
+    sim.planes.splice(targetIdx, 1);
+
+    // Step aviation sub-step
+    sim.stepAviationSubStep(1 / 60);
+
+    // Assert targetPlane is cleanly pruned from taxiwayOccupants, holdShortQueue, approachQueue
+    expect(atc.taxiwayOccupants.some((p) => p.id === targetId)).toBe(false);
+    expect(atc.holdShortQueue.some((p) => p.id === targetId)).toBe(false);
+    expect(atc.approachQueue.some((p) => p.id === targetId)).toBe(false);
+    expect(sim.planesById.has(String(targetId))).toBe(false);
+
+    // Spawn a new plane and verify it receives a fresh monotonic ID without colliding
+    const prevMaxId = Math.max(
+      ...sim.planes.map((p) => p.id ?? 0),
+      targetId ?? 0,
+    );
+    sim.spawnPlane();
+    const newPlane = sim.planes[sim.planes.length - 1];
+    expect(newPlane.id).toBeGreaterThan(prevMaxId);
+    expect(sim.planesById.get(String(newPlane.id))).toBe(newPlane);
+  });
 });

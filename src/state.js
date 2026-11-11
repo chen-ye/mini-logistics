@@ -11,6 +11,7 @@
  *   AppState,
  *   CameraTarget,
  *   ControlLabels,
+ *   EntityKind,
  *   GeneratorConfig,
  *   InspectedEntity,
  *   ViewLayer,
@@ -273,7 +274,7 @@ export function batch(fn) {
  *   simSpeed?: number,
  *   drawerOpen?: boolean,
  *   camera?: CameraTarget | null,
- *   inspected?: { type?: string | null, id?: number | null, entity?: InspectedEntity | null } | null,
+ *   inspected?: { type?: string | null, id?: number | string | null, entity?: InspectedEntity | null } | null,
  * }} [initialViewAndInteraction]
  */
 export function createAppStore(
@@ -310,18 +311,37 @@ export function createAppStore(
 
   const rawInspected = initialViewAndInteraction.inspected;
   const rawType = rawInspected?.type;
+  /** @type {EntityKind | null} */
   const inspectedType =
-    rawType === "airport" || rawType === "building" || rawType === "town"
+    rawType === "airport" ||
+    rawType === "building" ||
+    rawType === "town" ||
+    rawType === "plane" ||
+    rawType === "truck"
       ? rawType
       : rawType === "resource"
-        ? /** @type {"building"} */ ("building")
+        ? "building"
         : null;
-  const inspectedId =
+  const rawId =
     rawInspected?.id != null
       ? rawInspected.id
       : rawInspected?.entity?.id != null
         ? rawInspected.entity.id
         : null;
+  /** @type {number | null} */
+  let inspectedId = null;
+  if (typeof rawId === "number" && Number.isFinite(rawId)) {
+    inspectedId = rawId;
+  } else if (typeof rawId === "string") {
+    if (/^\d+$/.test(rawId)) {
+      inspectedId = parseInt(rawId, 10);
+    } else if (inspectedType === "plane") {
+      const numMatch = rawId.match(/(\d+)$/);
+      if (numMatch) {
+        inspectedId = parseInt(numMatch[1], 10);
+      }
+    }
+  }
   const inspectedEntity = rawInspected?.entity ?? null;
   const inspected = Object.freeze({
     type: inspectedId == null && inspectedEntity == null ? null : inspectedType,
@@ -551,12 +571,16 @@ export function createAppStore(
           ? /** @type {"building"} */ ("building")
           : (type ?? null);
       const nextEntity = entity ?? null;
-      const nextType =
-        nextEntity === null
-          ? null
-          : /** @type {"airport" | "building" | "town" | null} */ (
-              normalizedType
-            );
+      /** @type {EntityKind | null} */
+      const validKind =
+        normalizedType === "airport" ||
+        normalizedType === "building" ||
+        normalizedType === "town" ||
+        normalizedType === "plane" ||
+        normalizedType === "truck"
+          ? normalizedType
+          : null;
+      const nextType = nextEntity === null ? null : validKind;
       const nextId =
         nextEntity === null
           ? null
@@ -588,7 +612,7 @@ export function createAppStore(
      * Sets inspected entity reference by type and id, retaining selection before entity hydration.
      *
      * @param {string | null} type
-     * @param {number | null} id
+     * @param {number | string | null} id
      * @param {InspectedEntity | null} [entity]
      * @returns {boolean}
      */
@@ -597,13 +621,33 @@ export function createAppStore(
         type === "resource"
           ? /** @type {"building"} */ ("building")
           : (type ?? null);
-      const nextId = id == null ? null : id;
-      const nextType =
-        nextId == null
-          ? null
-          : /** @type {"airport" | "building" | "town" | null} */ (
-              normalizedType
-            );
+      /** @type {EntityKind | null} */
+      const validKind =
+        normalizedType === "airport" ||
+        normalizedType === "building" ||
+        normalizedType === "town" ||
+        normalizedType === "plane" ||
+        normalizedType === "truck"
+          ? normalizedType
+          : null;
+
+      /** @type {number | null} */
+      let parsedId = null;
+      if (typeof id === "number" && Number.isFinite(id)) {
+        parsedId = id;
+      } else if (typeof id === "string") {
+        if (/^\d+$/.test(id)) {
+          parsedId = parseInt(id, 10);
+        } else if (validKind === "plane") {
+          const numMatch = id.match(/(\d+)$/);
+          if (numMatch) {
+            parsedId = parseInt(numMatch[1], 10);
+          }
+        }
+      }
+
+      const nextId = parsedId;
+      const nextType = nextId == null ? null : validKind;
       const nextEntity = nextId == null ? null : (entity ?? null);
 
       if (

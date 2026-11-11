@@ -14,6 +14,18 @@ import {
   WORLD_GEOMETRY,
   SIM_CONFIG,
 } from "./constants.js";
+import {
+  computeTrumpetRampBeziers,
+  CLOVERLEAF_GEOMETRY,
+} from "./entities/interchange/geometry.js";
+import {
+  MFG_SPECS,
+  RAW_NICHE_SPECS,
+  CARGO_STAGE_COLORS,
+  nameCommercialSubType,
+} from "./entities/rci-building/catalog.js";
+
+export { computeTrumpetRampBeziers };
 
 /**
  * Computes road topology from road segments and building mask.
@@ -165,233 +177,6 @@ export function deriveVehicleRoutingGraph(world) {
  * terminal roundabouts (`terminal-stub`), intermediate diamond slip-ramps (`diamond-ramp`),
  * and system interchanges (`cloverleaf`, `trumpet`).
  */
-/**
- * Computes curve-anchored C1-continuous cubic Bezier segments in world tile coordinates
- * for all 4 directional ramps of a 3-way Trumpet interchange:
- *   - `yellow`: Left Outer Slip-Ramp (Mainline +u -> Spur Outbound +v)
- *   - `purple`: Right Outer Slip-Ramp (Spur Inbound -v -> Mainline +u)
- *   - `brown`:  Inner 270° Trumpet Loop (Mainline -u -> 270° Loop -> Left Bridge Lane -> Spur Outbound +v)
- *   - `blue`:   Outer Trumpet Bell (Spur Inbound -v -> Right Bridge Lane -> Outer Arch & S-Glide -> Mainline -u)
- *
- * @param {import('./types.js').TrumpetInterchange} ic
- * @param {import('./types.js').Motorway[]} [motorways]
- */
-export function computeTrumpetRampBeziers(ic, motorways = []) {
-  const sy = ic.sideSign || 1;
-  const cosM = Math.cos(ic.angleMain || 0);
-  const sinM = Math.sin(ic.angleMain || 0);
-  const ux = sy * cosM;
-  const uy = sy * sinM;
-  const vx = -sy * sinM;
-  const vy = sy * cosM;
-
-  const toWorldUV = (u, v) => ({
-    x: ic.x + ux * u + vx * v,
-    y: ic.y + uy * u + vy * v,
-  });
-
-  const mainMw = motorways?.find((m) => m.number === ic.mwayMain) || null;
-  const spurMw = motorways?.find((m) => m.number === ic.mwaySpur) || null;
-
-  const sampleMotorwayAtArc = (mw, targetArc, dirX, dirY) => {
-    const samples = mw?.samples;
-    if (!samples || samples.length < 2) {
-      return {
-        x: ic.x + dirX * targetArc,
-        y: ic.y + dirY * targetArc,
-        tx: dirX,
-        ty: dirY,
-      };
-    }
-    let k0 = 0;
-    let bestD = Infinity;
-    for (let k = 0; k < samples.length; k++) {
-      const d = Math.hypot(samples[k].x - ic.x, samples[k].y - ic.y);
-      if (d < bestD) {
-        bestD = d;
-        k0 = k;
-      }
-    }
-    const kNext = Math.min(samples.length - 1, k0 + 1);
-    const kPrev = Math.max(0, k0 - 1);
-    const fdx = samples[kNext].x - samples[kPrev].x;
-    const fdy = samples[kNext].y - samples[kPrev].y;
-    const stepSign = fdx * dirX + fdy * dirY >= 0 ? 1 : -1;
-
-    let walked = 0;
-    let curK = k0;
-    let ptX = samples[k0].x;
-    let ptY = samples[k0].y;
-    while (curK + stepSign >= 0 && curK + stepSign < samples.length) {
-      const nk = curK + stepSign;
-      const segDx = samples[nk].x - samples[curK].x;
-      const segDy = samples[nk].y - samples[curK].y;
-      const segLen = Math.hypot(segDx, segDy);
-      if (walked + segLen >= targetArc && segLen > 1e-4) {
-        const frac = (targetArc - walked) / segLen;
-        ptX = samples[curK].x + segDx * frac;
-        ptY = samples[curK].y + segDy * frac;
-        return {
-          x: ptX,
-          y: ptY,
-          tx: segDx / segLen,
-          ty: segDy / segLen,
-        };
-      }
-      walked += segLen;
-      curK = nk;
-      ptX = samples[curK].x;
-      ptY = samples[curK].y;
-    }
-    const prevK = Math.max(0, Math.min(samples.length - 1, curK - stepSign));
-    const tdx = samples[curK].x - samples[prevK].x || dirX;
-    const tdy = samples[curK].y - samples[prevK].y || dirY;
-    const tLen = Math.hypot(tdx, tdy) || 1;
-    return {
-      x: ptX,
-      y: ptY,
-      tx: tdx / tLen,
-      ty: tdy / tLen,
-    };
-  };
-
-  const mNegYellow = sampleMotorwayAtArc(mainMw, 3.85, -ux, -uy);
-  const mPosPurple = sampleMotorwayAtArc(mainMw, 3.85, ux, uy);
-  const mNegBlue = sampleMotorwayAtArc(mainMw, 5.65, -ux, -uy);
-  const sPos = sampleMotorwayAtArc(spurMw, 3.85, vx, vy);
-
-  // 1. Yellow Ramp: C1 cubic from Mainline (-u side, +u travel) to Spur (+v side, +v travel)
-  const yP0 = {
-    x: mNegYellow.x + vx * 0.24,
-    y: mNegYellow.y + vy * 0.24,
-  };
-  const yP1 = {
-    x: mNegYellow.x + vx * 0.3 - mNegYellow.tx * 1.95,
-    y: mNegYellow.y + vy * 0.3 - mNegYellow.ty * 1.95,
-  };
-  const yP3 = {
-    x: sPos.x - ux * 0.24,
-    y: sPos.y - uy * 0.24,
-  };
-  const yP2 = {
-    x: sPos.x - ux * 0.3 - sPos.tx * 1.95,
-    y: sPos.y - uy * 0.3 - sPos.ty * 1.95,
-  };
-  const yellow = { p0: yP0, p1: yP1, p2: yP2, p3: yP3 };
-
-  // 2. Purple Ramp: C1 cubic from Spur (+v side, -v travel) to Mainline (+u side, +u travel)
-  const pP0 = {
-    x: sPos.x + ux * 0.24,
-    y: sPos.y + uy * 0.24,
-  };
-  const pP1 = {
-    x: sPos.x + ux * 0.3 - sPos.tx * 1.95,
-    y: sPos.y + uy * 0.3 - sPos.ty * 1.95,
-  };
-  const pP3 = {
-    x: mPosPurple.x + vx * 0.24,
-    y: mPosPurple.y + vy * 0.24,
-  };
-  const pP2 = {
-    x: mPosPurple.x + vx * 0.3 - mPosPurple.tx * 1.95,
-    y: mPosPurple.y + vy * 0.3 - mPosPurple.ty * 1.95,
-  };
-  const purple = { p0: pP0, p1: pP1, p2: pP2, p3: pP3 };
-
-  // 3. Brown Inner 270° Loop (Cloverleaf-equivalent R_inner = 1.25 loop radius, reaching 2.67x2.63 tiles)
-  //    Center of concentric top arch is at (u = -1.42, v = -1.38) with R_inner = 1.25, R_outer = 1.72.
-  const k90 = 0.55228475;
-  const uC = -1.42;
-  const vC = -1.38;
-  const rIn = 1.25;
-  const rOut = 1.72;
-
-  // Seg 1: Mainline (-u) at (-0.20, -0.24) -> 9 o'clock (-2.67, -1.38) heading up (-v)
-  const brownSeg1 = {
-    p0: toWorldUV(-0.2, -0.24),
-    p1: toWorldUV(-1.6, -0.28),
-    p2: toWorldUV(uC - rIn, -0.52),
-    p3: toWorldUV(uC - rIn, vC),
-  };
-  // Seg 2: 9 o'clock (-2.67, -1.38) -> 12 o'clock (-1.42, -2.63)
-  const brownSeg2 = {
-    p0: toWorldUV(uC - rIn, vC),
-    p1: toWorldUV(uC - rIn, vC - k90 * rIn),
-    p2: toWorldUV(uC - k90 * rIn, vC - rIn),
-    p3: toWorldUV(uC, vC - rIn),
-  };
-  // Seg 3: 12 o'clock (-1.42, -2.63) -> 3 o'clock (-0.17, -1.38)
-  const brownSeg3 = {
-    p0: toWorldUV(uC, vC - rIn),
-    p1: toWorldUV(uC + k90 * rIn, vC - rIn),
-    p2: toWorldUV(uC + rIn, vC - k90 * rIn),
-    p3: toWorldUV(uC + rIn, vC),
-  };
-  // Seg 4: 3 o'clock (-0.17, -1.38) straight down to Bridge left lane (-0.17, -0.15)
-  const brownSeg4 = {
-    p0: toWorldUV(uC + rIn, vC),
-    p1: toWorldUV(uC + rIn, -0.95),
-    p2: toWorldUV(-0.17, -0.52),
-    p3: toWorldUV(-0.17, -0.15),
-  };
-
-  // 4. Blue Outer Trumpet Bell:
-  //    Runs parallel/concentric (R_outer = 1.72, Δr = 0.47 tiles) with Brown from Bridge through
-  //    3 o'clock (0°), 12 o'clock (90°), to 10:30 o'clock (135°), then sweeps in a broad R ≈ 4.2-tile
-  //    curve into the Westbound Mainline at d = 5.65 tiles!
-  // Seg 1: Bridge right lane (+0.23, -0.15) -> 3 o'clock (+0.30, -1.38)
-  const blueSeg1 = {
-    p0: toWorldUV(0.23, -0.15),
-    p1: toWorldUV(0.25, -0.52),
-    p2: toWorldUV(uC + rOut, -0.95),
-    p3: toWorldUV(uC + rOut, vC),
-  };
-  // Seg 2: 3 o'clock (+0.30, -1.38) -> 12 o'clock (-1.42, -3.10)
-  const blueSeg2 = {
-    p0: toWorldUV(uC + rOut, vC),
-    p1: toWorldUV(uC + rOut, vC - k90 * rOut),
-    p2: toWorldUV(uC + k90 * rOut, vC - rOut),
-    p3: toWorldUV(uC, vC - rOut),
-  };
-  // Seg 3: 12 o'clock (90°) -> 10:30 o'clock (135° diverge point on concentric circle R_outer = 1.72)
-  const sweepRad = (45 * Math.PI) / 180;
-  const k45 = (4 / 3) * Math.tan(sweepRad * 0.25);
-  const sin45 = Math.sin(sweepRad);
-  const cos45 = Math.cos(sweepRad);
-  const uDiv = uC - rOut * sin45;
-  const vDiv = vC - rOut * cos45;
-  const tDivU = -cos45;
-  const tDivV = sin45;
-  const blueSeg3 = {
-    p0: toWorldUV(uC, vC - rOut),
-    p1: toWorldUV(uC - k45 * rOut, vC - rOut),
-    p2: toWorldUV(uDiv - tDivU * k45 * rOut, vDiv - tDivV * k45 * rOut),
-    p3: toWorldUV(uDiv, vDiv),
-  };
-  // Seg 4: Broad R ≈ 4.2-tile C1 sweep from (uDiv, vDiv) along (tDivU, tDivV) into mNegBlue (d = 5.65)
-  const blP3 = {
-    x: mNegBlue.x - vx * 0.24,
-    y: mNegBlue.y - vy * 0.24,
-  };
-  const blP2 = {
-    x: mNegBlue.x - vx * 0.3 - mNegBlue.tx * 1.85,
-    y: mNegBlue.y - vy * 0.3 - mNegBlue.ty * 1.85,
-  };
-  const blueSeg4 = {
-    p0: toWorldUV(uDiv, vDiv),
-    p1: toWorldUV(uDiv + tDivU * 1.55, vDiv + tDivV * 1.55),
-    p2: blP2,
-    p3: blP3,
-  };
-
-  return {
-    yellow,
-    purple,
-    brown: [brownSeg1, brownSeg2, brownSeg3, brownSeg4],
-    blue: [blueSeg1, blueSeg2, blueSeg3, blueSeg4],
-  };
-}
-
 export function ensureVehicleRoutingGraph(world) {
   if (world._vehicleGraph) return world._vehicleGraph;
   const { W, H } = world;
@@ -686,9 +471,9 @@ export function ensureVehicleRoutingGraph(world) {
       const signsA = ic.activeSignsA || [-1, 1];
       const signsB = ic.activeSignsB || [-1, 1];
 
-      const outerDist = 3.65;
-      const outerCtrl = 1.75;
-      const leafSpan = 4.85;
+      const outerDist = CLOVERLEAF_GEOMETRY.outerDist;
+      const outerCtrl = CLOVERLEAF_GEOMETRY.outerCtrl;
+      const leafSpan = CLOVERLEAF_GEOMETRY.leafSpan;
 
       for (const sA of signsA) {
         for (const sB of signsB) {
@@ -1826,43 +1611,14 @@ export function buildIndustrialCargoChain(world) {
   // ---------------------------------------------------------------------------
 
   // 0A. Normalize RAW destinations
-  const RAW_OUTPUTS = {
-    MINE: "ORE",
-    TIMBER: "WOOD",
-    FARM: "AGRI",
-    FISHERY: "AGRI",
-    CHEM: "CHEM",
-  };
   for (const r of rawNodes) {
-    if (!r.resourceType || !RAW_OUTPUTS[r.resourceType]) {
+    if (!r.resourceType || !RAW_NICHE_SPECS[r.resourceType]) {
       r.resourceType = "CHEM";
     }
-    r.outputGood = RAW_OUTPUTS[r.resourceType];
+    r.outputGood = RAW_NICHE_SPECS[r.resourceType].outputGood;
   }
 
   // 0B. Normalize MFG destinations
-  const MFG_SPECS = {
-    STEEL: {
-      mfgTier: 1,
-      requiredInputs: ["ORE", "WOOD"],
-      outputGood: "HARDWARE",
-    },
-    FOOD: {
-      mfgTier: 1,
-      requiredInputs: ["AGRI", "CHEM"],
-      outputGood: "GROCERIES",
-    },
-    GOODS: {
-      mfgTier: 2,
-      requiredInputs: ["WOOD", "HARDWARE"],
-      outputGood: "CONSUMER_GOODS",
-    },
-    TECH: {
-      mfgTier: 2,
-      requiredInputs: ["CHEM", "HARDWARE"],
-      outputGood: "ELECTRONICS",
-    },
-  };
   const ALL_MFG_TYPES = ["STEEL", "FOOD", "GOODS", "TECH"];
 
   for (let i = 0; i < mfgNodes.length; i++) {
@@ -1937,42 +1693,7 @@ export function buildIndustrialCargoChain(world) {
         com.demandedGoods = [g1];
       }
       const isCirc = Boolean(com.isCircular);
-      if (com.demandedGoods.length === 1) {
-        const g = com.demandedGoods[0];
-        com.subType =
-          g === "GROCERIES"
-            ? isCirc
-              ? "CBD Food Hall"
-              : "Grocery Market"
-            : g === "CONSUMER_GOODS"
-              ? isCirc
-                ? "CBD Grand Galleria"
-                : "Department Store"
-              : g === "HARDWARE"
-                ? isCirc
-                  ? "CBD Builders Exchange"
-                  : "Hardware Depot"
-                : isCirc
-                  ? "CBD Tech Plaza"
-                  : "Tech Showroom";
-      } else {
-        const set = new Set(com.demandedGoods);
-        if (set.has("GROCERIES") && set.has("CONSUMER_GOODS")) {
-          com.subType = isCirc
-            ? "CBD Food & Retail Rotunda"
-            : "Supermarket & Galleria";
-        } else if (set.has("CONSUMER_GOODS") && set.has("HARDWARE")) {
-          com.subType = isCirc
-            ? "CBD Home & Commerce Rotunda"
-            : "Home & Lifestyle Mart";
-        } else if (set.has("HARDWARE") && set.has("ELECTRONICS")) {
-          com.subType = isCirc
-            ? "CBD Tech & Trade Tower"
-            : "Tech & Hardware Mart";
-        } else {
-          com.subType = isCirc ? "CBD Metro Exchange" : "Metro Hypermarket";
-        }
-      }
+      com.subType = nameCommercialSubType(com.demandedGoods, isCirc);
       com.label = com.subType;
     }
   }
@@ -2084,7 +1805,7 @@ export function buildIndustrialCargoChain(world) {
         candidates.push({
           node: lg,
           stage: "LOG->COM",
-          color: "#7c3aed",
+          color: CARGO_STAGE_COLORS["LOG->COM"],
           label: "Wholesale Goods → Commercial Sink",
           score,
           isLog: true,
@@ -2100,7 +1821,7 @@ export function buildIndustrialCargoChain(world) {
           candidates.push({
             node: mfg,
             stage: "MFG->COM",
-            color: "#4f46e5",
+            color: CARGO_STAGE_COLORS["MFG->COM"],
             label: "Factory Direct → Commercial CBD",
             score,
             isLog: false,
@@ -2116,7 +1837,7 @@ export function buildIndustrialCargoChain(world) {
         candidates.push({
           node: gw,
           stage: "IMPORT->COM",
-          color: "#0d9488",
+          color: CARGO_STAGE_COLORS["IMPORT->COM"],
           label: "Gateway Import → Commercial CBD",
           score,
           isLog: false,
@@ -2214,7 +1935,7 @@ export function buildIndustrialCargoChain(world) {
           partner,
           "CBD->CBD",
           "Inter-CBD Courier & Wholesale",
-          "#0284c7",
+          CARGO_STAGE_COLORS["CBD->CBD"],
           185,
           "B2B_PARCELS",
           3,
@@ -2259,7 +1980,7 @@ export function buildIndustrialCargoChain(world) {
           cands.push({
             node: mfg,
             stage: "MFG->LOG",
-            color: "#ea580c",
+            color: CARGO_STAGE_COLORS["MFG->LOG"],
             label: "Factory Output → Distribution Hub",
             score,
           });
@@ -2273,7 +1994,7 @@ export function buildIndustrialCargoChain(world) {
         cands.push({
           node: gw,
           stage: "IMPORT->LOG",
-          color: "#0d9488",
+          color: CARGO_STAGE_COLORS["IMPORT->LOG"],
           label: "Imported Cargo → Logistics Hub",
           score,
         });
@@ -2370,11 +2091,7 @@ export function buildIndustrialCargoChain(world) {
           : isHardware
             ? "Intermediate Hardware & Steel"
             : "Raw Materials → Factory";
-        const color = isGateway
-          ? "#0d9488"
-          : isHardware
-            ? "#e11d48"
-            : "#d97706";
+        const color = CARGO_STAGE_COLORS[stage];
 
         if (connectLink(sup, mfg, stage, label, color, 145, reqGood, 2)) {
           break;
@@ -2405,7 +2122,7 @@ export function buildIndustrialCargoChain(world) {
           : isM
             ? "Intermediate Hardware & Steel"
             : "Raw Materials → Factory";
-        const color = isGw ? "#0d9488" : isM ? "#e11d48" : "#d97706";
+        const color = CARGO_STAGE_COLORS[stage];
         const commodity = sup.outputGood || "ORE";
 
         if (connectLink(sup, mfg, stage, label, color, 160, commodity, 2)) {
@@ -2451,7 +2168,18 @@ export function buildIndustrialCargoChain(world) {
       const commodity =
         cand.outputGood || (cand.subType === "RAW" ? "ORE" : "CONSUMER_GOODS");
 
-      if (connectLink(cand, gw, stage, label, "#0d9488", 140, commodity, 3)) {
+      if (
+        connectLink(
+          cand,
+          gw,
+          stage,
+          label,
+          CARGO_STAGE_COLORS[stage],
+          140,
+          commodity,
+          3,
+        )
+      ) {
         expCount++;
         if (expCount >= maxExp) break;
       }
@@ -2484,7 +2212,7 @@ export function buildIndustrialCargoChain(world) {
           : tgt.subType === "LOG"
             ? "Bulk Feedstock → Logistics Hub"
             : "Raw Materials → Factory";
-        const color = tgt.isGatewayProxy ? "#0d9488" : "#d97706";
+        const color = CARGO_STAGE_COLORS[stage];
         if (
           connectLink(
             raw,
@@ -2535,13 +2263,7 @@ export function buildIndustrialCargoChain(world) {
             : tgt.subType === "MFG"
               ? "Intermediate Hardware & Steel"
               : "Factory Output → Distribution Hub";
-        const color = tgt.isGatewayProxy
-          ? "#0d9488"
-          : tgt.zoneType === "commercial"
-            ? "#4f46e5"
-            : tgt.subType === "MFG"
-              ? "#e11d48"
-              : "#ea580c";
+        const color = CARGO_STAGE_COLORS[stage];
         if (
           connectLink(
             mfg,
@@ -2585,11 +2307,7 @@ export function buildIndustrialCargoChain(world) {
           : sup.subType === "RAW"
             ? "Bulk Feedstock → Logistics Hub"
             : "Factory Output → Distribution Hub";
-        const color = sup.isGatewayProxy
-          ? "#0d9488"
-          : sup.subType === "RAW"
-            ? "#d97706"
-            : "#ea580c";
+        const color = CARGO_STAGE_COLORS[stage];
         if (
           connectLink(
             sup,
@@ -2621,7 +2339,7 @@ export function buildIndustrialCargoChain(world) {
         const label = tgt.isGatewayProxy
           ? "Consolidated Freight Export"
           : "Wholesale Goods → Commercial Sink";
-        const color = tgt.isGatewayProxy ? "#0d9488" : "#7c3aed";
+        const color = CARGO_STAGE_COLORS[stage];
         if (
           connectLink(lg, tgt, stage, label, color, 160, "CONSUMER_GOODS", 2)
         ) {
@@ -2656,11 +2374,7 @@ export function buildIndustrialCargoChain(world) {
           : sup.subType === "MFG"
             ? "Factory Direct → Commercial CBD"
             : "Wholesale Goods → Commercial Sink";
-        const color = sup.isGatewayProxy
-          ? "#0d9488"
-          : sup.subType === "MFG"
-            ? "#4f46e5"
-            : "#7c3aed";
+        const color = CARGO_STAGE_COLORS[stage];
         const good = (com.demandedGoods && com.demandedGoods[0]) || "GROCERIES";
         if (connectLink(sup, com, stage, label, color, 160, good, 2)) {
           break;

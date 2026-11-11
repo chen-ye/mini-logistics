@@ -33,8 +33,8 @@
       <div class="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
         <button
           id="toggleDrawerBtn"
-          title="Toggle Procedural Algorithm Panel"
-          aria-label="Toggle Procedural Algorithm Panel"
+          title="Toggle generator controls"
+          aria-label="Toggle generator controls"
           aria-expanded="true"
           class="w-9 h-9 sm:w-11 sm:h-11 !p-0 shrink-0 rounded-full glass-panel flex items-center justify-center text-[#36383e] hover:bg-[#36383e] hover:text-[#f2efe9] active:scale-95 transition-all"
         >
@@ -68,7 +68,7 @@
             type="text"
             value="OTTD-METRO-84"
             aria-label="World Generation Seed"
-            class="mono text-[11px] sm:text-xs font-bold bg-stone-200/75 text-[#36383e] px-2.5 py-1 rounded-full w-24 sm:w-32 focus:outline-none focus:ring-2 focus:ring-stone-700"
+            class="mono text-[11px] sm:text-xs font-bold bg-stone-200/75 text-[#36383e] px-2.5 py-1 rounded-full w-28 sm:w-32 focus:outline-none focus:ring-2 focus:ring-stone-700"
           />
           <button
             id="randomSeedBtn"
@@ -107,11 +107,8 @@
             <h1
               class="text-[17px] font-extrabold tracking-tight text-[#36383e]"
             >
-              Procedural World Engine
+              World Generator
             </h1>
-            <p class="text-[11px] text-stone-500 font-medium mt-0.5">
-              Hydrology, Central Place Theory &amp; Airport Solver
-            </p>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
             <button
@@ -234,7 +231,7 @@
               <label
                 for="worldSizeSelect"
                 class="block text-[11px] font-bold text-stone-600 mb-1"
-                >World Map Scale</label
+                >Map Scale</label
               >
               <select
                 id="worldSizeSelect"
@@ -424,7 +421,7 @@
                 <div
                   class="flex justify-between text-[11px] font-semibold mb-0.5 text-stone-600"
                 >
-                  <label for="sliderBasins">Basin / Pass Cnt</label>
+                  <label for="sliderBasins">Basin Count</label>
                   <span id="valBasins" class="mono font-bold tabular-nums"
                     >2</span
                   >
@@ -463,13 +460,8 @@
           </div>
 
           <label class="flex items-center justify-between cursor-pointer pt-1">
-            <div>
-              <div class="text-xs font-bold text-[#36383e]">
-                Intermediate Expressway Ramps
-              </div>
-              <div class="text-[11px] text-stone-500">
-                Mid-corridor diamond slip-ramps &amp; surface stubs
-              </div>
+            <div class="text-xs font-bold text-[#36383e]">
+              Intermediate Expressway Ramps
             </div>
             <input
               id="toggleInterRamps"
@@ -484,7 +476,7 @@
         <div class="py-3 space-y-2.5">
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1">
-              <span>Water &amp; River Coverage</span>
+              <span>Water Coverage</span>
               <span
                 id="valWater"
                 class="mono text-[11px] font-bold text-stone-600 tabular-nums"
@@ -503,7 +495,7 @@
 
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1">
-              <span>Town &amp; Settlement Count</span>
+              <span>Towns</span>
               <span
                 id="valTowns"
                 class="mono text-[11px] font-bold text-stone-600 tabular-nums"
@@ -522,7 +514,7 @@
 
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1">
-              <span>Building &amp; Urban Density</span>
+              <span>Building Density</span>
               <span
                 id="valDensity"
                 class="mono text-[11px] font-bold text-stone-600 tabular-nums"
@@ -542,7 +534,7 @@
 
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1">
-              <span>Target Airports (Hubs + Regional)</span>
+              <span>Airports</span>
               <span
                 id="valAirports"
                 class="mono text-[11px] font-bold text-stone-600 tabular-nums"
@@ -561,7 +553,7 @@
 
           <div>
             <div class="flex justify-between text-xs font-semibold mb-1">
-              <span>Prevailing Wind Runway Axis</span>
+              <span>Prevailing Wind</span>
               <span
                 id="valWind"
                 class="mono text-[11px] font-bold text-stone-600 tabular-nums"
@@ -586,7 +578,7 @@
             <span
               id="telemetryGridLabel"
               class="text-[11px] font-bold text-stone-600"
-              >State Telemetry (360×224 Grid)</span
+              >World Summary (360×224 Grid)</span
             >
             <span
               id="genTimeBadge"
@@ -841,7 +833,7 @@
             <span
               id="inspCode"
               class="mono text-[11px] font-bold text-stone-600"
-              >IATA: KMT</span
+              >IATA KMT</span
             >
           </div>
         </div>

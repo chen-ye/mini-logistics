@@ -36,9 +36,9 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
 
     await page.goto("/index.html");
 
-    // Wait for initial Dual-Worker world build to populate window.currentWorld
+    // Wait for initial Dual-Worker world build to populate window.appBridge
     await page.waitForFunction(
-      () => Boolean(window.currentWorld && window.simulator && window.renderer),
+      () => Boolean(window.appBridge?.isReady()),
       null,
       {
         timeout: 20000,
@@ -53,14 +53,9 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     const badgeText = await page.locator("#genTimeBadge").textContent();
     expect(badgeText).toContain("2W Parallel");
 
-    // Verify all 4 VectorLayerRecorder Path2D display lists were built on renderer
+    // Verify all VectorLayerRecorder Path2D display lists were built on renderer
     const hasDisplayLists = await page.evaluate(() =>
-      Boolean(
-        window.renderer?.hydroDisplayList &&
-        window.renderer?.urbanTerrainDisplayList &&
-        window.renderer?.surfaceNetworkDisplayList &&
-        window.renderer?.motorwayDisplayList,
-      ),
+      Boolean(window.appBridge?.hasDisplayLists()),
     );
     expect(hasDisplayLists).toBe(true);
 
@@ -81,55 +76,36 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     ];
     for (const layer of layers) {
       await page.locator(`.layer-btn[data-layer="${layer}"]`).click();
-      const activeLayer = await page.evaluate(
-        () => window.renderer.activeLayer,
+      const activeLayer = await page.evaluate(() =>
+        window.appBridge?.getActiveLayer(),
       );
       expect(activeLayer).toBe(layer);
 
       if (layer === "aesthetic" || layer === "rci" || layer === "roadgrid") {
-        const zoomCheck = await page.evaluate(() => {
-          const r = window.renderer;
-          const w = window.currentWorld;
-          const sim = window.simulator;
-          if (!r || !w || !sim || !r.ctx || !r.canvas) return false;
-          for (const z of [1.0, 3.5]) {
-            r.camera.zoom = z;
-            r.camera.x = r.canvas.width * 0.5 - w.W * 0.5 * w.tileSize * z;
-            r.camera.y = r.canvas.height * 0.5 - w.H * 0.5 * w.tileSize * z;
-            r.render(w, sim);
-          }
-          return Boolean(
-            r.hydroDisplayList &&
-            r.urbanTerrainDisplayList &&
-            r.surfaceNetworkDisplayList &&
-            r.motorwayDisplayList,
-          );
-        });
+        const zoomCheck = await page.evaluate(() =>
+          window.appBridge?.renderAtZooms([1.0, 3.5]),
+        );
         expect(zoomCheck).toBe(true);
       }
     }
 
     // Open Entity Inspector on primary airport and verify live taxi/landing/gate telemetry updates
     await page.evaluate(() => {
-      const ap = window.currentWorld?.airports[0];
-      if (ap) window.openEntityInspector("airport", ap, true);
+      const summary = window.appBridge?.getWorldSummary();
+      const ap = summary?.airports[0];
+      if (ap) window.appBridge?.selectEntity("airport", ap.id, true);
     });
     await expect(page.locator("#inspectorCard")).toBeVisible();
     await expect(page.locator("#inspCode")).toContainText("IATA");
     await expect(page.locator("#inspGateStats")).toContainText("Occupied");
     await expect(page.locator("#inspAtcStats")).toContainText("Taxiing");
 
-    const updatedInBrowser = await page.evaluate(() => {
+    const updatedInBrowser = await page.evaluate(async () => {
       const gateEl = document.getElementById("inspGateStats");
       const atcEl = document.getElementById("inspAtcStats");
       const seen = new Set();
       for (let i = 0; i < 240; i++) {
-        window.simulator?.update(0.1, 1.0);
-        const insp =
-          /** @type {import("../../src/inspector-component.js").EntityInspectorElement | null} */ (
-            document.querySelector("ml-entity-inspector")
-          );
-        insp?.refreshLiveStats(window.currentWorld, window.simulator?.planes);
+        await window.appBridge?.stepSimulation(1, 0.1, 1.0);
         seen.add(`${gateEl?.textContent}|${atcEl?.textContent}`);
       }
       return seen.size;
@@ -145,6 +121,48 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     // Pressing Escape closes the inspector card
     await page.keyboard.press("Escape");
     await expect(page.locator("#inspectorCard")).toBeHidden();
+
+    // Select primary airport with focus to center camera, then close card
+    await page.evaluate(() => {
+      const summary = window.appBridge?.getWorldSummary();
+      const ap = summary?.airports[0];
+      if (ap) window.appBridge?.selectEntity("airport", ap.id, true);
+    });
+    await expect(page.locator("#inspectorCard")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#inspectorCard")).toBeHidden();
+
+    // Real canvas pointer click on primary airport triggers TAP_AT -> opens #inspectorCard
+    const screenCoords = await page.evaluate(() => {
+      const summary = window.appBridge?.getWorldSummary();
+      const cam = window.appBridge?.getCamera();
+      const ap = summary?.airports[0];
+      if (!summary || !cam || !ap) return null;
+      const ts = summary.tileSize;
+      const sx = ap.x * cam.zoom * ts + cam.x;
+      const sy = ap.y * cam.zoom * ts + cam.y;
+      return { sx, sy };
+    });
+    expect(screenCoords).not.toBeNull();
+    if (screenCoords) {
+      await page.mouse.click(screenCoords.sx, screenCoords.sy);
+      await expect(page.locator("#inspectorCard")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.locator("#inspectorCard")).toBeHidden();
+    }
+
+    // Select a live plane and verify live flight-strip dossier
+    await page.evaluate(() => window.appBridge?.selectEntity("plane", 0, true));
+    await expect(page.locator("#inspectorCard")).toBeVisible();
+    await expect(page.locator("#inspPlaneState")).toBeVisible();
+
+    // Select a live truck and verify freight/commuter vehicle dossier
+    await page.evaluate(() => window.appBridge?.selectEntity("truck", 1, true));
+    await expect(page.locator("#inspectorCard")).toBeVisible();
+    await expect(page.locator("#inspTruckLeg")).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#inspectorCard")).toBeHidden();
     expect(pageErrors).toEqual([]);
   });
 
@@ -154,12 +172,14 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto("/index.html");
     await page.waitForFunction(
-      () => Boolean(window.currentWorld && window.renderer),
+      () => Boolean(window.appBridge?.isReady()),
       null,
       { timeout: 20000 },
     );
 
-    const initialZoom = await page.evaluate(() => window.renderer.camera.zoom);
+    const initialZoom = await page.evaluate(
+      () => window.appBridge?.getCamera().zoom ?? 1,
+    );
 
     // Position mouse near center of canvas
     await page.mouse.move(640, 400);
@@ -167,7 +187,7 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     // Scroll down (zoom out) by standard notch (~100px)
     await page.mouse.wheel(0, 100);
     const zoomAfterOneNotchOut = await page.evaluate(
-      () => window.renderer.camera.zoom,
+      () => window.appBridge?.getCamera().zoom ?? 1,
     );
     expect(zoomAfterOneNotchOut).toBeLessThan(initialZoom);
     // Single notch should be gentle (~6-10% decrease), not a massive jump
@@ -177,7 +197,9 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
 
     // Scroll up (zoom in) by standard notch (-100px)
     await page.mouse.wheel(0, -100);
-    const zoomRestored = await page.evaluate(() => window.renderer.camera.zoom);
+    const zoomRestored = await page.evaluate(
+      () => window.appBridge?.getCamera().zoom ?? 1,
+    );
     // Should be almost back to initial zoom (within 1%)
     expect(Math.abs(zoomRestored - initialZoom)).toBeLessThan(0.02);
 
@@ -186,7 +208,7 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
       await page.mouse.wheel(0, 20);
     }
     const zoomAfterFineScroll = await page.evaluate(
-      () => window.renderer.camera.zoom,
+      () => window.appBridge?.getCamera().zoom ?? 1,
     );
     // Total delta is 100, so zoom should match single notch zoom within tiny tolerance
     expect(Math.abs(zoomAfterFineScroll - zoomAfterOneNotchOut)).toBeLessThan(
@@ -204,7 +226,7 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
 
     await page.goto("/index.html");
     await page.waitForFunction(
-      () => Boolean(window.currentWorld && window.simulator),
+      () => Boolean(window.appBridge?.isReady()),
       null,
       {
         timeout: 20000,
@@ -249,13 +271,15 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
 
     // Wait for world build and hydration
     await page.waitForFunction(
-      () =>
-        Boolean(
-          window.currentWorld &&
-          window.simulator &&
-          window.renderer &&
-          window.currentWorld.towns.length > 0,
-        ),
+      () => {
+        const summary = window.appBridge?.getWorldSummary();
+        return Boolean(
+          window.appBridge?.isReady() &&
+          summary &&
+          summary.towns &&
+          summary.towns.length > 0,
+        );
+      },
       null,
       { timeout: 20000 },
     );
@@ -280,7 +304,9 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     expect(await page.locator("#toggleInterRamps").isChecked()).toBe(false);
 
     // 2. Verify View State & ARIA Attributes
-    const activeLayer = await page.evaluate(() => window.renderer.activeLayer);
+    const activeLayer = await page.evaluate(() =>
+      window.appBridge?.getActiveLayer(),
+    );
     expect(activeLayer).toBe("rci");
     await expect(page.locator('.layer-btn[data-layer="rci"]')).toHaveAttribute(
       "aria-pressed",
@@ -300,15 +326,9 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     );
 
     // 3. Verify Camera Coordinates
-    const cam = await page.evaluate(() => {
-      const r = window.renderer;
-      const w = window.currentWorld;
-      if (!r || !w || !r.canvas) return null;
-      const ts = w.tileSize;
-      const cx = (r.canvas.width * 0.5 - r.camera.x) / (r.camera.zoom * ts);
-      const cy = (r.canvas.height * 0.5 - r.camera.y) / (r.camera.zoom * ts);
-      return { cx, cy, zoom: r.camera.zoom };
-    });
+    const cam = await page.evaluate(
+      () => window.appBridge?.getCamera() ?? null,
+    );
     expect(cam).not.toBeNull();
     if (cam) {
       expect(Math.abs(cam.cx - 120.5)).toBeLessThan(0.5);
@@ -340,7 +360,7 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     await page.locator("#seedInput").fill("DELTA-777");
     await page.locator("#seedInput").press("Enter");
     await page.waitForFunction(
-      () => window.currentWorld?.config?.seed === "DELTA-777",
+      () => window.appBridge?.getWorldSummary()?.seed === "DELTA-777",
       null,
       { timeout: 15000 },
     );
@@ -349,7 +369,7 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     // 7. Browser Back Navigation (popstate) restores previous world & controls
     await page.goBack();
     await page.waitForFunction(
-      () => window.currentWorld?.config?.seed === "VALLEY-618",
+      () => window.appBridge?.getWorldSummary()?.seed === "VALLEY-618",
       null,
       { timeout: 15000 },
     );
@@ -359,12 +379,47 @@ test.describe("Mini Logistics — Buildless Dual-Worker E2E Suite", () => {
     // 8. Browser Forward Navigation restores DELTA-777
     await page.goForward();
     await page.waitForFunction(
-      () => window.currentWorld?.config?.seed === "DELTA-777",
+      () => window.appBridge?.getWorldSummary()?.seed === "DELTA-777",
       null,
       { timeout: 15000 },
     );
     expect(page.url()).toContain("seed=DELTA-777");
     await expect(page.locator("#seedInput")).toHaveValue("DELTA-777");
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("Deep link with explicit camera + live plane preserves explicit camera without yanking", async ({
+    page,
+  }) => {
+    /** @type {string[]} */
+    const pageErrors = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.goto(
+      "/?seed=OTTD-METRO-84&cx=150&cy=100&z=1.75&inspect=plane:0",
+    );
+    await page.waitForFunction(
+      () => Boolean(window.appBridge?.isReady()),
+      null,
+      { timeout: 20000 },
+    );
+
+    await expect(page.locator("#inspectorCard")).toBeVisible();
+    await page.evaluate(async () => {
+      await window.appBridge?.stepSimulation(20, 1 / 30, 1.0);
+    });
+
+    const cam = await page.evaluate(
+      () => window.appBridge?.getCamera() ?? null,
+    );
+    expect(cam).not.toBeNull();
+    if (cam) {
+      expect(Math.abs(cam.cx - 150)).toBeLessThan(0.5);
+      expect(Math.abs(cam.cy - 100)).toBeLessThan(0.5);
+      expect(Math.abs(cam.zoom - 1.75)).toBeLessThan(0.05);
+    }
 
     expect(pageErrors).toEqual([]);
   });
