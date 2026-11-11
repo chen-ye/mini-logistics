@@ -2,6 +2,8 @@
 
 A regional procedural world generator and multimodal transportation logistics simulator inspired by **OpenTTD** (_TerraGenesis_) and **Mini Motorways** / **Mini Metro**.
 
+![Mini Logistics World Generator Screenshot (Seed OTTD-METRO-84)](./assets/screenshot-ottd-metro-84.png)
+
 The project synthesizes a 360×224-tile regional landscape in native browser ES Modules, a 3-thread `OffscreenCanvas` Web Worker pipeline (`main.js` + `world-worker.js` + `render-sim-worker.js`), and retained `Path2D` vector display lists with zero build steps. The synthesized landscape includes emergent tectonic mountain ranges, non-bifurcating river watersheds, central-place urban hierarchies, residential, commercial, and industrial (RCI) zoning, multi-tier airports, grade-separated expressway networks, and an active inter-industrial freight supply chain.
 
 ---
